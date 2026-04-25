@@ -2,15 +2,12 @@ export const config = { runtime: "edge" };
 
 const UPSTREAM = "https://api.deepseek.com";
 
-// Strip reasoning_content from a message or delta object
 function stripReasoning(obj) {
   if (!obj) return obj;
-  const result = { ...obj };
-  delete result.reasoning_content;
-  return result;
+  const { reasoning_content, ...rest } = obj;
+  return rest;
 }
 
-// Strip reasoning_content from all choices in a response chunk
 function stripResponseChunk(json) {
   if (!json.choices) return json;
   return {
@@ -23,40 +20,43 @@ function stripResponseChunk(json) {
   };
 }
 
-// Strip reasoning_content from messages array in the request body
-function stripRequestBody(body) {
-  if (!body || !body.messages) return body;
-  return {
-    ...body,
-    messages: body.messages.map((m) => {
-      if (!m.reasoning_content) return m;
-      const cleaned = { ...m };
-      delete cleaned.reasoning_content;
-      return cleaned;
-    }),
-  };
+function stripRequestMessages(bodyText) {
+  try {
+    const json = JSON.parse(bodyText);
+    if (Array.isArray(json.messages)) {
+      json.messages = json.messages.map((msg) => {
+        if ("reasoning_content" in msg) {
+          const { reasoning_content, ...rest } = msg;
+          return rest;
+        }
+        return msg;
+      });
+    }
+    return JSON.stringify(json);
+  } catch {
+    // Return original if parse fails - log to help debug
+    console.error("Failed to parse request body");
+    return bodyText;
+  }
 }
 
 export default async function handler(req) {
   const url = new URL(req.url);
-
-  // Reconstruct original path: vercel.json passes it as ?path=
-  const originalPath = url.searchParams.get("path");
-  const upstreamUrl = UPSTREAM + "/v1/" + (originalPath || "chat/completions");
+  const upstreamUrl = UPSTREAM + url.pathname + url.search;
 
   const headers = new Headers(req.headers);
   headers.set("host", "api.deepseek.com");
-  headers.delete("content-length"); // will be recalculated
+  // Let fetch calculate these automatically - manual values break Edge runtime
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
+  // Ensure plain text response so SSE parsing works
+  headers.delete("accept-encoding");
+  headers.set("accept-encoding", "identity");
 
   let body = null;
   if (req.method !== "GET" && req.method !== "HEAD") {
-    try {
-      const rawBody = await req.json();
-      const cleanedBody = stripRequestBody(rawBody);
-      body = JSON.stringify(cleanedBody);
-    } catch {
-      body = await req.text();
-    }
+    const raw = await req.text();
+    body = stripRequestMessages(raw);
   }
 
   const upstreamRes = await fetch(upstreamUrl, {
