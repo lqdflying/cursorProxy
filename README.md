@@ -50,7 +50,7 @@ Configure your client to point at the Vercel deployment:
 ### Request / response flow
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Request["Request: Cursor → DeepSeek"]
         direction LR
         C1[Cursor] -->|"1. Sends messages<br/>(no reasoning_content)"| V1[Vercel Edge Proxy]
