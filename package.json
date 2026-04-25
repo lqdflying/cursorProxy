@@ -1,8 +1,5 @@
 {
   "name": "deepseek-proxy",
   "version": "1.0.0",
-  "private": true,
-  "dependencies": {
-    "@vercel/kv": "^3.0.0"
-  }
+  "private": true
 }

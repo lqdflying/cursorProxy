@@ -1,17 +1,46 @@
 export const config = { runtime: "edge" };
 
-import { kv } from "@vercel/kv";
-
 const UPSTREAM = "https://api.deepseek.com";
 
-// SHA-256 hash of text, returned as hex string (first 40 chars)
+// Upstash Redis REST API helpers
+// Set KV_URL and KV_TOKEN in Vercel environment variables
+async function kvGet(key) {
+  const url = process.env.KV_URL;
+  const token = process.env.KV_TOKEN;
+  if (!url || !token) return null;
+  try {
+    const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const json = await res.json();
+    return json.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function kvSet(key, value, ttlSeconds = 7200) {
+  const url = process.env.KV_URL;
+  const token = process.env.KV_TOKEN;
+  if (!url || !token) return;
+  try {
+    await fetch(
+      `${url}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?ex=${ttlSeconds}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+  } catch {}
+}
+
 async function contentHash(text) {
   const data = new TextEncoder().encode(String(text).substring(0, 2000));
   const hash = await crypto.subtle.digest("SHA-256", data);
-  return "rc:" + Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .substring(0, 40);
+  return (
+    "rc:" +
+    Array.from(new Uint8Array(hash))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("")
+      .substring(0, 40)
+  );
 }
 
 function stripReasoning(obj) {
@@ -64,16 +93,14 @@ export default async function handler(req) {
         typeof messages[lastAssistantIdx].content === "string"
           ? messages[lastAssistantIdx].content
           : JSON.stringify(messages[lastAssistantIdx].content);
-      try {
-        const key = await contentHash(assistantContent);
-        const stored = await kv.get(key);
-        if (stored) {
-          parsedBody.messages[lastAssistantIdx] = {
-            ...messages[lastAssistantIdx],
-            reasoning_content: stored,
-          };
-        }
-      } catch {}
+      const key = await contentHash(assistantContent);
+      const stored = await kvGet(key);
+      if (stored) {
+        parsedBody.messages[lastAssistantIdx] = {
+          ...messages[lastAssistantIdx],
+          reasoning_content: stored,
+        };
+      }
     }
     bodyText = JSON.stringify(parsedBody);
   }
@@ -96,14 +123,11 @@ export default async function handler(req) {
 
   if (!isStream) {
     const json = await upstreamRes.json();
-    // Store reasoning_content keyed by assistant content
     const reasoning = json.choices?.[0]?.message?.reasoning_content;
     const content = json.choices?.[0]?.message?.content;
     if (reasoning && content) {
-      try {
-        const key = await contentHash(content);
-        await kv.set(key, reasoning, { ex: 7200 });
-      } catch {}
+      const key = await contentHash(content);
+      await kvSet(key, reasoning);
     }
     return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
@@ -111,7 +135,7 @@ export default async function handler(req) {
     });
   }
 
-  // Streaming: strip reasoning from chunks, accumulate for KV storage
+  // Streaming
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -133,12 +157,9 @@ export default async function handler(req) {
           if (line.startsWith("data: ")) {
             const data = line.slice(6).trim();
             if (data === "[DONE]") {
-              // Persist accumulated reasoning
               if (accReasoning && accContent) {
-                try {
-                  const key = await contentHash(accContent);
-                  await kv.set(key, accReasoning, { ex: 7200 });
-                } catch {}
+                const key = await contentHash(accContent);
+                await kvSet(key, accReasoning);
               }
               await writer.write(encoder.encode("data: [DONE]\n\n"));
               continue;
@@ -149,7 +170,9 @@ export default async function handler(req) {
               if (delta?.reasoning_content) accReasoning += delta.reasoning_content;
               if (delta?.content) accContent += delta.content;
               await writer.write(
-                encoder.encode("data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n")
+                encoder.encode(
+                  "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"
+                )
               );
             } catch {
               await writer.write(encoder.encode(line + "\n\n"));
