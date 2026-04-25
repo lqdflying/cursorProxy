@@ -49,28 +49,39 @@ Configure your client to point at the Vercel deployment:
 
 ### Request / response flow
 
-```
-Cursor  →  Vercel Edge Function  →  api.deepseek.com
-                 ↓
-      on response: cache reasoning_content by conversation position
-      on request:  inject cached reasoning_content into all assistant msgs
-      before return: strip reasoning_content so Cursor stays happy
+```mermaid
+flowchart LR
+    subgraph Request["Request: Cursor → DeepSeek"]
+        direction LR
+        C1[Cursor] -->|"1. Sends messages<br/>(no reasoning_content)"| V1[Vercel Edge Proxy]
+        V1 -->|"2. Injects cached<br/>reasoning_content"| D1[DeepSeek API]
+    end
+
+    subgraph Response["Response: DeepSeek → Cursor"]
+        direction LR
+        D2[DeepSeek API] -->|"3. Returns content +<br/>reasoning_content"| V2[Vercel Edge Proxy]
+        V2 -->|"4. Strips reasoning_content<br/>caches it in Upstash KV"| C2[Cursor]
+    end
 ```
 
 ### TLS / encryption flow
 
+```mermaid
+flowchart LR
+    C[Cursor] -->|"🔒 HTTPS (TLS)"| V[Vercel Edge Function]
+    V -->|"🔒 HTTPS (TLS)"| D[DeepSeek API]
+
+    subgraph Vercel["Vercel Sandbox (plaintext)"]
+        V --> P[api/proxy.js]
+        P -->|reads / modifies JSON| P
+    end
+
+    style Vercel fill:#f0f0f0,stroke:#666,stroke-dasharray: 5 5
 ```
-┌────────┐  HTTPS (TLS)  ┌──────────────────────┐  HTTPS (TLS)  ┌──────────┐
-│ Cursor │──────────────→│   Vercel Edge Func   │──────────────→│ DeepSeek │
-└────────┘               │  (your proxy code)   │               └──────────┘
-                         └──────────────────────┘
-                                  ↑
-                         Plaintext inside Vercel's
-                         sandbox — proxy reads the
-                         JSON to inject / strip
-                         reasoning_content, then
-                         re-encrypts before sending
-```
+
+- **Two independent TLS connections** — no plaintext ever travels the public internet.
+- The proxy sees the request/response body in plaintext **only inside Vercel's sandbox** (required to modify the JSON).
+- Your DeepSeek API key stays in the `Authorization` header — never in URLs, never logged.
 
 - Two independent TLS connections. No plaintext ever travels the public internet.
 - The proxy sees the request/response body in plaintext **only inside Vercel's sandbox** (required to modify the JSON).
