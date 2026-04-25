@@ -1,16 +1,20 @@
 # DeepSeek Reasoning Proxy
 
-A lightweight Vercel Edge Function that proxies requests to the DeepSeek API and strips `reasoning_content` from responses, enabling multi-turn conversations with `deepseek-reasoner` in clients like Cursor that don't handle the field natively.
+A lightweight Vercel Edge Function that proxies requests to the DeepSeek API. It **caches `reasoning_content` from responses and injects it back into subsequent requests**, enabling multi-turn conversations with `deepseek-reasoner` in clients like Cursor that don't handle the field natively.
 
 ## Why
 
-DeepSeek's reasoning models return a `reasoning_content` field alongside `content` in each response. If a client passes this field back in subsequent turns, the API returns a 400 error:
+DeepSeek's reasoning models return a `reasoning_content` field alongside `content` in each response. On the next turn, the API **requires** you to pass that `reasoning_content` back inside the assistant message. If you don't, you get a 400 error:
 
 ```
-{"error": {"message": "The `reasoning_content` in the thinking mode must be passed back to the API."}}
+{"error": {"message": "The reasoning_content in the thinking mode must be passed back to the API."}}
 ```
 
-This proxy sits between the client and DeepSeek, silently removing `reasoning_content` before returning each response — fixing multi-turn chat without any client-side changes.
+Clients like Cursor strip or ignore `reasoning_content`, so they never send it back. This proxy:
+
+1. **Removes** `reasoning_content` from responses before returning them to Cursor (so Cursor doesn't choke on it)
+2. **Caches** the `reasoning_content` keyed by the message content hash
+3. **Injects** the cached `reasoning_content` into *all* assistant messages in the request before forwarding to DeepSeek
 
 ## Deploy
 
@@ -55,12 +59,14 @@ if (auth !== "Bearer " + process.env.PROXY_TOKEN) {
 ```
 Cursor  →  Vercel Edge Function  →  api.deepseek.com
                  ↓
-         strips reasoning_content
-         from response/stream
+      caches reasoning_content on response
+      injects reasoning_content on request
+      strips reasoning_content before returning to Cursor
 ```
 
 - Supports both streaming (`text/event-stream`) and non-streaming responses
-- Parses each SSE chunk and removes `reasoning_content` from `delta` and `message` objects
+- Parses each SSE chunk, removes `reasoning_content` from `delta` / `message`, and caches it
+- On every request, walks through **all** assistant messages and injects any missing `reasoning_content`
 - Built on the [Vercel Edge Runtime](https://vercel.com/docs/functions/edge-functions) — no cold start penalty
 
 ## Files

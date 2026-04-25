@@ -63,7 +63,21 @@ function stripResponseChunk(json) {
 
 export default async function handler(req) {
   const url = new URL(req.url);
-  const upstreamUrl = UPSTREAM + url.pathname + url.search;
+  let pathname = url.pathname;
+  const searchParams = new URLSearchParams(url.search);
+
+  // Handle rewritten URL from vercel.json: /api/proxy?path=xxx
+  // Vercel Edge Functions may see either the original or rewritten URL
+  if (pathname === "/api/proxy" || pathname.startsWith("/api/proxy/")) {
+    const path = searchParams.get("path");
+    if (path) {
+      pathname = "/v1/" + path;
+      searchParams.delete("path");
+    }
+  }
+
+  const queryString = searchParams.toString() ? "?" + searchParams.toString() : "";
+  const upstreamUrl = UPSTREAM + pathname + queryString;
 
   // Parse request body
   let bodyText = "";
@@ -75,31 +89,26 @@ export default async function handler(req) {
     } catch {}
   }
 
-  // Inject stored reasoning_content into last assistant message
+  // Inject stored reasoning_content into ALL assistant messages missing it
   if (parsedBody?.messages) {
     const messages = parsedBody.messages;
-    let lastAssistantIdx = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant") {
-        lastAssistantIdx = i;
-        break;
-      }
-    }
-    if (
-      lastAssistantIdx !== -1 &&
-      !("reasoning_content" in messages[lastAssistantIdx])
-    ) {
-      const assistantContent =
-        typeof messages[lastAssistantIdx].content === "string"
-          ? messages[lastAssistantIdx].content
-          : JSON.stringify(messages[lastAssistantIdx].content);
-      const key = await contentHash(assistantContent);
-      const stored = await kvGet(key);
-      if (stored) {
-        parsedBody.messages[lastAssistantIdx] = {
-          ...messages[lastAssistantIdx],
-          reasoning_content: stored,
-        };
+    for (let i = 0; i < messages.length; i++) {
+      if (
+        messages[i].role === "assistant" &&
+        !("reasoning_content" in messages[i])
+      ) {
+        const assistantContent =
+          typeof messages[i].content === "string"
+            ? messages[i].content
+            : JSON.stringify(messages[i].content);
+        const key = await contentHash(assistantContent);
+        const stored = await kvGet(key);
+        if (stored) {
+          parsedBody.messages[i] = {
+            ...messages[i],
+            reasoning_content: stored,
+          };
+        }
       }
     }
     bodyText = JSON.stringify(parsedBody);
@@ -125,7 +134,7 @@ export default async function handler(req) {
     const json = await upstreamRes.json();
     const reasoning = json.choices?.[0]?.message?.reasoning_content;
     const content = json.choices?.[0]?.message?.content;
-    if (reasoning && content) {
+    if (reasoning != null && content != null) {
       const key = await contentHash(content);
       await kvSet(key, reasoning);
     }
@@ -157,7 +166,7 @@ export default async function handler(req) {
           if (line.startsWith("data: ")) {
             const data = line.slice(6).trim();
             if (data === "[DONE]") {
-              if (accReasoning && accContent) {
+              if (accReasoning != null && accContent != null) {
                 const key = await contentHash(accContent);
                 await kvSet(key, accReasoning);
               }
