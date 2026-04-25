@@ -1,7 +1,21 @@
 export const config = { runtime: "edge" };
 
-const UPSTREAM = "https://api.deepseek.com";
-const DEBUG = true;
+const DEBUG = process.env.DEBUG === "true";
+
+const PROVIDERS = {
+  deepseek: {
+    url:  process.env.UPSTREAM_DEEPSEEK || "https://api.deepseek.com",
+    host: "api.deepseek.com",
+  },
+  kimi: {
+    url:  process.env.UPSTREAM_KIMI || "https://api.moonshot.cn",
+    host: "api.moonshot.cn",
+  },
+  minimax: {
+    url:  process.env.UPSTREAM_MINIMAX || "https://api.minimax.io",
+    host: "api.minimax.io",
+  },
+};
 
 function log(...args) {
   if (DEBUG) console.log("[cursorProxy]", ...args);
@@ -77,15 +91,20 @@ export default async function handler(req) {
   let pathname = url.pathname;
   const searchParams = new URLSearchParams(url.search);
 
-  log("START", req.method, req.url, "pathname:", pathname);
+  // Resolve provider from rewrite query param (default: deepseek for legacy /v1/ path)
+  const providerKey = searchParams.get("provider") || "deepseek";
+  const provider = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
+
+  log("START", req.method, req.url, "pathname:", pathname, "provider:", providerKey);
 
   // Clean up Vercel rewrite query pollution
   searchParams.delete("path");
+  searchParams.delete("provider");
 
   const queryString = searchParams.toString()
     ? "?" + searchParams.toString()
     : "";
-  const upstreamUrl = UPSTREAM + pathname + queryString;
+  const upstreamUrl = provider.url + pathname + queryString;
   log("UPSTREAM", upstreamUrl);
 
   // Parse body
@@ -126,7 +145,7 @@ export default async function handler(req) {
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
 
   const headers = new Headers(req.headers);
-  headers.set("host", "api.deepseek.com");
+  headers.set("host", provider.host);
   headers.delete("content-length");
   headers.delete("transfer-encoding");
   headers.delete("accept-encoding");
@@ -140,7 +159,7 @@ export default async function handler(req) {
 
   const contentType = upstreamRes.headers.get("content-type") || "";
   const isStream = contentType.includes("text/event-stream");
-  log("DEEPSEEK_STATUS", upstreamRes.status, "stream:", isStream);
+  log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
 
   // ─── Non-streaming response ──────────────────────────────────────────────
   if (!isStream) {
