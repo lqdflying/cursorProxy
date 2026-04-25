@@ -50,34 +50,22 @@ Configure your client to point at the Vercel deployment:
 ### Request / response flow
 
 ```mermaid
-flowchart TB
-    subgraph Request["Request: Cursor → DeepSeek"]
-        direction LR
-        C1[Cursor] -->|"1. Sends messages<br/>(no reasoning_content)"| V1[Vercel Edge Proxy]
-        V1 -->|"2. Injects cached<br/>reasoning_content"| D1[DeepSeek API]
-    end
-
-    subgraph Response["Response: DeepSeek → Cursor"]
-        direction LR
-        D2[DeepSeek API] -->|"3. Returns content +<br/>reasoning_content"| V2[Vercel Edge Proxy]
-        V2 -->|"4. Strips reasoning_content<br/>caches it in Upstash KV"| C2[Cursor]
-    end
+flowchart LR
+    Cursor["🖥️ Cursor"] -->|"① Send request"| Proxy["🛡️ Vercel Edge Proxy"]
+    Proxy -->|"② Forward with<br/>injected reasoning_content"| DeepSeek["🧠 DeepSeek API"]
+    DeepSeek -->|"③ Return response<br/>with reasoning_content"| Proxy
+    Proxy -->|"④ Strip reasoning_content<br/>cache in Upstash KV"| Cursor
 ```
 
 ### TLS / encryption flow
 
 ```mermaid
 flowchart LR
-    C[Cursor] -->|"🔒 HTTPS (TLS)"| V[Vercel Edge Function]
-    V -->|"🔒 HTTPS (TLS)"| D[DeepSeek API]
-
-    subgraph Vercel["Vercel Sandbox (plaintext)"]
-        V --> P[api/proxy.js]
-        P -->|reads / modifies JSON| P
-    end
-
-    style Vercel fill:#f0f0f0,stroke:#666,stroke-dasharray: 5 5
+    Cursor["🖥️ Cursor"] -->|"🔒 HTTPS"| Proxy["🛡️ Vercel Edge Proxy"]
+    Proxy -->|"🔒 HTTPS"| DeepSeek["🧠 DeepSeek API"]
 ```
+
+Inside the Vercel sandbox, the proxy temporarily decrypts the JSON body to inject or strip `reasoning_content`, then re-encrypts before sending to the next hop.
 
 - **Two independent TLS connections** — no plaintext ever travels the public internet.
 - The proxy sees the request/response body in plaintext **only inside Vercel's sandbox** (required to modify the JSON).
