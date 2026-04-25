@@ -24,18 +24,28 @@ function stripRequestMessages(bodyText) {
   try {
     const json = JSON.parse(bodyText);
     if (Array.isArray(json.messages)) {
-      json.messages = json.messages.map((msg) => {
-        if ("reasoning_content" in msg) {
-          const { reasoning_content, ...rest } = msg;
-          return rest;
-        }
-        return msg;
-      });
+      // DeepSeek rule: if any assistant turn has tool_calls,
+      // reasoning_content MUST be preserved for that turn.
+      // Only strip when there are no tool calls in the conversation.
+      const hasToolCalls = json.messages.some(
+        (msg) =>
+          msg.role === "assistant" &&
+          Array.isArray(msg.tool_calls) &&
+          msg.tool_calls.length > 0
+      );
+      if (!hasToolCalls) {
+        json.messages = json.messages.map((msg) => {
+          if ("reasoning_content" in msg) {
+            const { reasoning_content, ...rest } = msg;
+            return rest;
+          }
+          return msg;
+        });
+      }
     }
     return JSON.stringify(json);
   } catch {
-    // Return original if parse fails - log to help debug
-    console.error("Failed to parse request body");
+    console.error("Failed to parse request body, forwarding as-is");
     return bodyText;
   }
 }
@@ -46,10 +56,8 @@ export default async function handler(req) {
 
   const headers = new Headers(req.headers);
   headers.set("host", "api.deepseek.com");
-  // Let fetch calculate these automatically - manual values break Edge runtime
   headers.delete("content-length");
   headers.delete("transfer-encoding");
-  // Ensure plain text response so SSE parsing works
   headers.delete("accept-encoding");
   headers.set("accept-encoding", "identity");
 
@@ -77,7 +85,6 @@ export default async function handler(req) {
     });
   }
 
-  // Streaming: transform SSE line by line
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
