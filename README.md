@@ -1,10 +1,10 @@
 # DeepSeek Reasoning Proxy
 
-A lightweight Vercel Edge Function that proxies requests to the DeepSeek API. It **caches `reasoning_content` from responses and injects it back into subsequent requests**, enabling multi-turn conversations with `deepseek-reasoner` in clients like Cursor that don't handle the field natively.
+A lightweight Vercel Edge Function that proxies requests to the DeepSeek API. It **caches `reasoning_content` by conversation position and injects it back into subsequent requests**, enabling multi-turn conversations with `deepseek-reasoner` in clients like Cursor that don't handle the field natively.
 
 ## Why
 
-DeepSeek's reasoning models return a `reasoning_content` field alongside `content` in each response. On the next turn, the API **requires** you to pass that `reasoning_content` back inside the assistant message. If you don't, you get a 400 error:
+DeepSeek's reasoning models (`deepseek-reasoner`) return a `reasoning_content` field alongside `content` in each response. On the next turn, the API **requires** you to pass that `reasoning_content` back inside the assistant message. If you don't, you get a 400 error:
 
 ```
 {"error": {"message": "The reasoning_content in the thinking mode must be passed back to the API."}}
@@ -13,8 +13,12 @@ DeepSeek's reasoning models return a `reasoning_content` field alongside `conten
 Clients like Cursor strip or ignore `reasoning_content`, so they never send it back. This proxy:
 
 1. **Removes** `reasoning_content` from responses before returning them to Cursor (so Cursor doesn't choke on it)
-2. **Caches** the `reasoning_content` keyed by the message content hash
+2. **Caches** the `reasoning_content` keyed by conversation position (SHA256 of all messages *before* the assistant reply)
 3. **Injects** the cached `reasoning_content` into *all* assistant messages in the request before forwarding to DeepSeek
+
+## Why conversation-position hashing?
+
+Cursor may send assistant message `content` as a structured array `[{"type":"text","text":"..."}]` instead of a plain string. A content-hash cache would never match. The conversation prefix (all messages before the assistant reply) is identical on both sides regardless of content format, so position-based hashing is robust.
 
 ## Deploy
 
@@ -23,8 +27,11 @@ Clients like Cursor strip or ignore `reasoning_content`, so they never send it b
 Or manually:
 
 1. Fork / clone this repo
-2. Import into [Vercel](https://vercel.com) — zero configuration needed
-3. Deploy
+2. Import into [Vercel](https://vercel.com)
+3. Add environment variables in Vercel:
+   - `KV_URL` — your Upstash Redis REST URL
+   - `KV_TOKEN` — your Upstash Redis REST token
+4. Deploy
 
 ## Usage
 
@@ -32,7 +39,7 @@ Configure your client to point at the Vercel deployment:
 
 | Field | Value |
 |---|---|
-| Base URL | `https://<your-vercel-domain>.vercel.app/v1` |
+| Base URL | `https://<your-vercel-domain>/v1` |
 | API Key | Your DeepSeek API key (`sk-...`) |
 | Model | `deepseek-reasoner` or `deepseek-chat` |
 
@@ -59,14 +66,13 @@ if (auth !== "Bearer " + process.env.PROXY_TOKEN) {
 ```
 Cursor  →  Vercel Edge Function  →  api.deepseek.com
                  ↓
-      caches reasoning_content on response
-      injects reasoning_content on request
-      strips reasoning_content before returning to Cursor
+      on response: cache reasoning_content by conversation position
+      on request:  inject cached reasoning_content into all assistant msgs
+      before return: strip reasoning_content so Cursor stays happy
 ```
 
 - Supports both streaming (`text/event-stream`) and non-streaming responses
-- Parses each SSE chunk, removes `reasoning_content` from `delta` / `message`, and caches it
-- On every request, walks through **all** assistant messages and injects any missing `reasoning_content`
+- Caches `reasoning_content` even when the stream ends without an explicit `[DONE]` line
 - Built on the [Vercel Edge Runtime](https://vercel.com/docs/functions/edge-functions) — no cold start penalty
 
 ## Files
