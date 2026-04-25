@@ -47,6 +47,8 @@ Configure your client to point at the Vercel deployment:
 
 ## How It Works
 
+### Request / response flow
+
 ```
 Cursor  →  Vercel Edge Function  →  api.deepseek.com
                  ↓
@@ -55,6 +57,24 @@ Cursor  →  Vercel Edge Function  →  api.deepseek.com
       before return: strip reasoning_content so Cursor stays happy
 ```
 
+### TLS / encryption flow
+
+```
+┌────────┐  HTTPS (TLS)  ┌──────────────────────┐  HTTPS (TLS)  ┌──────────┐
+│ Cursor │──────────────→│   Vercel Edge Func   │──────────────→│ DeepSeek │
+└────────┘               │  (your proxy code)   │               └──────────┘
+                         └──────────────────────┘
+                                  ↑
+                         Plaintext inside Vercel's
+                         sandbox — proxy reads the
+                         JSON to inject / strip
+                         reasoning_content, then
+                         re-encrypts before sending
+```
+
+- Two independent TLS connections. No plaintext ever travels the public internet.
+- The proxy sees the request/response body in plaintext **only inside Vercel's sandbox** (required to modify the JSON).
+- Your DeepSeek API key stays in the `Authorization` header — never in URLs, never logged.
 - Supports both streaming (`text/event-stream`) and non-streaming responses
 - Caches `reasoning_content` even when the stream ends without an explicit `[DONE]` line
 - Built on the [Vercel Edge Runtime](https://vercel.com/docs/functions/edge-functions) — no cold start penalty
