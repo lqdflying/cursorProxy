@@ -23,47 +23,47 @@ function stripResponseChunk(json) {
   };
 }
 
-// Strip reasoning_content from all assistant messages in the request body
-function stripRequestBody(bodyText) {
-  try {
-    const json = JSON.parse(bodyText);
-    if (Array.isArray(json.messages)) {
-      json.messages = json.messages.map((msg) => {
-        if (msg.reasoning_content !== undefined) {
-          const { reasoning_content, ...rest } = msg;
-          return rest;
-        }
-        return msg;
-      });
-    }
-    return JSON.stringify(json);
-  } catch {
-    return bodyText;
-  }
+// Strip reasoning_content from messages array in the request body
+function stripRequestBody(body) {
+  if (!body || !body.messages) return body;
+  return {
+    ...body,
+    messages: body.messages.map((m) => {
+      if (!m.reasoning_content) return m;
+      const cleaned = { ...m };
+      delete cleaned.reasoning_content;
+      return cleaned;
+    }),
+  };
 }
 
 export default async function handler(req) {
   const url = new URL(req.url);
-  const upstreamUrl = UPSTREAM + url.pathname + url.search;
+
+  // Reconstruct original path: vercel.json passes it as ?path=
+  const originalPath = url.searchParams.get("path");
+  const upstreamUrl = UPSTREAM + "/v1/" + (originalPath || "chat/completions");
 
   const headers = new Headers(req.headers);
   headers.set("host", "api.deepseek.com");
+  headers.delete("content-length"); // will be recalculated
 
-  // Read and clean the request body
   let body = null;
   if (req.method !== "GET" && req.method !== "HEAD") {
-    const raw = await req.text();
-    body = stripRequestBody(raw);
-    headers.set("content-length", new TextEncoder().encode(body).length.toString());
+    try {
+      const rawBody = await req.json();
+      const cleanedBody = stripRequestBody(rawBody);
+      body = JSON.stringify(cleanedBody);
+    } catch {
+      body = await req.text();
+    }
   }
 
-  const upstreamReq = new Request(upstreamUrl, {
+  const upstreamRes = await fetch(upstreamUrl, {
     method: req.method,
     headers,
     body,
   });
-
-  const upstreamRes = await fetch(upstreamReq);
 
   const contentType = upstreamRes.headers.get("content-type") || "";
   const isStream = contentType.includes("text/event-stream");
