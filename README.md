@@ -68,17 +68,32 @@ Turn N+1 → proxy injects it back so DeepSeek can continue the reasoning chain.
 ### TLS / encryption flow
 
 ```mermaid
-flowchart LR
-    C["🖥️ Cursor"] -->|"🔒 HTTPS"| VT["🔓 TLS terminate<br/>(Vercel edge)"]
-    VT -->|"plaintext JSON"| P["🛡️ api/proxy.js"]
-    P -->|"plaintext JSON"| VE["🔒 TLS encrypt<br/>(Vercel edge)"]
-    VE -->|"🔒 HTTPS"| D["🧠 DeepSeek"]
+flowchart TB
+    subgraph Outside["Outside Vercel 🔒"]
+        C["🖥️ Cursor"]
+        D["🧠 DeepSeek"]
+    end
 
-    style P fill:#e8f5e9,stroke:#2e7d32
+    subgraph Inside["Inside Vercel 🛡️"]
+        VT["🔓 TLS Terminate<br/>decrypt HTTPS → plaintext"]
+        P["⚙️ api/proxy.js<br/>reads & modifies JSON"]
+        VE["🔒 TLS Encrypt<br/>plaintext → HTTPS"]
+    end
+
+    C -->|"🔒 HTTPS<br/>encrypted"| VT
+    VT -->|"plaintext JSON<br/>Authorization header"| P
+    P -->|"plaintext JSON<br/>modified body"| VE
+    VE -->|"🔒 HTTPS<br/>encrypted"| D
+
+    style Inside fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style Outside fill:#f5f5f5,stroke:#999
+    style C fill:#fff,stroke:#333
+    style D fill:#fff,stroke:#333
+    style P fill:#c8e6c9,stroke:#1b5e20,stroke-width:2px
 ```
 
 - **Two independent TLS connections** — no plaintext ever travels the public internet.
-- Vercel's edge infrastructure handles TLS termination and re-encryption around the Edge Function.
+- Vercel's edge infrastructure handles TLS termination (decrypt) and re-encryption (encrypt) around the Edge Function.
 - The proxy sees the request/response body in plaintext **only inside Vercel's sandbox** (required to modify the JSON).
 - Your DeepSeek API key stays in the `Authorization` header — never in URLs, never logged.
 
