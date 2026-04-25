@@ -2,6 +2,7 @@ export const config = { runtime: "edge" };
 
 const UPSTREAM = "https://api.deepseek.com";
 
+// Strip reasoning_content from a message or delta object
 function stripReasoning(obj) {
   if (!obj) return obj;
   const result = { ...obj };
@@ -9,7 +10,8 @@ function stripReasoning(obj) {
   return result;
 }
 
-function stripChunk(json) {
+// Strip reasoning_content from all choices in a response chunk
+function stripResponseChunk(json) {
   if (!json.choices) return json;
   return {
     ...json,
@@ -21,6 +23,25 @@ function stripChunk(json) {
   };
 }
 
+// Strip reasoning_content from all assistant messages in the request body
+function stripRequestBody(bodyText) {
+  try {
+    const json = JSON.parse(bodyText);
+    if (Array.isArray(json.messages)) {
+      json.messages = json.messages.map((msg) => {
+        if (msg.reasoning_content !== undefined) {
+          const { reasoning_content, ...rest } = msg;
+          return rest;
+        }
+        return msg;
+      });
+    }
+    return JSON.stringify(json);
+  } catch {
+    return bodyText;
+  }
+}
+
 export default async function handler(req) {
   const url = new URL(req.url);
   const upstreamUrl = UPSTREAM + url.pathname + url.search;
@@ -28,10 +49,18 @@ export default async function handler(req) {
   const headers = new Headers(req.headers);
   headers.set("host", "api.deepseek.com");
 
+  // Read and clean the request body
+  let body = null;
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const raw = await req.text();
+    body = stripRequestBody(raw);
+    headers.set("content-length", new TextEncoder().encode(body).length.toString());
+  }
+
   const upstreamReq = new Request(upstreamUrl, {
     method: req.method,
     headers,
-    body: req.method !== "GET" && req.method !== "HEAD" ? req.body : null,
+    body,
   });
 
   const upstreamRes = await fetch(upstreamReq);
@@ -41,13 +70,14 @@ export default async function handler(req) {
 
   if (!isStream) {
     const json = await upstreamRes.json();
-    const stripped = stripChunk(json);
+    const stripped = stripResponseChunk(json);
     return new Response(JSON.stringify(stripped), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
     });
   }
 
+  // Streaming: transform SSE line by line
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -72,7 +102,7 @@ export default async function handler(req) {
             }
             try {
               const json = JSON.parse(data);
-              const stripped = stripChunk(json);
+              const stripped = stripResponseChunk(json);
               await writer.write(
                 encoder.encode("data: " + JSON.stringify(stripped) + "\n\n")
               );
