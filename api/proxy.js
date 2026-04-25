@@ -2,6 +2,9 @@ export const config = { runtime: "edge" };
 
 const UPSTREAM = "https://api.deepseek.com";
 
+// Strip reasoning_content only when safe to do so.
+// DeepSeek rule: if the assistant turn has tool_calls,
+// reasoning_content MUST be preserved (both in request and response).
 function stripReasoning(obj) {
   if (!obj) return obj;
   const { reasoning_content, ...rest } = obj;
@@ -12,11 +15,18 @@ function stripResponseChunk(json) {
   if (!json.choices) return json;
   return {
     ...json,
-    choices: json.choices.map((c) => ({
-      ...c,
-      ...(c.message ? { message: stripReasoning(c.message) } : {}),
-      ...(c.delta ? { delta: stripReasoning(c.delta) } : {}),
-    })),
+    choices: json.choices.map((c) => {
+      // If this choice has tool_calls, preserve reasoning_content
+      const hasToolCalls =
+        (c.message && Array.isArray(c.message.tool_calls) && c.message.tool_calls.length > 0) ||
+        (c.delta && Array.isArray(c.delta.tool_calls) && c.delta.tool_calls.length > 0);
+      if (hasToolCalls) return c;
+      return {
+        ...c,
+        ...(c.message ? { message: stripReasoning(c.message) } : {}),
+        ...(c.delta ? { delta: stripReasoning(c.delta) } : {}),
+      };
+    }),
   };
 }
 
@@ -24,9 +34,7 @@ function stripRequestMessages(bodyText) {
   try {
     const json = JSON.parse(bodyText);
     if (Array.isArray(json.messages)) {
-      // DeepSeek rule: if any assistant turn has tool_calls,
-      // reasoning_content MUST be preserved for that turn.
-      // Only strip when there are no tool calls in the conversation.
+      // If any assistant message has tool_calls, reasoning_content must be preserved
       const hasToolCalls = json.messages.some(
         (msg) =>
           msg.role === "assistant" &&
@@ -45,7 +53,6 @@ function stripRequestMessages(bodyText) {
     }
     return JSON.stringify(json);
   } catch {
-    console.error("Failed to parse request body, forwarding as-is");
     return bodyText;
   }
 }
