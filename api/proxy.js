@@ -1,10 +1,19 @@
 export const config = { runtime: "edge" };
 
+import { kv } from "@vercel/kv";
+
 const UPSTREAM = "https://api.deepseek.com";
 
-// Strip reasoning_content only when safe to do so.
-// DeepSeek rule: if the assistant turn has tool_calls,
-// reasoning_content MUST be preserved (both in request and response).
+// SHA-256 hash of text, returned as hex string (first 40 chars)
+async function contentHash(text) {
+  const data = new TextEncoder().encode(String(text).substring(0, 2000));
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return "rc:" + Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .substring(0, 40);
+}
+
 function stripReasoning(obj) {
   if (!obj) return obj;
   const { reasoning_content, ...rest } = obj;
@@ -15,51 +24,59 @@ function stripResponseChunk(json) {
   if (!json.choices) return json;
   return {
     ...json,
-    choices: json.choices.map((c) => {
-      // If this choice has tool_calls, preserve reasoning_content
-      const hasToolCalls =
-        (c.message && Array.isArray(c.message.tool_calls) && c.message.tool_calls.length > 0) ||
-        (c.delta && Array.isArray(c.delta.tool_calls) && c.delta.tool_calls.length > 0);
-      if (hasToolCalls) return c;
-      return {
-        ...c,
-        ...(c.message ? { message: stripReasoning(c.message) } : {}),
-        ...(c.delta ? { delta: stripReasoning(c.delta) } : {}),
-      };
-    }),
+    choices: json.choices.map((c) => ({
+      ...c,
+      ...(c.message ? { message: stripReasoning(c.message) } : {}),
+      ...(c.delta ? { delta: stripReasoning(c.delta) } : {}),
+    })),
   };
-}
-
-function stripRequestMessages(bodyText) {
-  try {
-    const json = JSON.parse(bodyText);
-    if (Array.isArray(json.messages)) {
-      // If any assistant message has tool_calls, reasoning_content must be preserved
-      const hasToolCalls = json.messages.some(
-        (msg) =>
-          msg.role === "assistant" &&
-          Array.isArray(msg.tool_calls) &&
-          msg.tool_calls.length > 0
-      );
-      if (!hasToolCalls) {
-        json.messages = json.messages.map((msg) => {
-          if ("reasoning_content" in msg) {
-            const { reasoning_content, ...rest } = msg;
-            return rest;
-          }
-          return msg;
-        });
-      }
-    }
-    return JSON.stringify(json);
-  } catch {
-    return bodyText;
-  }
 }
 
 export default async function handler(req) {
   const url = new URL(req.url);
   const upstreamUrl = UPSTREAM + url.pathname + url.search;
+
+  // Parse request body
+  let bodyText = "";
+  let parsedBody = null;
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    bodyText = await req.text();
+    try {
+      parsedBody = JSON.parse(bodyText);
+    } catch {}
+  }
+
+  // Inject stored reasoning_content into last assistant message
+  if (parsedBody?.messages) {
+    const messages = parsedBody.messages;
+    let lastAssistantIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") {
+        lastAssistantIdx = i;
+        break;
+      }
+    }
+    if (
+      lastAssistantIdx !== -1 &&
+      !("reasoning_content" in messages[lastAssistantIdx])
+    ) {
+      const assistantContent =
+        typeof messages[lastAssistantIdx].content === "string"
+          ? messages[lastAssistantIdx].content
+          : JSON.stringify(messages[lastAssistantIdx].content);
+      try {
+        const key = await contentHash(assistantContent);
+        const stored = await kv.get(key);
+        if (stored) {
+          parsedBody.messages[lastAssistantIdx] = {
+            ...messages[lastAssistantIdx],
+            reasoning_content: stored,
+          };
+        }
+      } catch {}
+    }
+    bodyText = JSON.stringify(parsedBody);
+  }
 
   const headers = new Headers(req.headers);
   headers.set("host", "api.deepseek.com");
@@ -68,16 +85,10 @@ export default async function handler(req) {
   headers.delete("accept-encoding");
   headers.set("accept-encoding", "identity");
 
-  let body = null;
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    const raw = await req.text();
-    body = stripRequestMessages(raw);
-  }
-
   const upstreamRes = await fetch(upstreamUrl, {
     method: req.method,
     headers,
-    body,
+    body: bodyText || null,
   });
 
   const contentType = upstreamRes.headers.get("content-type") || "";
@@ -85,13 +96,22 @@ export default async function handler(req) {
 
   if (!isStream) {
     const json = await upstreamRes.json();
-    const stripped = stripResponseChunk(json);
-    return new Response(JSON.stringify(stripped), {
+    // Store reasoning_content keyed by assistant content
+    const reasoning = json.choices?.[0]?.message?.reasoning_content;
+    const content = json.choices?.[0]?.message?.content;
+    if (reasoning && content) {
+      try {
+        const key = await contentHash(content);
+        await kv.set(key, reasoning, { ex: 7200 });
+      } catch {}
+    }
+    return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
     });
   }
 
+  // Streaming: strip reasoning from chunks, accumulate for KV storage
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -100,6 +120,8 @@ export default async function handler(req) {
   (async () => {
     const reader = upstreamRes.body.getReader();
     let buffer = "";
+    let accReasoning = "";
+    let accContent = "";
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -111,14 +133,23 @@ export default async function handler(req) {
           if (line.startsWith("data: ")) {
             const data = line.slice(6).trim();
             if (data === "[DONE]") {
+              // Persist accumulated reasoning
+              if (accReasoning && accContent) {
+                try {
+                  const key = await contentHash(accContent);
+                  await kv.set(key, accReasoning, { ex: 7200 });
+                } catch {}
+              }
               await writer.write(encoder.encode("data: [DONE]\n\n"));
               continue;
             }
             try {
               const json = JSON.parse(data);
-              const stripped = stripResponseChunk(json);
+              const delta = json.choices?.[0]?.delta;
+              if (delta?.reasoning_content) accReasoning += delta.reasoning_content;
+              if (delta?.content) accContent += delta.content;
               await writer.write(
-                encoder.encode("data: " + JSON.stringify(stripped) + "\n\n")
+                encoder.encode("data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n")
               );
             } catch {
               await writer.write(encoder.encode(line + "\n\n"));
@@ -127,9 +158,6 @@ export default async function handler(req) {
             await writer.write(encoder.encode(line + "\n"));
           }
         }
-      }
-      if (buffer.trim()) {
-        await writer.write(encoder.encode(buffer));
       }
     } finally {
       await writer.close();
