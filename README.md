@@ -45,21 +45,38 @@ Configure your client to point at the Vercel deployment:
 
 The proxy forwards your API key directly to DeepSeek — no keys are stored on Vercel.
 
-## Optional: Add a Proxy Token
+## Optional: Lock the proxy with a Proxy Token
 
-By default, anyone who knows your Vercel URL can use it to consume your DeepSeek quota. To restrict access:
+By default, anyone who discovers your proxy URL can use it to consume your DeepSeek quota (because the proxy forwards whatever `Authorization` header the client sends).
 
-1. Add an environment variable in Vercel: `PROXY_TOKEN=<your-secret>`
-2. Update `api/proxy.js` to validate the token:
+To restrict access, you need to **move your DeepSeek key to Vercel** and use a separate proxy token in Cursor:
+
+1. Add these environment variables in Vercel:
+   - `PROXY_TOKEN=<your-secret>` (a random string you make up)
+   - `DEEPSEEK_API_KEY=sk-...` (your real DeepSeek key)
+
+2. Update `api/proxy.js` — replace the header forwarding section with:
 
 ```js
+// Validate proxy token from client
 const auth = req.headers.get("authorization") || "";
 if (auth !== "Bearer " + process.env.PROXY_TOKEN) {
   return new Response("Unauthorized", { status: 401 });
 }
+
+// Replace with real DeepSeek key before forwarding
+const headers = new Headers(req.headers);
+headers.set("Authorization", "Bearer " + process.env.DEEPSEEK_API_KEY);
+headers.set("host", "api.deepseek.com");
+headers.delete("content-length");
+headers.delete("transfer-encoding");
+headers.delete("accept-encoding");
+headers.set("accept-encoding", "identity");
 ```
 
-3. Set your client's API Key to `<your-secret>` instead of the DeepSeek key, and add the real DeepSeek key as `DEEPSEEK_API_KEY` in Vercel environment variables.
+3. In Cursor, set your **API Key** to the `PROXY_TOKEN` value instead of the DeepSeek key.
+
+**Note:** This is optional. If you skip it, keep your DeepSeek key in Cursor and the proxy will forward it directly (no `DEEPSEEK_API_KEY` env var needed).
 
 ## How It Works
 
