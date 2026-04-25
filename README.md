@@ -50,33 +50,35 @@ Configure your client to point at the Vercel deployment:
 ### Request / response flow
 
 ```mermaid
-flowchart LR
-    subgraph Turn1["Turn N — Response"]
-        DS1["🧠 DeepSeek"] -->|"content + reasoning_content"| P1["🛡️ Proxy"]
-        P1 -->|"① Strip reasoning_content"| KV[("📦 Upstash KV")]
-        P1 -->|"content only"| C1["🖥️ Cursor"]
-    end
+flowchart TB
+    C1["🖥️ Cursor"] -->|"① Request (Turn N)"| P1["🛡️ Proxy"]
+    P1 -->|"② Forward"| DS["🧠 DeepSeek"]
+    DS -->|"③ Response<br/>content + reasoning_content"| P2["🛡️ Proxy"]
+    P2 -->|"④ Strip & cache"| KV[("📦 Upstash KV")]
+    P2 -->|"⑤ Content only"| C2["🖥️ Cursor"]
 
-    subgraph Turn2["Turn N+1 — Request"]
-        C2["🖥️ Cursor"] -->|"messages (no reasoning)"| P2["🛡️ Proxy"]
-        KV2[("📦 Upstash KV")] -->|"② Inject cached reasoning_content<br/>into assistant messages"| P2
-        P2 -->|"messages with reasoning_content"| DS2["🧠 DeepSeek"]
-    end
+    C3["🖥️ Cursor"] -->|"⑥ Request (Turn N+1)"| P3["🛡️ Proxy"]
+    KV -->|"⑦ Inject cached reasoning_content"| P3
+    P3 -->|"⑧ Forward with reasoning_content"| DS2["🧠 DeepSeek"]
 ```
+
+Turn N → proxy strips and caches `reasoning_content`.  
+Turn N+1 → proxy injects it back so DeepSeek can continue the reasoning chain.
 
 ### TLS / encryption flow
 
 ```mermaid
 flowchart LR
-    C["🖥️ Cursor"] -->|"🔒 HTTPS (TLS)"| VT["🔓 TLS terminate"]
+    C["🖥️ Cursor"] -->|"🔒 HTTPS"| VT["🔓 TLS terminate<br/>(Vercel edge)"]
     VT -->|"plaintext JSON"| P["🛡️ api/proxy.js"]
-    P -->|"plaintext JSON"| VE["🔒 TLS encrypt"]
-    VE -->|"🔒 HTTPS (TLS)"| D["🧠 DeepSeek"]
+    P -->|"plaintext JSON"| VE["🔒 TLS encrypt<br/>(Vercel edge)"]
+    VE -->|"🔒 HTTPS"| D["🧠 DeepSeek"]
 
     style P fill:#e8f5e9,stroke:#2e7d32
 ```
 
 - **Two independent TLS connections** — no plaintext ever travels the public internet.
+- Vercel's edge infrastructure handles TLS termination and re-encryption around the Edge Function.
 - The proxy sees the request/response body in plaintext **only inside Vercel's sandbox** (required to modify the JSON).
 - Your DeepSeek API key stays in the `Authorization` header — never in URLs, never logged.
 
