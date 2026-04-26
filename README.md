@@ -76,13 +76,13 @@ A Node.js HTTP server wraps the same proxy logic for self-hosted deployments. Th
 Since only the `latest` tag is published, always force-pull to get the newest image.
 
 ```bash
-docker run -d --pull always -p 3000:3000 \
+docker run -d --pull always -p 127.0.0.1:3000:3000 \
   -e KV_URL=<your-upstash-rest-url> \
   -e KV_TOKEN=<your-upstash-token> \
   lqdflying/cursorproxy:latest
 ```
 
-Or with Docker Compose:
+#### Standard Docker Compose
 
 ```yaml
 services:
@@ -90,13 +90,38 @@ services:
     image: lqdflying/cursorproxy:latest
     pull_policy: always
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       KV_URL: <your-upstash-rest-url>
       KV_TOKEN: <your-upstash-token>
       # DEBUG: "true"
     restart: unless-stopped
 ```
+
+#### 1Panel server
+
+1Panel creates a shared Docker network called `1panel-network`. Add your container to it so 1Panel's built-in OpenResty/Nginx can reach the proxy by container name without exposing the port publicly.
+
+```yaml
+services:
+  proxy:
+    image: lqdflying/cursorproxy:latest
+    pull_policy: always
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      KV_URL: <your-upstash-rest-url>
+      KV_TOKEN: <your-upstash-token>
+    restart: unless-stopped
+    networks:
+      - 1panel-network
+
+networks:
+  1panel-network:
+    external: true
+```
+
+Then in **1Panel → Website → Reverse Proxy**, set the upstream to `http://proxy:3000` (container name) or `http://127.0.0.1:3000`. Enable **streaming** / disable buffering in the proxy settings so SSE responses are not buffered.
 
 The Docker image is automatically built and pushed to [hub.docker.com/r/lqdflying/cursorproxy](https://hub.docker.com/r/lqdflying/cursorproxy) on every commit via GitHub Actions (`linux/amd64` + `linux/arm64`).
 
