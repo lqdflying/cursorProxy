@@ -173,20 +173,22 @@ export default async function handler(req) {
   headers.set("accept-encoding", "identity");
 
   let upstreamRes;
-  // Connection-only timeout: abort if we don't receive response headers within 15s.
-  // Once headers arrive the timer is cleared — streaming can take as long as needed.
-  const connectController = new AbortController();
-  const connectTimer = setTimeout(() => connectController.abort(), 15000);
+  // On Vercel, apply a 15s connection timeout so we return a clean 504 before
+  // the platform kills the function. On Docker (no VERCEL env), no timeout.
+  const connectController = process.env.VERCEL ? new AbortController() : null;
+  const connectTimer = connectController
+    ? setTimeout(() => connectController.abort(), 15000)
+    : null;
   try {
     upstreamRes = await fetch(upstreamUrl, {
       method: req.method,
       headers,
       body: bodyText || null,
-      signal: connectController.signal,
+      ...(connectController ? { signal: connectController.signal } : {}),
     });
-    clearTimeout(connectTimer); // headers received — cancel the connection timeout
+    if (connectTimer) clearTimeout(connectTimer);
   } catch (err) {
-    clearTimeout(connectTimer);
+    if (connectTimer) clearTimeout(connectTimer);
     const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
     log("UPSTREAM_ERROR", err?.name, err?.message);
     return new Response(
