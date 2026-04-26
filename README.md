@@ -48,7 +48,10 @@ After (what it receives now):
 
 ### Vision API setup (required for image support)
 
-You **must** configure a vision API backend. Choose one:
+> [!IMPORTANT]
+> You **must** configure a vision API backend to use screenshots/images in Cursor chat. If no vision backend is configured and you paste an image, the proxy will still run but image descriptions will fail and be replaced with an error placeholder.
+
+Choose one:
 
 **Option A — MiniMax VL-01 (default, recommended):**
 - Uses your existing **`MINIMAX_API_KEY`** — no extra account needed
@@ -60,9 +63,8 @@ You **must** configure a vision API backend. Choose one:
 - Set `VISION_API_PROVIDER=openai` and `VISION_API_KEY=sk-...`
 - Supports any OpenAI-compatible vision endpoint via `VISION_API_URL`
 
-If no vision backend is configured and you paste an image, the proxy will still run but image descriptions will fail and be replaced with an error placeholder.
-
-**Kimi is left untouched** — it supports vision natively, so images pass through directly.
+> [!NOTE]
+> **Kimi is left untouched** — it supports vision natively, so images pass through directly without conversion.
 
 ## Why conversation-position hashing?
 
@@ -84,6 +86,9 @@ Before deploying, make sure you have:
 - **Vision API** (required if you want to paste screenshots/images in Cursor chat):
   - **MiniMax VL-01** (default): reuses `MINIMAX_API_KEY` — no extra key needed
   - **OpenAI Vision**: requires a separate `OPENAI_API_KEY` (set `VISION_API_PROVIDER=openai`)
+
+> [!TIP]
+> The fastest way to get image support is to use **MiniMax VL-01** — it uses the same `MINIMAX_API_KEY` you already have. No extra signup or billing setup required.
 
 ---
 
@@ -274,6 +279,9 @@ services:
 | `VISION_API_URL` | No | `https://api.minimax.io/v1/coding_plan/vlm` | Override vision API endpoint |
 | `VISION_MODEL` | No | `MiniMax-VL-01` | Vision model name (MiniMax VL-01 or `gpt-4o-mini` for OpenAI) |
 | `VISION_API_KEY` | Only if `VISION_API_PROVIDER=openai` | — | OpenAI API key for vision (not needed for MiniMax VL-01) |
+
+> [!IMPORTANT]
+> `VISION_API_KEY` is **only required when using OpenAI Vision**. If you use the default `minimax_vl` provider, the proxy automatically reuses your `MINIMAX_API_KEY` — no extra key needed.
 | `DEBUG` | No | `false` | Set to `"true"` to enable verbose logs |
 | `PORT` | No | `3000` | HTTP port (Docker only) |
 
