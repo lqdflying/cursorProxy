@@ -52,18 +52,50 @@ Keep these two values — you'll paste them into Vercel in the next step.
 
 ---
 
-## Step 2: Deploy to Vercel
+## Step 2: Deploy
 
-### Option A — One-click deploy
+### Option A — Vercel (Edge, recommended)
+
+The proxy runs as a **Vercel Edge Function** — zero cold starts, global distribution.
+
+#### One-click deploy
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/lqdflying/cursorProxy)
 
-### Option B — Manual deploy
+#### Manual deploy
 
 1. Fork or clone this repo.
 2. Go to **[vercel.com/new](https://vercel.com/new)** and import the repository.
 3. In the **Environment Variables** section, add the variables from the table below.
 4. Click **Deploy**.
+
+### Option B — Docker (self-hosted)
+
+A Node.js HTTP server wraps the same proxy logic for self-hosted deployments. The same `api/proxy.js` is used — only the runtime adapter differs.
+
+```bash
+docker run -d -p 3000:3000 \
+  -e KV_URL=<your-upstash-rest-url> \
+  -e KV_TOKEN=<your-upstash-token> \
+  lqdflying/cursorproxy:latest
+```
+
+Or with Docker Compose:
+
+```yaml
+services:
+  proxy:
+    image: lqdflying/cursorproxy:latest
+    ports:
+      - "3000:3000"
+    environment:
+      KV_URL: <your-upstash-rest-url>
+      KV_TOKEN: <your-upstash-token>
+      # DEBUG: "true"
+    restart: unless-stopped
+```
+
+The Docker image is automatically built and pushed to [hub.docker.com/r/lqdflying/cursorproxy](https://hub.docker.com/r/lqdflying/cursorproxy) on every commit via GitHub Actions (`linux/amd64` + `linux/arm64`).
 
 ### Environment Variables
 
@@ -74,7 +106,8 @@ Keep these two values — you'll paste them into Vercel in the next step.
 | `UPSTREAM_DEEPSEEK` | No | `https://api.deepseek.com` | Override DeepSeek upstream base URL |
 | `UPSTREAM_KIMI` | No | `https://api.moonshot.ai` | Override Kimi upstream base URL |
 | `UPSTREAM_MINIMAX` | No | `https://api.minimax.io` | Override MiniMax upstream base URL |
-| `DEBUG` | No | `false` | Set to `"true"` to enable verbose edge logs |
+| `DEBUG` | No | `false` | Set to `"true"` to enable verbose logs |
+| `PORT` | No | `3000` | HTTP port (Docker only) |
 
 > **Note:** `KV_URL` and `KV_TOKEN` are the only required variables. Without them the proxy still works but `reasoning_content` caching is disabled (multi-turn reasoning will fail on DeepSeek/Kimi).
 
@@ -161,15 +194,18 @@ flowchart TB
 
 - Supports both streaming (`text/event-stream`) and non-streaming responses.
 - Caches `reasoning_content` even when the stream ends without an explicit `[DONE]` frame.
-- Built on the [Vercel Edge Runtime](https://vercel.com/docs/functions/edge-functions) — no cold-start penalty.
+- Built on the [Vercel Edge Runtime](https://vercel.com/docs/functions/edge-functions) — no cold-start penalty (Vercel deployment).
 - The legacy `/v1/` path is kept as a backward-compatible DeepSeek alias.
 
 ## Files
 
 ```
-api/proxy.js    Edge Function — core proxy logic
-vercel.json     Rewrites provider paths to /api/proxy
-package.json    Minimal package descriptor
+api/proxy.js                    Core proxy logic (shared by both deployments)
+server.js                       Node.js HTTP adapter (Docker / self-hosted)
+Dockerfile                      Docker image definition
+.github/workflows/docker.yml    CI — build & push to DockerHub on every commit
+vercel.json                     Vercel path rewrites
+package.json                    Package descriptor
 ```
 
 ## License
