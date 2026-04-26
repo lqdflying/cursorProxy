@@ -1,0 +1,219 @@
+// ─── Image-to-Text Bridge ───────────────────────────────────────────────────
+// Converts base64 image_url content blocks to text descriptions before
+// forwarding to text-only models (DeepSeek, MiniMax chat).
+//
+// Supports backends:
+//   1. minimax_vl  — MiniMax VL-01 via /v1/coding_plan/vlm (default)
+//   2. openai      — Any OpenAI-compatible vision endpoint
+//
+// Edge Runtime safe: uses only fetch() and crypto.subtle (no Node.js APIs).
+
+const DEBUG = process.env.DEBUG === "true";
+
+function log(...args) {
+  if (DEBUG) console.log("[cursorProxy:vision]", ...args);
+}
+
+// ─── Configuration ──────────────────────────────────────────────────────────
+
+const PROVIDER = process.env.VISION_API_PROVIDER || "minimax_vl";
+
+const CONFIG = {
+  minimax_vl: {
+    url: process.env.VISION_API_URL || "https://api.minimax.io/v1/coding_plan/vlm",
+    host: "api.minimax.io",
+    model: process.env.VISION_MODEL || "MiniMax-VL-01",
+    apiKeyEnv: "MINIMAX_API_KEY",
+  },
+  openai: {
+    url: process.env.VISION_API_URL || "https://api.openai.com/v1/chat/completions",
+    host: "api.openai.com",
+    model: process.env.VISION_MODEL || "gpt-4o-mini",
+    apiKeyEnv: "VISION_API_KEY",
+  },
+};
+
+function apiKey() {
+  const cfg = CONFIG[PROVIDER];
+  if (!cfg) return "";
+  return process.env[cfg.apiKeyEnv] || "";
+}
+
+// ─── Backends ───────────────────────────────────────────────────────────────
+
+async function describeWithMinimaxVl(base64Uri, prompt) {
+  const cfg = CONFIG.minimax_vl;
+  const key = apiKey();
+  if (!key) throw new Error("Missing MINIMAX_API_KEY for vision");
+
+  const body = JSON.stringify({
+    model: cfg.model,
+    image_url: base64Uri,
+    prompt: prompt || "Describe this image in detail",
+  });
+
+  log("minimax_vl request", cfg.url, "size:", body.length);
+
+  const res = await fetch(cfg.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
+    body,
+  });
+
+  const json = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(
+      `MiniMax VL error ${res.status}: ${json.base_resp?.status_msg || json.error?.message || JSON.stringify(json)}`
+    );
+  }
+
+  const description = json.content;
+  if (typeof description !== "string") {
+    throw new Error(`MiniMax VL unexpected response: ${JSON.stringify(json)}`);
+  }
+
+  log("minimax_vl response", description.slice(0, 120) + "...");
+  return description;
+}
+
+async function describeWithOpenAi(base64Uri, prompt) {
+  const cfg = CONFIG.openai;
+  const key = apiKey();
+  if (!key) throw new Error("Missing VISION_API_KEY for OpenAI vision");
+
+  const body = JSON.stringify({
+    model: cfg.model,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: prompt || "Describe this image in detail",
+          },
+          {
+            type: "image_url",
+            image_url: { url: base64Uri },
+          },
+        ],
+      },
+    ],
+    max_tokens: 2048,
+  });
+
+  log("openai request", cfg.url, "size:", body.length);
+
+  const res = await fetch(cfg.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
+    body,
+  });
+
+  const json = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(
+      `OpenAI vision error ${res.status}: ${json.error?.message || JSON.stringify(json)}`
+    );
+  }
+
+  const description = json.choices?.[0]?.message?.content;
+  if (typeof description !== "string") {
+    throw new Error(`OpenAI vision unexpected response: ${JSON.stringify(json)}`);
+  }
+
+  log("openai response", description.slice(0, 120) + "...");
+  return description;
+}
+
+// ─── Public API ─────────────────────────────────────────────────────────────
+
+/**
+ * Convert a base64 image data URI to a text description.
+ * @param {string} base64Uri - e.g. "data:image/png;base64,iVBORw0KGgo..."
+ * @param {string} [prompt] - Optional custom prompt for the vision model
+ * @returns {Promise<string>} - Text description of the image
+ */
+export async function describeImage(base64Uri, prompt) {
+  switch (PROVIDER) {
+    case "minimax_vl":
+      return describeWithMinimaxVl(base64Uri, prompt);
+    case "openai":
+      return describeWithOpenAi(base64Uri, prompt);
+    default:
+      throw new Error(`Unknown VISION_API_PROVIDER: ${PROVIDER}`);
+  }
+}
+
+/**
+ * Convert image_url content parts in messages to text descriptions.
+ * This is the main entry point used by proxy.js.
+ *
+ * @param {Array} messages - OpenAI message array
+ * @param {string} [prompt] - Optional custom vision prompt
+ * @returns {Promise<{messages: Array, convertedCount: number}>}
+ */
+export async function convertImagesToText(messages, prompt) {
+  let convertedCount = 0;
+  const result = [];
+
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "system") {
+      result.push(m);
+      continue;
+    }
+
+    const content = m.content;
+    if (!Array.isArray(content)) {
+      result.push(m);
+      continue;
+    }
+
+    const newContent = [];
+    let hadImages = false;
+
+    for (const part of content) {
+      if (part?.type === "image_url" && part.image_url?.url) {
+        hadImages = true;
+        const url = part.image_url.url;
+        try {
+          const description = await describeImage(url, prompt);
+          newContent.push({
+            type: "text",
+            text: `[Image description: ${description}]`,
+          });
+          convertedCount++;
+        } catch (err) {
+          log("describeImage failed:", err.message);
+          newContent.push({
+            type: "text",
+            text: `[Image content could not be processed: ${err.message}]`,
+          });
+          convertedCount++;
+        }
+      } else {
+        newContent.push(part);
+      }
+    }
+
+    if (!hadImages) {
+      result.push(m);
+    } else if (newContent.length === 0) {
+      result.push({
+        ...m,
+        content: "[Image content could not be processed.]",
+      });
+    } else {
+      result.push({ ...m, content: newContent });
+    }
+  }
+
+  return { messages: result, convertedCount };
+}

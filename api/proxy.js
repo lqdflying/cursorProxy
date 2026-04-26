@@ -1,6 +1,7 @@
 export const config = { runtime: "edge" };
 
 import { kvGet, kvSet } from "./kv.js";
+import { describeImage } from "./vision.js";
 
 const DEBUG = process.env.DEBUG === "true";
 
@@ -93,6 +94,16 @@ async function sha256Prefix(text, prefix) {
   );
 }
 
+// Hash image content (data URI or URL) for vision description caching
+async function sha256ImageHash(dataUri) {
+  const data = new TextEncoder().encode(dataUri);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return "img:" + Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .substring(0, 40);
+}
+
 // Short stable hash — isolates cache per proxy client (or anon when no proxy key configured)
 async function apiKeyHash(authHeader) {
   if (!authHeader) return "anon";
@@ -135,6 +146,106 @@ function stripResponseChunk(json) {
       ...(c.delta ? { delta: stripReasoning(c.delta) } : {}),
     })),
   };
+}
+
+/**
+ * Convert image content to text descriptions using the configured vision API.
+ * Caches descriptions by image hash in KV to avoid re-processing.
+ *
+ * @param {Array} messages - The messages array from the request body.
+ * @returns {Promise<{messages: Array, convertedCount: number, errors: number}>}
+ */
+async function convertImagesToText(messages) {
+  let convertedCount = 0;
+  let errors = 0;
+
+  // Flatten all image_url parts to process them in parallel
+  const imageTasks = [];
+  const replacements = []; // { msgIdx, partIdx, imageUrl }
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "user" && m.role !== "system") continue;
+    const content = m.content;
+    if (!Array.isArray(content)) continue;
+
+    for (let j = 0; j < content.length; j++) {
+      const part = content[j];
+      if (part?.type !== "image_url") continue;
+
+      const imageUrl = part.image_url?.url;
+      if (!imageUrl) continue;
+
+      replacements.push({ msgIdx: i, partIdx: j, imageUrl });
+    }
+  }
+
+  if (replacements.length === 0) {
+    return { messages, convertedCount: 0, errors: 0 };
+  }
+
+  // Process all images in parallel with cache lookups
+  const results = await Promise.all(
+    replacements.map(async ({ msgIdx, partIdx, imageUrl }) => {
+      try {
+        // Check KV cache first
+        const cacheKey = await sha256ImageHash(imageUrl);
+        const cached = await kvGet(cacheKey);
+        if (cached) {
+          return { msgIdx, partIdx, description: cached, fromCache: true };
+        }
+
+        // Call vision API
+        const description = await describeImage(imageUrl);
+        if (description) {
+          // Cache the result (silent failure on cache write is fine)
+          await kvSet(cacheKey, description).catch(() => {});
+        }
+        return { msgIdx, partIdx, description, fromCache: false };
+      } catch (err) {
+        log("VISION_ERROR", err.message);
+        return { msgIdx, partIdx, description: null, error: err.message };
+      }
+    })
+  );
+
+  // Apply replacements to a mutable copy of messages
+  const updated = messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? [...m.content] : m.content }));
+
+  for (const r of results) {
+    const { msgIdx, partIdx, description, error } = r;
+    if (description) {
+      updated[msgIdx].content[partIdx] = {
+        type: "text",
+        text: "[Image content: " + description + "]",
+      };
+      convertedCount++;
+      log("VISION_CONVERTED", "msg:", msgIdx, "part:", partIdx, "cached:", r.fromCache);
+    } else {
+      updated[msgIdx].content[partIdx] = {
+        type: "text",
+        text: "[Image content — vision description unavailable" + (error ? ": " + error : "") + "]",
+      };
+      errors++;
+    }
+  }
+
+  // If a message ends up with no text parts after conversion, add a placeholder
+  for (let i = 0; i < updated.length; i++) {
+    const m = updated[i];
+    if (!Array.isArray(m.content)) continue;
+    if (m.content.length === 0) {
+      m.content = "[Image content removed — this model does not support vision inputs.]";
+    }
+    // Compact: merge consecutive text parts
+    const hasText = m.content.some((p) => p?.type === "text" || typeof p === "string");
+    const hasImages = m.content.some((p) => p?.type === "image_url");
+    if (!hasText && !hasImages) {
+      m.content = "[Message contained only non-vision content]";
+    }
+  }
+
+  return { messages: updated, convertedCount, errors };
 }
 
 // ─── Main handler ──────────────────────────────────────────────────────────
@@ -238,6 +349,31 @@ export default async function handler(req) {
     bodyText = JSON.stringify(parsedBody);
   }
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
+
+  // Convert images to text for providers that don't support vision inputs
+  // DeepSeek and MiniMax chat endpoints do not accept inline image_url content.
+  // The vision API (MiniMax VL-01 by default) is called to describe images,
+  // and the descriptions are injected as text before forwarding.
+  const providersWithoutVision = ["deepseek", "minimax"];
+  if (providersWithoutVision.includes(providerKey) && parsedBody?.messages) {
+    const {
+      messages: convertedMessages,
+      convertedCount,
+      errors,
+    } = await convertImagesToText(parsedBody.messages);
+    if (convertedCount > 0) {
+      parsedBody.messages = convertedMessages;
+      bodyText = JSON.stringify(parsedBody);
+      log(
+        "CONVERTED_IMAGES",
+        convertedCount,
+        "for provider:",
+        providerKey,
+        "errors:",
+        errors
+      );
+    }
+  }
 
   const headers = new Headers(req.headers);
   headers.set("host", provider.host);
