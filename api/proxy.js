@@ -61,10 +61,22 @@ async function sha256Prefix(text, prefix) {
   );
 }
 
-// Hash all messages BEFORE index `upTo` to identify a conversation turn
-async function conversationHash(messages, upTo) {
+// Short stable hash of the API key — isolates cache per user
+async function apiKeyHash(authHeader) {
+  if (!authHeader) return "anon";
+  const data = new TextEncoder().encode(authHeader);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .substring(0, 16);
+}
+
+// Hash all messages BEFORE index `upTo` to identify a conversation turn.
+// scope = "<providerKey>:<apiKeyHash>" prevents cross-provider and cross-user cache collisions.
+async function conversationHash(messages, upTo, scope) {
   const prefix = messages.slice(0, upTo);
-  return sha256Prefix(JSON.stringify(prefix), "conv:");
+  return sha256Prefix(scope + ":" + JSON.stringify(prefix), "conv:");
 }
 
 function stripReasoning(obj) {
@@ -123,6 +135,9 @@ export default async function handler(req) {
 
   const originalMessages = parsedBody?.messages ? [...parsedBody.messages] : null;
 
+  // scope = provider + user (API key hash) — prevents cross-provider and cross-user cache collisions
+  const scope = providerKey + ":" + await apiKeyHash(req.headers.get("authorization"));
+
   // Inject stored reasoning_content into ALL assistant messages by position
   let injectedCount = 0;
   if (originalMessages) {
@@ -132,7 +147,7 @@ export default async function handler(req) {
         messages[i].role === "assistant" &&
         !("reasoning_content" in messages[i])
       ) {
-        const key = await conversationHash(originalMessages, i);
+        const key = await conversationHash(originalMessages, i, scope);
         const stored = await kvGet(key);
         log("INJECT idx:", i, "key:", key, "hit:", stored != null);
         if (stored != null) {
@@ -181,7 +196,7 @@ export default async function handler(req) {
 
     const reasoning = json.choices?.[0]?.message?.reasoning_content;
     if (reasoning != null && originalMessages) {
-      const key = await conversationHash(originalMessages, originalMessages.length);
+      const key = await conversationHash(originalMessages, originalMessages.length, scope);
       log("CACHE non-stream key:", key);
       await kvSet(key, reasoning);
     }
@@ -223,7 +238,7 @@ export default async function handler(req) {
             doneSeen = true;
             log("STREAM_DONE", "reasoning:", accReasoning.length, "content:", accContent.length);
             if (originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
-              const key = await conversationHash(originalMessages, originalMessages.length);
+              const key = await conversationHash(originalMessages, originalMessages.length, scope);
               log("CACHE stream key:", key);
               await kvSet(key, accReasoning);
             }
@@ -250,7 +265,7 @@ export default async function handler(req) {
       // Cache even if stream closed without explicit [DONE]
       if (!doneSeen && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
         log("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
-        const key = await conversationHash(originalMessages, originalMessages.length);
+        const key = await conversationHash(originalMessages, originalMessages.length, scope);
         log("CACHE finally key:", key);
         await kvSet(key, accReasoning);
       }
