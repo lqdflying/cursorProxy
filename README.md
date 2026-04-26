@@ -73,8 +73,10 @@ The proxy runs as a **Vercel Edge Function** — zero cold starts, global distri
 
 A Node.js HTTP server wraps the same proxy logic for self-hosted deployments. The same `api/proxy.js` is used — only the runtime adapter differs.
 
+Since only the `latest` tag is published, always force-pull to get the newest image.
+
 ```bash
-docker run -d -p 3000:3000 \
+docker run -d --pull always -p 3000:3000 \
   -e KV_URL=<your-upstash-rest-url> \
   -e KV_TOKEN=<your-upstash-token> \
   lqdflying/cursorproxy:latest
@@ -86,6 +88,7 @@ Or with Docker Compose:
 services:
   proxy:
     image: lqdflying/cursorproxy:latest
+    pull_policy: always
     ports:
       - "3000:3000"
     environment:
@@ -96,6 +99,68 @@ services:
 ```
 
 The Docker image is automatically built and pushed to [hub.docker.com/r/lqdflying/cursorproxy](https://hub.docker.com/r/lqdflying/cursorproxy) on every commit via GitHub Actions (`linux/amd64` + `linux/arm64`).
+
+#### With Nginx reverse proxy
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name proxy.example.com;
+
+    ssl_certificate     /etc/ssl/certs/proxy.example.com.crt;
+    ssl_certificate_key /etc/ssl/private/proxy.example.com.key;
+
+    location / {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Forwarded-Host  $host;
+
+        # Required for streaming (SSE)
+        proxy_buffering    off;
+        proxy_cache        off;
+        chunked_transfer_encoding on;
+
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name proxy.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+Or with Docker Compose including Nginx:
+
+```yaml
+services:
+  proxy:
+    image: lqdflying/cursorproxy:latest
+    pull_policy: always
+    environment:
+      KV_URL: <your-upstash-rest-url>
+      KV_TOKEN: <your-upstash-token>
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/ssl:ro
+    depends_on:
+      - proxy
+    restart: unless-stopped
+```
 
 ### Environment Variables
 
