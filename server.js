@@ -26,6 +26,7 @@ function rewriteUrl(rawUrl, host, protocol) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const start = Date.now();
   try {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "text/plain" });
@@ -62,6 +63,8 @@ const server = http.createServer(async (req, res) => {
     const outHeaders = {};
     webResponse.headers.forEach((v, k) => { outHeaders[k] = v; });
     res.writeHead(webResponse.status, outHeaders);
+
+    console.log(`${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)`);
 
     if (webResponse.body) {
       const reader = webResponse.body.getReader();
