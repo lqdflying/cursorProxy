@@ -188,6 +188,15 @@ export default async function handler(req) {
     );
   }
 
+  // Docker / local Node: one access line without DEBUG (Vercel Edge skips to avoid noise)
+  if (!process.env.VERCEL) {
+    const modelName =
+      typeof parsedBody?.model === "string" ? parsedBody.model : "-";
+    console.log(
+      `[cursorProxy] ${req.method} /v1/${pathParam} provider=${providerKey} model=${modelName}`
+    );
+  }
+
   // Clean up Vercel rewrite query pollution
   searchParams.delete("path");
   searchParams.delete("provider");
