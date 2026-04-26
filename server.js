@@ -15,12 +15,12 @@ if (process.env.REDIS_URL) {
 
 const PORT = process.env.PORT || 3000;
 
-// Route table mirrors vercel.json rewrites
+// Route table mirrors vercel.json rewrites (legacy paths set provider; unified /v1 uses model-based routing)
 const ROUTES = [
-  { pattern: /^\/v1\/(.+)$/, provider: "deepseek" },
   { pattern: /^\/deepseek\/v1\/(.+)$/, provider: "deepseek" },
   { pattern: /^\/kimi\/v1\/(.+)$/, provider: "kimi" },
   { pattern: /^\/minimax\/v1\/(.+)$/, provider: "minimax" },
+  { pattern: /^\/v1\/(.+)$/, provider: null },
 ];
 
 function rewriteUrl(rawUrl, host, protocol) {
@@ -29,7 +29,7 @@ function rewriteUrl(rawUrl, host, protocol) {
     const m = urlObj.pathname.match(pattern);
     if (m) {
       urlObj.pathname = "/api/proxy";
-      urlObj.searchParams.set("provider", provider);
+      if (provider) urlObj.searchParams.set("provider", provider);
       urlObj.searchParams.set("path", m[1]);
       return urlObj.toString();
     }

@@ -6,21 +6,79 @@ const DEBUG = process.env.DEBUG === "true";
 
 const PROVIDERS = {
   deepseek: {
-    url:  process.env.UPSTREAM_DEEPSEEK || "https://api.deepseek.com",
+    url: process.env.UPSTREAM_DEEPSEEK || "https://api.deepseek.com",
     host: "api.deepseek.com",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
   },
   kimi: {
-    url:  process.env.UPSTREAM_KIMI || "https://api.moonshot.ai",
+    url: process.env.UPSTREAM_KIMI || "https://api.moonshot.ai",
     host: "api.moonshot.ai",
+    apiKeyEnv: "KIMI_API_KEY",
   },
   minimax: {
-    url:  process.env.UPSTREAM_MINIMAX || "https://api.minimax.io",
+    url: process.env.UPSTREAM_MINIMAX || "https://api.minimax.io",
     host: "api.minimax.io",
+    apiKeyEnv: "MINIMAX_API_KEY",
   },
 };
 
 function log(...args) {
   if (DEBUG) console.log("[cursorProxy]", ...args);
+}
+
+function timingSafeEqualStr(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+function extractProxySecret(req) {
+  const auth = req.headers.get("authorization");
+  if (auth?.startsWith("Bearer ")) return auth.slice(7).trim();
+  const xk = req.headers.get("x-api-key");
+  if (xk) return xk.trim();
+  return null;
+}
+
+function jsonErrorResponse(status, message, code, type = "invalid_request_error") {
+  return new Response(
+    JSON.stringify({
+      error: { message, type, code },
+    }),
+    { status, headers: { "content-type": "application/json" } }
+  );
+}
+
+/** If CURSORPROXY_API_KEY is set, require Bearer or x-api-key match. */
+function checkProxyAuth(req) {
+  const required = process.env.CURSORPROXY_API_KEY;
+  if (!required) return null;
+  const secret = extractProxySecret(req);
+  if (!secret || !timingSafeEqualStr(secret, required)) {
+    return jsonErrorResponse(
+      401,
+      "Incorrect API key provided.",
+      "invalid_api_key",
+      "invalid_request_error"
+    );
+  }
+  return null;
+}
+
+function providerFromModel(model) {
+  if (typeof model !== "string" || !model) return null;
+  const m = model.toLowerCase();
+  if (m.startsWith("minimax")) return "minimax";
+  if (m.startsWith("kimi")) return "kimi";
+  if (m.startsWith("deepseek")) return "deepseek";
+  return null;
+}
+
+function upstreamApiKey(providerKey) {
+  const meta = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
+  return process.env[meta.apiKeyEnv] || "";
 }
 
 async function sha256Prefix(text, prefix) {
@@ -35,7 +93,7 @@ async function sha256Prefix(text, prefix) {
   );
 }
 
-// Short stable hash of the API key — isolates cache per user
+// Short stable hash — isolates cache per proxy client (or anon when no proxy key configured)
 async function apiKeyHash(authHeader) {
   if (!authHeader) return "anon";
   const data = new TextEncoder().encode(authHeader);
@@ -44,6 +102,14 @@ async function apiKeyHash(authHeader) {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .substring(0, 16);
+}
+
+async function cacheScopeUserId(req) {
+  if (process.env.CURSORPROXY_API_KEY) {
+    const t = extractProxySecret(req);
+    return apiKeyHash(t ? `Bearer ${t}` : "");
+  }
+  return apiKeyHash(null);
 }
 
 // Hash all messages BEFORE index `upTo` to identify a conversation turn.
@@ -73,31 +139,19 @@ function stripResponseChunk(json) {
 
 // ─── Main handler ──────────────────────────────────────────────────────────
 export default async function handler(req) {
+  const authErr = checkProxyAuth(req);
+  if (authErr) return authErr;
+
   const url = new URL(req.url);
-  let pathname = url.pathname;
+  const pathname = url.pathname;
   const searchParams = new URLSearchParams(url.search);
 
-  // Resolve provider from rewrite query param (default: deepseek for legacy /v1/ path)
-  const providerKey = searchParams.get("provider") || "deepseek";
-  const provider = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
-
-  // path param is the portion after /v1/ captured by the vercel.json rewrite
+  let providerKey = searchParams.get("provider");
   const pathParam = searchParams.get("path") || "";
 
-  log("START", req.method, req.url, "pathname:", pathname, "provider:", providerKey);
+  log("START", req.method, req.url, "pathname:", pathname, "provider(query):", providerKey || "(infer)");
 
-  // Clean up Vercel rewrite query pollution
-  searchParams.delete("path");
-  searchParams.delete("provider");
-
-  const queryString = searchParams.toString()
-    ? "?" + searchParams.toString()
-    : "";
-  // Reconstruct correct upstream path from the captured path param
-  const upstreamUrl = provider.url + "/v1/" + pathParam + queryString;
-  log("UPSTREAM", upstreamUrl);
-
-  // Parse body
+  // Parse body early for model-based routing (unified /v1 without provider query)
   let bodyText = "";
   let parsedBody = null;
   if (req.method !== "GET" && req.method !== "HEAD") {
@@ -107,10 +161,47 @@ export default async function handler(req) {
     } catch {}
   }
 
+  if (!providerKey) {
+    providerKey = providerFromModel(parsedBody?.model);
+  }
+  if (!providerKey) {
+    providerKey = "deepseek";
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
+    return jsonErrorResponse(
+      400,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, or minimax (or set model to a matching provider prefix).`,
+      "unknown_provider",
+      "invalid_request_error"
+    );
+  }
+
+  const provider = PROVIDERS[providerKey];
+  const providerSecret = upstreamApiKey(providerKey);
+  if (!providerSecret) {
+    return jsonErrorResponse(
+      503,
+      `Missing environment variable ${provider.apiKeyEnv} for provider "${providerKey}".`,
+      "provider_key_missing",
+      "api_error"
+    );
+  }
+
+  // Clean up Vercel rewrite query pollution
+  searchParams.delete("path");
+  searchParams.delete("provider");
+
+  const queryString = searchParams.toString()
+    ? "?" + searchParams.toString()
+    : "";
+  const upstreamUrl = provider.url + "/v1/" + pathParam + queryString;
+  log("UPSTREAM", upstreamUrl, "provider:", providerKey);
+
   const originalMessages = parsedBody?.messages ? [...parsedBody.messages] : null;
 
-  // scope = provider + user (API key hash) — prevents cross-provider and cross-user cache collisions
-  const scope = providerKey + ":" + await apiKeyHash(req.headers.get("authorization"));
+  const scopeUser = await cacheScopeUserId(req);
+  const scope = providerKey + ":" + scopeUser;
 
   // Inject stored reasoning_content into ALL assistant messages by position
   let injectedCount = 0;
@@ -141,14 +232,14 @@ export default async function handler(req) {
 
   const headers = new Headers(req.headers);
   headers.set("host", provider.host);
+  headers.set("authorization", "Bearer " + providerSecret);
+  headers.delete("x-api-key");
   headers.delete("content-length");
   headers.delete("transfer-encoding");
   headers.delete("accept-encoding");
   headers.set("accept-encoding", "identity");
 
   let upstreamRes;
-  // On Vercel, apply a 15s connection timeout so we return a clean 504 before
-  // the platform kills the function. On Docker (no VERCEL env), no timeout.
   const connectController = process.env.VERCEL ? new AbortController() : null;
   const connectTimer = connectController
     ? setTimeout(() => connectController.abort(), 15000)
@@ -186,14 +277,12 @@ export default async function handler(req) {
   const isStream = contentType.includes("text/event-stream");
   log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
 
-  // ─── Non-streaming response ──────────────────────────────────────────────
   if (!isStream) {
     const text = await upstreamRes.text();
     let json;
     try {
       json = JSON.parse(text);
     } catch {
-      // Pass through non-JSON errors
       return new Response(text, {
         status: upstreamRes.status,
         headers: { "content-type": contentType || "text/plain" },
@@ -212,7 +301,6 @@ export default async function handler(req) {
     });
   }
 
-  // ─── Streaming response ──────────────────────────────────────────────────
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -268,7 +356,6 @@ export default async function handler(req) {
         }
       }
     } finally {
-      // Cache even if stream closed without explicit [DONE]
       if (!doneSeen && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
         log("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
         const key = await conversationHash(originalMessages, originalMessages.length, scope);

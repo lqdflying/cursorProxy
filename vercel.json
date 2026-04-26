@@ -1,8 +1,8 @@
 {
   "rewrites": [
-    { "source": "/v1/:path*",          "destination": "/api/proxy?provider=deepseek&path=:path*" },
     { "source": "/deepseek/v1/:path*", "destination": "/api/proxy?provider=deepseek&path=:path*" },
-    { "source": "/kimi/v1/:path*",     "destination": "/api/proxy?provider=kimi&path=:path*" },
-    { "source": "/minimax/v1/:path*",  "destination": "/api/proxy?provider=minimax&path=:path*" }
+    { "source": "/kimi/v1/:path*", "destination": "/api/proxy?provider=kimi&path=:path*" },
+    { "source": "/minimax/v1/:path*", "destination": "/api/proxy?provider=minimax&path=:path*" },
+    { "source": "/v1/:path*", "destination": "/api/proxy?path=:path*" }
   ]
 }
