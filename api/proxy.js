@@ -50,7 +50,7 @@ async function kvSet(key, value, ttlSeconds = 7200) {
 }
 
 async function sha256Prefix(text, prefix) {
-  const data = new TextEncoder().encode(String(text).substring(0, 4000));
+  const data = new TextEncoder().encode(String(text));
   const hash = await crypto.subtle.digest("SHA-256", data);
   return (
     prefix +
@@ -142,21 +142,23 @@ export default async function handler(req) {
   let injectedCount = 0;
   if (originalMessages) {
     const messages = parsedBody.messages;
-    for (let i = 0; i < messages.length; i++) {
-      if (
-        messages[i].role === "assistant" &&
-        !("reasoning_content" in messages[i])
-      ) {
+    const assistantIndices = messages
+      .map((m, i) => i)
+      .filter((i) => messages[i].role === "assistant" && !("reasoning_content" in messages[i]));
+
+    const fetched = await Promise.all(
+      assistantIndices.map(async (i) => {
         const key = await conversationHash(originalMessages, i, scope);
         const stored = await kvGet(key);
         log("INJECT idx:", i, "key:", key, "hit:", stored != null);
-        if (stored != null) {
-          messages[i] = {
-            ...messages[i],
-            reasoning_content: stored,
-          };
-          injectedCount++;
-        }
+        return { i, stored };
+      })
+    );
+
+    for (const { i, stored } of fetched) {
+      if (stored != null) {
+        messages[i] = { ...messages[i], reasoning_content: stored };
+        injectedCount++;
       }
     }
     bodyText = JSON.stringify(parsedBody);
@@ -170,11 +172,33 @@ export default async function handler(req) {
   headers.delete("accept-encoding");
   headers.set("accept-encoding", "identity");
 
-  const upstreamRes = await fetch(upstreamUrl, {
-    method: req.method,
-    headers,
-    body: bodyText || null,
-  });
+  let upstreamRes;
+  try {
+    upstreamRes = await fetch(upstreamUrl, {
+      method: req.method,
+      headers,
+      body: bodyText || null,
+      signal: AbortSignal.timeout(22000),
+    });
+  } catch (err) {
+    const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+    log("UPSTREAM_ERROR", err?.name, err?.message);
+    return new Response(
+      JSON.stringify({
+        error: {
+          message: isTimeout
+            ? "Upstream provider timed out (>22s)"
+            : `Upstream fetch failed: ${err?.message}`,
+          type: "upstream_error",
+          code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
+        },
+      }),
+      {
+        status: 504,
+        headers: { "content-type": "application/json" },
+      }
+    );
+  }
 
   const contentType = upstreamRes.headers.get("content-type") || "";
   const isStream = contentType.includes("text/event-stream");
