@@ -173,21 +173,27 @@ export default async function handler(req) {
   headers.set("accept-encoding", "identity");
 
   let upstreamRes;
+  // Connection-only timeout: abort if we don't receive response headers within 15s.
+  // Once headers arrive the timer is cleared — streaming can take as long as needed.
+  const connectController = new AbortController();
+  const connectTimer = setTimeout(() => connectController.abort(), 15000);
   try {
     upstreamRes = await fetch(upstreamUrl, {
       method: req.method,
       headers,
       body: bodyText || null,
-      signal: AbortSignal.timeout(22000),
+      signal: connectController.signal,
     });
+    clearTimeout(connectTimer); // headers received — cancel the connection timeout
   } catch (err) {
+    clearTimeout(connectTimer);
     const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
     log("UPSTREAM_ERROR", err?.name, err?.message);
     return new Response(
       JSON.stringify({
         error: {
           message: isTimeout
-            ? "Upstream provider timed out (>22s)"
+            ? "Upstream provider timed out (>15s connecting)"
             : `Upstream fetch failed: ${err?.message}`,
           type: "upstream_error",
           code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
