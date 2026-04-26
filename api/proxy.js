@@ -8,8 +8,8 @@ const PROVIDERS = {
     host: "api.deepseek.com",
   },
   kimi: {
-    url:  process.env.UPSTREAM_KIMI || "https://api.moonshot.cn",
-    host: "api.moonshot.cn",
+    url:  process.env.UPSTREAM_KIMI || "https://api.moonshot.ai",
+    host: "api.moonshot.ai",
   },
   minimax: {
     url:  process.env.UPSTREAM_MINIMAX || "https://api.minimax.io",
@@ -95,6 +95,9 @@ export default async function handler(req) {
   const providerKey = searchParams.get("provider") || "deepseek";
   const provider = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
 
+  // path param is the portion after /v1/ captured by the vercel.json rewrite
+  const pathParam = searchParams.get("path") || "";
+
   log("START", req.method, req.url, "pathname:", pathname, "provider:", providerKey);
 
   // Clean up Vercel rewrite query pollution
@@ -104,7 +107,8 @@ export default async function handler(req) {
   const queryString = searchParams.toString()
     ? "?" + searchParams.toString()
     : "";
-  const upstreamUrl = provider.url + pathname + queryString;
+  // Reconstruct correct upstream path from the captured path param
+  const upstreamUrl = provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl);
 
   // Parse body

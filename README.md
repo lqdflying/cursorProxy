@@ -72,7 +72,7 @@ Keep these two values — you'll paste them into Vercel in the next step.
 | `KV_URL` | **Yes** | — | Upstash Redis REST URL (from Step 1) |
 | `KV_TOKEN` | **Yes** | — | Upstash Redis read-write token (from Step 1) |
 | `UPSTREAM_DEEPSEEK` | No | `https://api.deepseek.com` | Override DeepSeek upstream base URL |
-| `UPSTREAM_KIMI` | No | `https://api.moonshot.cn` | Override Kimi upstream base URL |
+| `UPSTREAM_KIMI` | No | `https://api.moonshot.ai` | Override Kimi upstream base URL |
 | `UPSTREAM_MINIMAX` | No | `https://api.minimax.io` | Override MiniMax upstream base URL |
 | `DEBUG` | No | `false` | Set to `"true"` to enable verbose edge logs |
 
