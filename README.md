@@ -1,6 +1,10 @@
-# cursorProxy — Multi-Provider Reasoning Proxy
+# cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight Vercel Edge Function that proxies requests to **DeepSeek**, **Kimi**, and **MiniMax** APIs. For reasoning models (DeepSeek, Kimi) it **caches `reasoning_content` by conversation position and injects it back into subsequent requests**, enabling seamless multi-turn reasoning in clients like Cursor that don't handle the field natively.
+A lightweight Vercel Edge Function that proxies requests to **DeepSeek**, **Kimi**, and **MiniMax** APIs.
+
+**Reasoning bridge:** For DeepSeek and Kimi, it **caches `reasoning_content` by conversation position and injects it back into subsequent requests**, enabling seamless multi-turn reasoning in clients like Cursor that don't handle the field natively.
+
+**Vision bridge:** When you paste screenshots into Cursor chat, DeepSeek and MiniMax chat APIs reject inline images. The proxy **automatically converts images to text descriptions** via a vision API (MiniMax VL-01 by default) and injects the descriptions into the message before forwarding. No more "this model does not support vision" errors.
 
 **Upgrade note:** The default entry is now **`/v1`** with **model-based upstream routing** and **server-side provider keys**. Cursor should use **`CURSORPROXY_API_KEY`** as the API key field; legacy path prefixes (`/deepseek/v1`, etc.) remain supported.
 
@@ -20,6 +24,46 @@ Clients like Cursor strip or ignore `reasoning_content`, so they never send it b
 
 MiniMax models embed thinking as `<think>…</think>` tags inside `content` — Cursor passes this through naturally, so no injection is needed; the proxy is a clean pass-through for MiniMax reasoning.
 
+## Vision Bridge (new)
+
+DeepSeek and MiniMax **chat completion APIs do not accept inline images**. When you paste a screenshot in Cursor, it is sent as a base64 `image_url` in the message content — these models cannot process it.
+
+The proxy solves this by:
+
+1. **Detecting** `image_url` content blocks in incoming messages
+2. **Calling** a vision API to describe each image (MiniMax VL-01 by default)
+3. **Replacing** the `image_url` with a text description before forwarding to the text model
+
+**Example:**
+
+```
+Before (what the text model received):
+  [text: "What does this show?"]
+  [image_url: data:image/png;base64,...]
+
+After (what it receives now):
+  [text: "What does this show?"]
+  [text: "[Image content: A solid yellow square with no patterns...]"]
+```
+
+### Vision API setup (required for image support)
+
+You **must** configure a vision API backend. Choose one:
+
+**Option A — MiniMax VL-01 (default, recommended):**
+- Uses your existing **`MINIMAX_API_KEY`** — no extra account needed
+- Set `VISION_API_PROVIDER=minimax_vl` (or leave it unset; this is the default)
+- MiniMax Coding Plan key (`sk-cp-*`) works with this endpoint
+
+**Option B — OpenAI Vision:**
+- Requires a separate **`OPENAI_API_KEY`**
+- Set `VISION_API_PROVIDER=openai` and `VISION_API_KEY=sk-...`
+- Supports any OpenAI-compatible vision endpoint via `VISION_API_URL`
+
+If no vision backend is configured and you paste an image, the proxy will still run but image descriptions will fail and be replaced with an error placeholder.
+
+**Kimi is left untouched** — it supports vision natively, so images pass through directly.
+
 ## Why conversation-position hashing?
 
 Cursor may send assistant message `content` as a structured array `[{"type":"text","text":"..."}]` instead of a plain string. A content-hash cache would never match. The conversation prefix (all messages before the assistant reply) is identical on both sides regardless of content format, so position-based hashing is robust.
@@ -37,6 +81,9 @@ Before deploying, make sure you have:
   - **DeepSeek**: [platform.deepseek.com](https://platform.deepseek.com) → API Keys
   - **Kimi**: [platform.moonshot.ai](https://platform.moonshot.ai) → [API Keys](https://platform.moonshot.ai/console/api-keys) (set `UPSTREAM_KIMI=https://api.moonshot.cn` if your account uses the China API endpoint)
   - **MiniMax**: [platform.minimax.io](https://platform.minimax.io) → API Keys
+- **Vision API** (required if you want to paste screenshots/images in Cursor chat):
+  - **MiniMax VL-01** (default): reuses `MINIMAX_API_KEY` — no extra key needed
+  - **OpenAI Vision**: requires a separate `OPENAI_API_KEY` (set `VISION_API_PROVIDER=openai`)
 
 ---
 
@@ -223,6 +270,10 @@ services:
 | `UPSTREAM_DEEPSEEK` | No | `https://api.deepseek.com` | Override DeepSeek upstream base URL |
 | `UPSTREAM_KIMI` | No | `https://api.moonshot.ai` | Override Kimi upstream base URL |
 | `UPSTREAM_MINIMAX` | No | `https://api.minimax.io` | Override MiniMax upstream base URL |
+| `VISION_API_PROVIDER` | No | `minimax_vl` | Vision backend: `minimax_vl` (default, uses `MINIMAX_API_KEY`) or `openai` (requires `VISION_API_KEY`) |
+| `VISION_API_URL` | No | `https://api.minimax.io/v1/coding_plan/vlm` | Override vision API endpoint |
+| `VISION_MODEL` | No | `MiniMax-VL-01` | Vision model name (MiniMax VL-01 or `gpt-4o-mini` for OpenAI) |
+| `VISION_API_KEY` | Only if `VISION_API_PROVIDER=openai` | — | OpenAI API key for vision (not needed for MiniMax VL-01) |
 | `DEBUG` | No | `false` | Set to `"true"` to enable verbose logs |
 | `PORT` | No | `3000` | HTTP port (Docker only) |
 
@@ -281,21 +332,24 @@ In Cursor → **Settings → Models → Add Custom Model**:
 
 ### Request / response flow
 
-Single base URL **`/v1`**: each chat request carries a **`model`** (for example `deepseek-v4-pro`). The proxy validates **`CURSORPROXY_API_KEY`**, maps the model prefix to DeepSeek / Kimi / MiniMax, merges any cached `reasoning_content` into assistant messages, and calls the upstream with **`DEEPSEEK_API_KEY` / `KIMI_API_KEY` / `MINIMAX_API_KEY`** from the environment (never from Cursor).
+Single base URL **`/v1`**: each chat request carries a **`model`** (for example `deepseek-v4-pro`). The proxy validates **`CURSORPROXY_API_KEY`**, maps the model prefix to DeepSeek / Kimi / MiniMax, merges any cached `reasoning_content` into assistant messages, **converts images to text descriptions** (for DeepSeek and MiniMax), and calls the upstream with **`DEEPSEEK_API_KEY` / `KIMI_API_KEY` / `MINIMAX_API_KEY`** from the environment (never from Cursor).
 
 ```mermaid
 flowchart TB
     subgraph turnN [Turn N]
         C1["Cursor"]
         Px["Proxy"]
-        Prep["Validate proxy key route by model inject from KV"]
+        Prep["Validate proxy key route by model inject from KV convert images"]
         Up["Provider API"]
         KV[("KV Redis")]
+        Vis["Vision API<br/>MiniMax VL-01"]
         C2["Cursor"]
     end
 
     C1 -->|"POST /v1 JSON model messages proxy auth"| Px
     Px --> Prep
+    Prep -->|"images? → describe"| Vis
+    Vis -->|"text descriptions"| Prep
     Prep -->|"HTTPS env upstream Bearer"| Up
     Up -->|"JSON or SSE with reasoning_content"| Px
     Px -->|"strip and cache by conversation hash"| KV
@@ -316,7 +370,7 @@ flowchart TB
 
 **Turn N+1:** The proxy reads KV and injects stored `reasoning_content` into the right assistant slots before calling the provider again so DeepSeek / Kimi receive the full chain they expect. MiniMax thinking stays in `content` as tags, so KV injection is not used for that path.
 
-> MiniMax models embed thinking as `<think>` tags in `content` — Cursor preserves this naturally, so the proxy passes MiniMax responses straight through without KV injection for those models.
+> MiniMax models embed thinking as `<think>` tags in `content` — Cursor preserves this naturally, so the proxy passes MiniMax responses straight through without KV injection for those models. Images in MiniMax chat messages are converted to text descriptions just like DeepSeek.
 
 ### TLS / encryption flow
 
@@ -356,6 +410,7 @@ flowchart TB
 
 - Supports both streaming (`text/event-stream`) and non-streaming responses.
 - Caches `reasoning_content` even when the stream ends without an explicit `[DONE]` frame.
+- **Vision descriptions are cached by image hash** in KV (24h TTL) — pasting the same screenshot twice only calls the vision API once.
 - Built on the [Vercel Edge Runtime](https://vercel.com/docs/functions/edge-functions) — no cold-start penalty (Vercel deployment).
 - **Legacy URL prefixes** (`/deepseek/v1`, `/kimi/v1`, `/minimax/v1`) still work if you prefer a fixed provider per base URL; they do **not** bypass `CURSORPROXY_API_KEY` when it is configured.
 - **Reasoning cache scope** is per `CURSORPROXY_API_KEY` client secret when that env var is set; otherwise all clients share the `anon` cache bucket (fine for solo local dev only).
@@ -364,6 +419,8 @@ flowchart TB
 
 ```
 api/proxy.js                    Core proxy logic (shared by both deployments)
+api/vision.js                   Image-to-text bridge (MiniMax VL-01 / OpenAI)
+api/kv.js                       KV abstraction (Redis / Upstash)
 server.js                       Node.js HTTP adapter (Docker / self-hosted)
 Dockerfile                      Docker image definition
 .github/workflows/docker.yml    CI — build & push to DockerHub on every commit
