@@ -1,5 +1,17 @@
 import http from "node:http";
 import handler from "./api/proxy.js";
+import { setKvDriver } from "./api/kv.js";
+
+// ─── Local Redis (Docker) ──────────────────────────────────────────────────
+// If REDIS_URL is set, use ioredis for low-latency local cache.
+// Falls back to Upstash REST (KV_URL + KV_TOKEN) if not set.
+if (process.env.REDIS_URL) {
+  const { default: Redis } = await import("ioredis");
+  const redis = new Redis(process.env.REDIS_URL, { lazyConnect: false, enableReadyCheck: false });
+  redis.on("error", (err) => console.error("[cursorProxy] redis error:", err.message));
+  setKvDriver(redis);
+  console.log("[cursorProxy] using local Redis:", process.env.REDIS_URL);
+}
 
 const PORT = process.env.PORT || 3000;
 

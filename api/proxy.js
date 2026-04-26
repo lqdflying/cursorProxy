@@ -1,5 +1,7 @@
 export const config = { runtime: "edge" };
 
+import { kvGet, kvSet } from "./kv.js";
+
 const DEBUG = process.env.DEBUG === "true";
 
 const PROVIDERS = {
@@ -19,34 +21,6 @@ const PROVIDERS = {
 
 function log(...args) {
   if (DEBUG) console.log("[cursorProxy]", ...args);
-}
-
-// ─── Upstash Redis REST helpers ────────────────────────────────────────────
-async function kvGet(key) {
-  const url = process.env.KV_URL;
-  const token = process.env.KV_TOKEN;
-  if (!url || !token) return null;
-  try {
-    const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const json = await res.json();
-    return json.result ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function kvSet(key, value, ttlSeconds = 7200) {
-  const url = process.env.KV_URL;
-  const token = process.env.KV_TOKEN;
-  if (!url || !token) return;
-  try {
-    await fetch(
-      `${url}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?EX=${ttlSeconds}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-  } catch {}
 }
 
 async function sha256Prefix(text, prefix) {

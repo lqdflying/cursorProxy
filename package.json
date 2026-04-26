@@ -5,5 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "ioredis": "^5.4.1"
   }
 }

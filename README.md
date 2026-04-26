@@ -28,18 +28,20 @@ Cursor may send assistant message `content` as a structured array `[{"type":"tex
 
 Before deploying, make sure you have:
 
-- A **[Vercel](https://vercel.com)** account (free tier is fine)
-- An **[Upstash](https://upstash.com)** account for Redis KV storage (free tier is fine)
+- A **[Vercel](https://vercel.com)** account (free tier is fine) — for Option A
+- An **[Upstash](https://upstash.com)** account for Redis KV storage (free tier is fine) — required for Vercel, optional for Docker (local Redis is faster)
 - API key(s) for the providers you want to use:
   - **DeepSeek**: [platform.deepseek.com](https://platform.deepseek.com) → API Keys
-  - **Kimi**: [platform.kimi.com](https://platform.kimi.com) → API Keys
+  - **Kimi**: [platform.moonshot.cn](https://platform.moonshot.cn) → API Keys
   - **MiniMax**: [platform.minimax.io](https://platform.minimax.io) → API Keys
 
 ---
 
-## Step 1: Register Upstash and Create a Redis Database
+## Step 1: Set Up Redis
 
-The proxy uses Upstash Redis to cache `reasoning_content` between conversation turns.
+The proxy uses Redis to cache `reasoning_content` between conversation turns.
+
+**Option A (Vercel) — Upstash (required):**
 
 1. Go to **[upstash.com](https://upstash.com)** and sign up for a free account.
 2. In the Upstash Console, click **Create Database**.
@@ -48,7 +50,9 @@ The proxy uses Upstash Redis to cache `reasoning_content` between conversation t
    - **REST URL** → this is your `KV_URL`
    - **Token** (the read-write token) → this is your `KV_TOKEN`
 
-Keep these two values — you'll paste them into Vercel in the next step.
+**Option B (Docker) — Local Redis (recommended):**
+
+No external account needed. Add a Redis container to your compose stack and set `REDIS_URL=redis://redis:6379`. See the compose examples below. Upstash still works for Docker if you prefer a managed service.
 
 ---
 
@@ -82,21 +86,28 @@ docker run -d --pull always -p 127.0.0.1:3000:3000 \
   lqdflying/cursorproxy:latest
 ```
 
-#### Standard Docker Compose
+#### Standard Docker Compose (with local Redis)
 
 ```yaml
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
   proxy:
     image: lqdflying/cursorproxy:latest
     pull_policy: always
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      KV_URL: <your-upstash-rest-url>
-      KV_TOKEN: <your-upstash-token>
+      REDIS_URL: "redis://redis:6379"
       # DEBUG: "true"
+    depends_on:
+      - redis
     restart: unless-stopped
 ```
+
+> To use Upstash instead of local Redis, replace `REDIS_URL` with `KV_URL` + `KV_TOKEN`.
 
 #### 1Panel server
 
@@ -104,14 +115,22 @@ services:
 
 ```yaml
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - 1panel-network
+
   proxy:
     image: lqdflying/cursorproxy:latest
     pull_policy: always
     ports:
       - "127.0.0.1:3000:3000"
     environment:
-      KV_URL: <your-upstash-rest-url>
-      KV_TOKEN: <your-upstash-token>
+      REDIS_URL: "redis://redis:6379"
+      # DEBUG: "true"
+    depends_on:
+      - redis
     restart: unless-stopped
     networks:
       - 1panel-network
@@ -191,21 +210,22 @@ services:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `KV_URL` | **Yes** | — | Upstash Redis REST URL (from Step 1) |
-| `KV_TOKEN` | **Yes** | — | Upstash Redis read-write token (from Step 1) |
+| `REDIS_URL` | Docker: recommended | — | Local Redis URL e.g. `redis://redis:6379` — takes priority over Upstash |
+| `KV_URL` | Vercel: **Yes** | — | Upstash Redis REST URL |
+| `KV_TOKEN` | Vercel: **Yes** | — | Upstash Redis read-write token |
 | `UPSTREAM_DEEPSEEK` | No | `https://api.deepseek.com` | Override DeepSeek upstream base URL |
 | `UPSTREAM_KIMI` | No | `https://api.moonshot.ai` | Override Kimi upstream base URL |
 | `UPSTREAM_MINIMAX` | No | `https://api.minimax.io` | Override MiniMax upstream base URL |
 | `DEBUG` | No | `false` | Set to `"true"` to enable verbose logs |
 | `PORT` | No | `3000` | HTTP port (Docker only) |
 
-> **Note:** `KV_URL` and `KV_TOKEN` are the only required variables. Without them the proxy still works but `reasoning_content` caching is disabled (multi-turn reasoning will fail on DeepSeek/Kimi).
+> **Note:** If neither `REDIS_URL` nor `KV_URL`+`KV_TOKEN` are set, the proxy still works but `reasoning_content` caching is disabled (multi-turn reasoning will fail on DeepSeek/Kimi).
 
 ---
 
 ## Step 3: Configure Cursor (or any OpenAI-compatible client)
 
-Your provider API key stays in your client — the proxy forwards the `Authorization` header directly, never storing it.
+Your provider API key is forwarded directly from your client via the `Authorization` header and is never stored by the proxy.
 
 | Provider | Base URL | Example models |
 |---|---|---|
