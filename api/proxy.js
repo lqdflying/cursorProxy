@@ -73,6 +73,48 @@ function checkProxyAuth(req) {
   return null;
 }
 
+function configuredModelIds() {
+  const raw = process.env.CURSORPROXY_MODELS || "";
+  const seen = new Set();
+  const models = [];
+
+  for (const value of raw.split(/[,\r\n]+/)) {
+    const id = value.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    models.push(id);
+  }
+
+  return models;
+}
+
+function isModelDiscoveryRequest(req, pathname, pathParam) {
+  const method = req.method.toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+
+  const normalizedPathParam = pathParam.replace(/^\/+|\/+$/g, "");
+  return normalizedPathParam === "models" || pathname === "/v1/models";
+}
+
+function modelDiscoveryResponse(req) {
+  const body = JSON.stringify({
+    object: "list",
+    data: configuredModelIds().map((id) => ({
+      id,
+      object: "model",
+      owned_by: "cursorProxy",
+    })),
+  });
+
+  return new Response(req.method.toUpperCase() === "HEAD" ? null : body, {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
 function providerFromModel(model) {
   if (typeof model !== "string" || !model) return null;
   const m = model.toLowerCase();
@@ -267,6 +309,10 @@ export default async function handler(req) {
   const pathParam = searchParams.get("path") || "";
 
   log("START", req.method, req.url, "pathname:", pathname, "provider(query):", providerKey || "(infer)");
+
+  if (isModelDiscoveryRequest(req, pathname, pathParam)) {
+    return modelDiscoveryResponse(req);
+  }
 
   // Parse body early for model-based routing (unified /v1 without provider query)
   let bodyText = "";

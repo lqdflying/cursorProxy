@@ -4,6 +4,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on 
 
 - **Reasoning bridge:** caches and injects `reasoning_content` by conversation position, enabling multi-turn reasoning in Cursor and OpenAI-compatible clients.
 - **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively.
+- **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/lqdflying/cursorProxy)
 
@@ -36,7 +37,7 @@ For Vercel, Docker Compose, 1Panel, and Nginx reverse proxy — see [Deployment]
 |---|---|
 | Base URL | `https://<your-host>/v1` |
 | API Key | Your `CURSORPROXY_API_KEY` |
-| Model | e.g. `deepseek-v4-pro`, `kimi-k2.6`, `MiniMax-M2.7` |
+| Model | Discovered from `GET /v1/models` when `CURSORPROXY_MODELS` is set, or manually entered |
 
 The proxy routes to the correct upstream based on the model name prefix (`deepseek*`, `kimi*`, `minimax*` / `MiniMax*`) and uses the corresponding server-side API key.
 
@@ -47,6 +48,7 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | Variable | Required | Description |
 |---|---|---|
 | `CURSORPROXY_API_KEY` | Recommended | Client auth secret |
+| `CURSORPROXY_MODELS` | Optional | Comma- or newline-separated model IDs returned by `GET /v1/models` |
 | `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
 | `KIMI_API_KEY` | For Kimi | Upstream API key |
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
