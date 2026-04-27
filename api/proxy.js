@@ -27,6 +27,11 @@ function log(...args) {
   if (DEBUG) console.log("[cursorProxy]", ...args);
 }
 
+/** Always-on warning for critical diagnostic events (not gated by DEBUG). */
+function warn(...args) {
+  console.log("[cursorProxy]", ...args);
+}
+
 function timingSafeEqualStr(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
   if (a.length !== b.length) return false;
@@ -271,7 +276,7 @@ export default async function handler(req) {
     try {
       parsedBody = JSON.parse(bodyText);
     } catch {
-      log("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "firstChars:", bodyText.slice(0, 200));
+      warn("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "firstChars:", bodyText.slice(0, 200));
     }
   }
 
@@ -285,7 +290,7 @@ export default async function handler(req) {
   log("RESOLVED", "model:", parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
 
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
-    log("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
+    warn("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
       `Unknown provider "${providerKey}". Use deepseek, kimi, or minimax (or set model to a matching provider prefix).`,
@@ -342,14 +347,17 @@ export default async function handler(req) {
         const key = await conversationHash(originalMessages, i, scope);
         const stored = await kvGet(key);
         log("INJECT idx:", i, "key:", key, "hit:", stored != null);
-        return { i, stored };
+        return { i, stored, key };
       })
     );
 
-    for (const { i, stored } of fetched) {
+    for (const { i, stored, key } of fetched) {
       if (stored != null) {
         messages[i] = { ...messages[i], reasoning_content: stored };
         injectedCount++;
+      } else {
+        warn("INJECT_MISS", "idx:", i, "key:", key,
+             "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
       }
     }
     bodyText = JSON.stringify(parsedBody);
@@ -428,12 +436,11 @@ export default async function handler(req) {
   const isStream = contentType.includes("text/event-stream");
   log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
 
-  // Log upstream errors with response body snippet for debugging
+  // Log upstream errors with full response body for debugging (always-on)
   if (upstreamRes.status >= 400) {
     const cloned = upstreamRes.clone();
     const errText = await cloned.text().catch(() => "(unreadable)");
-    const snippet = errText.length > 500 ? errText.slice(0, 500) + "..." : errText;
-    log("UPSTREAM_ERROR_STATUS", upstreamRes.status, "body:", snippet);
+    warn("UPSTREAM_ERROR_STATUS", upstreamRes.status, "provider:", providerKey, "body:", errText);
   }
 
   if (!isStream) {
@@ -545,10 +552,10 @@ export default async function handler(req) {
       if (streamTimer) clearTimeout(streamTimer);
 
       if (timedOut) {
-        log("STREAM_TIMEOUT", "reasoning:", accReasoning.length, "content:", accContent.length,
+        warn("STREAM_TIMEOUT", "reasoning:", accReasoning.length, "content:", accContent.length,
             "timeout:", effectiveTimeoutSec + "s");
         if (accReasoning.length > 5000 && accContent.length < 100) {
-          log("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+          warn("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
         }
         try {
           const timeoutMsg = JSON.stringify({
@@ -563,9 +570,9 @@ export default async function handler(req) {
       }
 
       if (!doneSeen && !timedOut && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
-        log("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
+        warn("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
         if (accReasoning.length > 5000 && accContent.length < 100) {
-          log("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+          warn("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
         }
         const key = await conversationHash(originalMessages, originalMessages.length, scope);
         log("CACHE finally key:", key);
