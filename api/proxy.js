@@ -27,8 +27,8 @@ function log(...args) {
   if (DEBUG) console.log("[cursorProxy]", ...args);
 }
 
-/** Always-on warning for critical diagnostic events (not gated by DEBUG). */
-function warn(...args) {
+/** Always-on diagnostic log for critical events (not gated by DEBUG). */
+function diag(...args) {
   console.log("[cursorProxy]", ...args);
 }
 
@@ -276,7 +276,7 @@ export default async function handler(req) {
     try {
       parsedBody = JSON.parse(bodyText);
     } catch {
-      warn("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "firstChars:", bodyText.slice(0, 200));
+      diag("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "firstChars:", bodyText.slice(0, 200));
     }
   }
 
@@ -290,7 +290,7 @@ export default async function handler(req) {
   log("RESOLVED", "model:", parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
 
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
-    warn("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
+    diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
       `Unknown provider "${providerKey}". Use deepseek, kimi, or minimax (or set model to a matching provider prefix).`,
@@ -307,15 +307,6 @@ export default async function handler(req) {
       `Missing environment variable ${provider.apiKeyEnv} for provider "${providerKey}".`,
       "provider_key_missing",
       "api_error"
-    );
-  }
-
-  // Docker / local Node: one access line without DEBUG (Vercel Edge skips to avoid noise)
-  if (!process.env.VERCEL) {
-    const modelName =
-      typeof parsedBody?.model === "string" ? parsedBody.model : "-";
-    console.log(
-      `[cursorProxy] ${req.method} /v1/${pathParam} provider=${providerKey} model=${modelName}`
     );
   }
 
@@ -351,15 +342,18 @@ export default async function handler(req) {
       })
     );
 
+    let missedCount = 0;
     for (const { i, stored, key } of fetched) {
       if (stored != null) {
         messages[i] = { ...messages[i], reasoning_content: stored };
         injectedCount++;
       } else {
-        warn("INJECT_MISS", "idx:", i, "key:", key,
+        missedCount++;
+        log("INJECT_MISS", "idx:", i, "key:", key,
              "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
       }
     }
+    if (missedCount > 0) diag("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
     bodyText = JSON.stringify(parsedBody);
   }
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
@@ -440,7 +434,7 @@ export default async function handler(req) {
   if (upstreamRes.status >= 400) {
     const cloned = upstreamRes.clone();
     const errText = await cloned.text().catch(() => "(unreadable)");
-    warn("UPSTREAM_ERROR_STATUS", upstreamRes.status, "provider:", providerKey, "body:", errText);
+    diag("UPSTREAM_ERROR_STATUS", upstreamRes.status, "provider:", providerKey, "body:", errText);
   }
 
   if (!isStream) {
@@ -461,7 +455,7 @@ export default async function handler(req) {
       log("CACHE non-stream key:", key);
       await kvSet(key, reasoning);
     }
-    log("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoning?.length || 0);
+    diag("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoning?.length || 0);
     return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
@@ -520,9 +514,9 @@ export default async function handler(req) {
           const data = line.slice(6).trim();
           if (data === "[DONE]") {
             doneSeen = true;
-            log("STREAM_DONE", "reasoning:", accReasoning.length, "content:", accContent.length);
+            diag("STREAM_DONE", "reasoning:", accReasoning.length, "content:", accContent.length);
             if (accReasoning.length > 5000 && accContent.length < 100) {
-              log("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+              diag("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
             }
             if (originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
               const key = await conversationHash(originalMessages, originalMessages.length, scope);
@@ -552,10 +546,10 @@ export default async function handler(req) {
       if (streamTimer) clearTimeout(streamTimer);
 
       if (timedOut) {
-        warn("STREAM_TIMEOUT", "reasoning:", accReasoning.length, "content:", accContent.length,
+        diag("STREAM_TIMEOUT", "reasoning:", accReasoning.length, "content:", accContent.length,
             "timeout:", effectiveTimeoutSec + "s");
         if (accReasoning.length > 5000 && accContent.length < 100) {
-          warn("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+          diag("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
         }
         try {
           const timeoutMsg = JSON.stringify({
@@ -570,9 +564,9 @@ export default async function handler(req) {
       }
 
       if (!doneSeen && !timedOut && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
-        warn("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
+        diag("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
         if (accReasoning.length > 5000 && accContent.length < 100) {
-          warn("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+          diag("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
         }
         const key = await conversationHash(originalMessages, originalMessages.length, scope);
         log("CACHE finally key:", key);
