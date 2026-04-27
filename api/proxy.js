@@ -377,6 +377,7 @@ async function convertImagesToText(messages) {
     if (!Array.isArray(m.content)) continue;
     if (m.content.length === 0) {
       m.content = "[Image content removed — this model does not support vision inputs.]";
+      continue;
     }
     // Compact: merge consecutive text parts
     const hasText = m.content.some((p) => p?.type === "text" || typeof p === "string");
