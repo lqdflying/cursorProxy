@@ -463,22 +463,22 @@ export default async function handler(req) {
     ? await conversationHash(originalMessages, originalMessages.length, scope)
     : null;
 
-  // Inject stored reasoning into prior assistant messages by position.
-  // Skip tool-calling assistant turns: providers (DeepSeek/Kimi) reject
-  // reasoning_content attached to messages whose role is assistant + tool_calls.
-  // Their content is typically null/empty in that shape, and there's no user-visible
-  // reasoning to replay for a tool-call turn anyway.
+  // Inject stored reasoning into ALL prior assistant messages by position.
+  //
+  // DeepSeek thinking mode REQUIRES reasoning_content on every prior assistant
+  // turn (including tool-calling ones) — otherwise it returns:
+  //   "The `reasoning_content` in the thinking mode must be passed back to the API."
+  // When KV has nothing for a given turn (e.g. trivial greeting that produced no
+  // thinking, or a turn not proxied through us, or KV race), we still inject a
+  // placeholder so the field is present and the provider accepts the request.
   let injectedCount = 0;
   if (originalMessages) {
     const messages = parsedBody.messages;
-    const isToolCallAssistant = (m) =>
-      Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
     const assistantIndices = messages
       .map((m, i) => i)
       .filter((i) =>
         messages[i].role === "assistant" &&
-        !hasReasoningField(providerKey, messages[i]) &&
-        !isToolCallAssistant(messages[i])
+        !hasReasoningField(providerKey, messages[i])
       );
 
     const fetched = await Promise.all(
@@ -510,6 +510,11 @@ export default async function handler(req) {
           diag("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
         }
       } else {
+        // Inject placeholder so the reasoning field is present.
+        // DeepSeek thinking mode requires the field on every prior assistant turn.
+        // MiniMax expects an array; DeepSeek/Kimi expect a string.
+        const placeholder = providerKey === "minimax" ? [] : "";
+        messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
         missedCount++;
         log("INJECT_MISS", "idx:", i, "key:", key,
              "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
