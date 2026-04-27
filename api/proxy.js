@@ -270,7 +270,9 @@ export default async function handler(req) {
     bodyText = await req.text();
     try {
       parsedBody = JSON.parse(bodyText);
-    } catch {}
+    } catch {
+      log("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "firstChars:", bodyText.slice(0, 200));
+    }
   }
 
   if (!providerKey) {
@@ -279,6 +281,8 @@ export default async function handler(req) {
   if (!providerKey) {
     providerKey = "deepseek";
   }
+
+  log("RESOLVED", "model:", parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
 
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
     log("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);

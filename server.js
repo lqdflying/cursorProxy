@@ -58,6 +58,14 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
 
+    // Best-effort extract model for access log (parse failures are silent)
+    let modelInfo = "";
+    try {
+      const json = JSON.parse(body.toString());
+      if (json.model) modelInfo += ` model=${json.model}`;
+      modelInfo += ` stream=${json.stream ?? "-"}`;
+    } catch {}
+
     // Build Web API Headers (join any multi-value arrays)
     const headersInit = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -76,7 +84,7 @@ const server = http.createServer(async (req, res) => {
     webResponse.headers.forEach((v, k) => { outHeaders[k] = v; });
     res.writeHead(webResponse.status, outHeaders);
 
-    console.log(`${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)`);
+    console.log(`${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
 
     if (webResponse.body) {
       const reader = webResponse.body.getReader();
