@@ -222,6 +222,35 @@ function deserializeReasoning(providerKey, stored) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadStoredReasoning(providerKey, key) {
+  return deserializeReasoning(providerKey, await kvGet(key));
+}
+
+async function waitForStoredReasoning(providerKey, key) {
+  const retryDelaysMs = [40, 120, 240, 400];
+  let stored = await loadStoredReasoning(providerKey, key);
+  if (stored != null) {
+    return { stored, waitedMs: 0, attempts: 0 };
+  }
+
+  let waitedMs = 0;
+  for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+    const delay = retryDelaysMs[attempt];
+    await sleep(delay);
+    waitedMs += delay;
+    stored = await loadStoredReasoning(providerKey, key);
+    if (stored != null) {
+      return { stored, waitedMs, attempts: attempt + 1 };
+    }
+  }
+
+  return { stored: null, waitedMs, attempts: retryDelaysMs.length };
+}
+
 function hasReasoningField(providerKey, obj) {
   return obj && Object.prototype.hasOwnProperty.call(obj, reasoningField(providerKey));
 }
@@ -430,35 +459,63 @@ export default async function handler(req) {
 
   const scopeUser = await cacheScopeUserId(req);
   const scope = providerKey + ":" + scopeUser;
+  const replyReasoningKey = originalMessages
+    ? await conversationHash(originalMessages, originalMessages.length, scope)
+    : null;
 
-  // Inject stored reasoning into ALL assistant messages by position.
+  // Inject stored reasoning into prior assistant messages by position.
+  // Skip tool-calling assistant turns: providers (DeepSeek/Kimi) reject
+  // reasoning_content attached to messages whose role is assistant + tool_calls.
+  // Their content is typically null/empty in that shape, and there's no user-visible
+  // reasoning to replay for a tool-call turn anyway.
   let injectedCount = 0;
   if (originalMessages) {
     const messages = parsedBody.messages;
+    const isToolCallAssistant = (m) =>
+      Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
     const assistantIndices = messages
       .map((m, i) => i)
-      .filter((i) => messages[i].role === "assistant" && !hasReasoningField(providerKey, messages[i]));
+      .filter((i) =>
+        messages[i].role === "assistant" &&
+        !hasReasoningField(providerKey, messages[i]) &&
+        !isToolCallAssistant(messages[i])
+      );
 
     const fetched = await Promise.all(
       assistantIndices.map(async (i) => {
         const key = await conversationHash(originalMessages, i, scope);
-        const stored = deserializeReasoning(providerKey, await kvGet(key));
-        log("INJECT idx:", i, "key:", key, "hit:", stored != null);
-        return { i, stored, key };
+        const result = await waitForStoredReasoning(providerKey, key);
+        log(
+          "INJECT idx:",
+          i,
+          "key:",
+          key,
+          "hit:",
+          result.stored != null,
+          "waitedMs:",
+          result.waitedMs
+        );
+        return { i, key, ...result };
       })
     );
 
     let missedCount = 0;
-    for (const { i, stored, key } of fetched) {
+    let recoveredCount = 0;
+    for (const { i, stored, key, waitedMs, attempts } of fetched) {
       if (stored != null) {
         messages[i] = { ...messages[i], [reasoningField(providerKey)]: stored };
         injectedCount++;
+        if (waitedMs > 0) {
+          recoveredCount++;
+          diag("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
+        }
       } else {
         missedCount++;
         log("INJECT_MISS", "idx:", i, "key:", key,
              "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
       }
     }
+    if (recoveredCount > 0) diag("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
     if (missedCount > 0) diag("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
     bodyText = JSON.stringify(parsedBody);
   }
@@ -556,10 +613,9 @@ export default async function handler(req) {
     }
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
-    if (hasReasoningValue(reasoning) && originalMessages) {
-      const key = await conversationHash(originalMessages, originalMessages.length, scope);
-      log("CACHE non-stream key:", key);
-      await kvSet(key, serializeReasoning(providerKey, reasoning));
+    if (hasReasoningValue(reasoning) && replyReasoningKey) {
+      log("CACHE non-stream key:", replyReasoningKey);
+      await kvSet(replyReasoningKey, serializeReasoning(providerKey, reasoning));
     }
     diag("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoningSize(reasoning));
     return new Response(JSON.stringify(stripResponseChunk(json)), {
@@ -602,6 +658,24 @@ export default async function handler(req) {
     let accReasoning = null;
     let accContent = "";
     let doneSeen = false;
+    let lastCachedReasoningSize = 0;
+
+    async function cacheReasoningSnapshot(force = false) {
+      if (!replyReasoningKey || !hasReasoningValue(accReasoning)) return;
+      const size = reasoningSize(accReasoning);
+      if (!force) {
+        const minDelta = providerKey === "minimax" ? 1 : 256;
+        if (size === 0 || size < lastCachedReasoningSize + minDelta) return;
+      }
+      lastCachedReasoningSize = size;
+      log("CACHE stream key:", replyReasoningKey, "size:", size, "force:", force);
+      // Mid-stream snapshots are fire-and-forget so KV latency does not stall
+      // the SSE forward path. Forced writes (at [DONE] / finally) still await
+      // to guarantee durability before the request ends.
+      const writePromise = kvSet(replyReasoningKey, serializeReasoning(providerKey, accReasoning))
+        .catch((err) => log("CACHE_WRITE_ERROR", err?.message));
+      if (force) await writePromise;
+    }
 
     try {
       while (true) {
@@ -625,11 +699,7 @@ export default async function handler(req) {
             if (reasoningChars > 5000 && accContent.length < 100) {
               diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
             }
-            if (originalMessages && hasReasoningValue(accReasoning)) {
-              const key = await conversationHash(originalMessages, originalMessages.length, scope);
-              log("CACHE stream key:", key);
-              await kvSet(key, serializeReasoning(providerKey, accReasoning));
-            }
+            await cacheReasoningSnapshot(true);
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
           }
@@ -639,6 +709,9 @@ export default async function handler(req) {
             const delta = json.choices?.[0]?.delta;
             const chunkReasoning = readReasoning(providerKey, delta);
             accReasoning = updateStreamReasoning(providerKey, accReasoning, chunkReasoning);
+            if (hasReasoningValue(chunkReasoning)) {
+              await cacheReasoningSnapshot();
+            }
             if (delta?.content != null) accContent += delta.content;
             await writer.write(
               encoder.encode(
@@ -678,9 +751,7 @@ export default async function handler(req) {
         if (reasoningChars > 5000 && accContent.length < 100) {
           diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
-        const key = await conversationHash(originalMessages, originalMessages.length, scope);
-        log("CACHE finally key:", key);
-        await kvSet(key, serializeReasoning(providerKey, accReasoning));
+        await cacheReasoningSnapshot(true);
       }
       await writer.close();
     }

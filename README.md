@@ -2,7 +2,7 @@
 
 A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on Vercel Edge or self-host via Docker.
 
-- **Reasoning bridge:** caches and injects provider-specific reasoning by conversation position, enabling multi-turn reasoning in Cursor and OpenAI-compatible clients.
+- **Reasoning bridge:** caches and injects provider-specific reasoning by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively.
 - **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 
