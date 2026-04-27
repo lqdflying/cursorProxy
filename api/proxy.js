@@ -250,6 +250,7 @@ async function convertImagesToText(messages) {
 
 // ─── Main handler ──────────────────────────────────────────────────────────
 export default async function handler(req) {
+  const t0 = Date.now();
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
 
@@ -280,6 +281,7 @@ export default async function handler(req) {
   }
 
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
+    log("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
       `Unknown provider "${providerKey}". Use deepseek, kimi, or minimax (or set model to a matching provider prefix).`,
@@ -422,6 +424,14 @@ export default async function handler(req) {
   const isStream = contentType.includes("text/event-stream");
   log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
 
+  // Log upstream errors with response body snippet for debugging
+  if (upstreamRes.status >= 400) {
+    const cloned = upstreamRes.clone();
+    const errText = await cloned.text().catch(() => "(unreadable)");
+    const snippet = errText.length > 500 ? errText.slice(0, 500) + "..." : errText;
+    log("UPSTREAM_ERROR_STATUS", upstreamRes.status, "body:", snippet);
+  }
+
   if (!isStream) {
     const text = await upstreamRes.text();
     let json;
@@ -440,19 +450,43 @@ export default async function handler(req) {
       log("CACHE non-stream key:", key);
       await kvSet(key, reasoning);
     }
+    log("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoning?.length || 0);
     return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
     });
   }
 
+  // Streaming timeout: defaults to 280s on Vercel (under the 300s limit) or 0 (disabled)
+  // Also clamps to remaining Vercel budget so pre-stream work doesn't eat into the 300s wall.
+  const streamTimeoutSec = parseInt(process.env.STREAM_TIMEOUT_SECONDS || "", 10);
+  const elapsedSec = (Date.now() - t0) / 1000;
+  const platformLimit = process.env.VERCEL ? 295 : Infinity;
+  const maxStreamSec = platformLimit - elapsedSec - 5; // 5s safety margin
+  const effectiveTimeoutSec = streamTimeoutSec > 0
+    ? Math.min(streamTimeoutSec, maxStreamSec)
+    : (process.env.VERCEL ? Math.min(280, maxStreamSec) : 0);
+
+  log("STREAM_START", "timeout:", effectiveTimeoutSec > 0 ? effectiveTimeoutSec + "s" : "none",
+      "provider:", providerKey);
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
 
+  const reader = upstreamRes.body.getReader();
+  let timedOut = false;
+  let streamTimer = null;
+
+  if (effectiveTimeoutSec > 0) {
+    streamTimer = setTimeout(() => {
+      timedOut = true;
+      reader.cancel().catch(() => {});
+    }, effectiveTimeoutSec * 1000);
+  }
+
   (async () => {
-    const reader = upstreamRes.body.getReader();
     let buffer = "";
     let accReasoning = "";
     let accContent = "";
@@ -476,6 +510,9 @@ export default async function handler(req) {
           if (data === "[DONE]") {
             doneSeen = true;
             log("STREAM_DONE", "reasoning:", accReasoning.length, "content:", accContent.length);
+            if (accReasoning.length > 5000 && accContent.length < 100) {
+              log("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+            }
             if (originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
               const key = await conversationHash(originalMessages, originalMessages.length, scope);
               log("CACHE stream key:", key);
@@ -501,8 +538,31 @@ export default async function handler(req) {
         }
       }
     } finally {
-      if (!doneSeen && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
+      if (streamTimer) clearTimeout(streamTimer);
+
+      if (timedOut) {
+        log("STREAM_TIMEOUT", "reasoning:", accReasoning.length, "content:", accContent.length,
+            "timeout:", effectiveTimeoutSec + "s");
+        if (accReasoning.length > 5000 && accContent.length < 100) {
+          log("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+        }
+        try {
+          const timeoutMsg = JSON.stringify({
+            error: {
+              message: `Stream timed out after ${effectiveTimeoutSec}s. The model was still generating (reasoning: ${accReasoning.length} chars, content: ${accContent.length} chars). Retry with a smaller prompt, or increase STREAM_TIMEOUT_SECONDS.`,
+              type: "stream_timeout",
+              code: "stream_timeout",
+            },
+          });
+          await writer.write(encoder.encode("data: " + timeoutMsg + "\n\n"));
+        } catch {}
+      }
+
+      if (!doneSeen && !timedOut && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
         log("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
+        if (accReasoning.length > 5000 && accContent.length < 100) {
+          log("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+        }
         const key = await conversationHash(originalMessages, originalMessages.length, scope);
         log("CACHE finally key:", key);
         await kvSet(key, accReasoning);
