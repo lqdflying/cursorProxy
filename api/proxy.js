@@ -27,7 +27,7 @@ function log(...args) {
   if (DEBUG) console.log("[cursorProxy]", ...args);
 }
 
-/** Always-on diagnostic log for critical events (not gated by DEBUG). */
+/** Always-on log for genuine error conditions only (parse failures, unknown\n *  providers, upstream errors, stream timeouts). All other operational events\n *  use log() and are gated by DEBUG=true. */
 function diag(...args) {
   console.log("[cursorProxy]", ...args);
 }
@@ -507,7 +507,7 @@ export default async function handler(req) {
         injectedCount++;
         if (waitedMs > 0) {
           recoveredCount++;
-          diag("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
+          log("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
         }
       } else {
         // Inject a non-empty placeholder so the reasoning field is present.
@@ -525,12 +525,12 @@ export default async function handler(req) {
           : "(prior reasoning unavailable)";
         messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
         missedCount++;
-        diag("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
+        log("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
              "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
       }
     }
-    if (recoveredCount > 0) diag("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
-    if (missedCount > 0) diag("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
+    if (recoveredCount > 0) log("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
+    if (missedCount > 0) log("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
     bodyText = JSON.stringify(parsedBody);
   }
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
@@ -631,7 +631,7 @@ export default async function handler(req) {
       log("CACHE non-stream key:", replyReasoningKey);
       await kvSet(replyReasoningKey, serializeReasoning(providerKey, reasoning));
     }
-    diag("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoningSize(reasoning));
+    log("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoningSize(reasoning));
     return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
@@ -709,9 +709,9 @@ export default async function handler(req) {
           if (data === "[DONE]") {
             doneSeen = true;
             const reasoningChars = reasoningSize(accReasoning);
-            diag("STREAM_DONE", "reasoning:", reasoningChars, "content:", accContent.length);
+            log("STREAM_DONE", "reasoning:", reasoningChars, "content:", accContent.length);
             if (reasoningChars > 5000 && accContent.length < 100) {
-              diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
+              log("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
             }
             await cacheReasoningSnapshot(true);
             await writer.write(encoder.encode("data: [DONE]\n\n"));
@@ -745,7 +745,7 @@ export default async function handler(req) {
         diag("STREAM_TIMEOUT", "reasoning:", reasoningChars, "content:", accContent.length,
             "timeout:", effectiveTimeoutSec + "s");
         if (reasoningChars > 5000 && accContent.length < 100) {
-          diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
+          log("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
         try {
           const timeoutMsg = JSON.stringify({
@@ -761,9 +761,9 @@ export default async function handler(req) {
 
       if (!doneSeen && !timedOut && originalMessages && hasReasoningValue(accReasoning)) {
         const reasoningChars = reasoningSize(accReasoning);
-        diag("STREAM_FINALLY", "reasoning:", reasoningChars, "content:", accContent.length);
+        log("STREAM_FINALLY", "reasoning:", reasoningChars, "content:", accContent.length);
         if (reasoningChars > 5000 && accContent.length < 100) {
-          diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
+          log("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
         await cacheReasoningSnapshot(true);
       }
