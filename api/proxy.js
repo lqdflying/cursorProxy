@@ -177,9 +177,64 @@ async function conversationHash(messages, upTo, scope) {
   return sha256Prefix(scope + ":" + JSON.stringify(prefix), "conv:");
 }
 
+function reasoningField(providerKey) {
+  return providerKey === "minimax" ? "reasoning_details" : "reasoning_content";
+}
+
+function hasReasoningValue(value) {
+  if (value == null) return false;
+  if (typeof value === "string") return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function readReasoning(providerKey, obj) {
+  if (!obj) return null;
+  const field = reasoningField(providerKey);
+  if (!Object.prototype.hasOwnProperty.call(obj, field)) return null;
+  const value = obj[field];
+  return hasReasoningValue(value) ? value : null;
+}
+
+function reasoningSize(value) {
+  if (!hasReasoningValue(value)) return 0;
+  if (typeof value === "string") return value.length;
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+}
+
+function serializeReasoning(providerKey, value) {
+  return providerKey === "minimax" ? JSON.stringify(value) : String(value);
+}
+
+function deserializeReasoning(providerKey, stored) {
+  if (!hasReasoningValue(stored)) return null;
+  if (providerKey !== "minimax") return stored;
+  try {
+    const parsed = JSON.parse(stored);
+    return hasReasoningValue(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasReasoningField(providerKey, obj) {
+  return obj && Object.prototype.hasOwnProperty.call(obj, reasoningField(providerKey));
+}
+
+function updateStreamReasoning(providerKey, current, value) {
+  if (!hasReasoningValue(value)) return current;
+  if (providerKey === "minimax") return value;
+  return (current || "") + value;
+}
+
 function stripReasoning(obj) {
   if (!obj) return obj;
-  const { reasoning_content, ...rest } = obj;
+  const { reasoning_content, reasoning_details, ...rest } = obj;
   return rest;
 }
 
@@ -366,23 +421,28 @@ export default async function handler(req) {
   const upstreamUrl = provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
 
+  if (providerKey === "minimax" && parsedBody) {
+    parsedBody.reasoning_split = true;
+    bodyText = JSON.stringify(parsedBody);
+  }
+
   const originalMessages = parsedBody?.messages ? [...parsedBody.messages] : null;
 
   const scopeUser = await cacheScopeUserId(req);
   const scope = providerKey + ":" + scopeUser;
 
-  // Inject stored reasoning_content into ALL assistant messages by position
+  // Inject stored reasoning into ALL assistant messages by position.
   let injectedCount = 0;
   if (originalMessages) {
     const messages = parsedBody.messages;
     const assistantIndices = messages
       .map((m, i) => i)
-      .filter((i) => messages[i].role === "assistant" && !("reasoning_content" in messages[i]));
+      .filter((i) => messages[i].role === "assistant" && !hasReasoningField(providerKey, messages[i]));
 
     const fetched = await Promise.all(
       assistantIndices.map(async (i) => {
         const key = await conversationHash(originalMessages, i, scope);
-        const stored = await kvGet(key);
+        const stored = deserializeReasoning(providerKey, await kvGet(key));
         log("INJECT idx:", i, "key:", key, "hit:", stored != null);
         return { i, stored, key };
       })
@@ -391,7 +451,7 @@ export default async function handler(req) {
     let missedCount = 0;
     for (const { i, stored, key } of fetched) {
       if (stored != null) {
-        messages[i] = { ...messages[i], reasoning_content: stored };
+        messages[i] = { ...messages[i], [reasoningField(providerKey)]: stored };
         injectedCount++;
       } else {
         missedCount++;
@@ -495,13 +555,13 @@ export default async function handler(req) {
       });
     }
 
-    const reasoning = json.choices?.[0]?.message?.reasoning_content;
-    if (reasoning != null && originalMessages) {
+    const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
+    if (hasReasoningValue(reasoning) && originalMessages) {
       const key = await conversationHash(originalMessages, originalMessages.length, scope);
       log("CACHE non-stream key:", key);
-      await kvSet(key, reasoning);
+      await kvSet(key, serializeReasoning(providerKey, reasoning));
     }
-    diag("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoning?.length || 0);
+    diag("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoningSize(reasoning));
     return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
@@ -539,7 +599,7 @@ export default async function handler(req) {
 
   (async () => {
     let buffer = "";
-    let accReasoning = "";
+    let accReasoning = null;
     let accContent = "";
     let doneSeen = false;
 
@@ -560,14 +620,15 @@ export default async function handler(req) {
           const data = line.slice(6).trim();
           if (data === "[DONE]") {
             doneSeen = true;
-            diag("STREAM_DONE", "reasoning:", accReasoning.length, "content:", accContent.length);
-            if (accReasoning.length > 5000 && accContent.length < 100) {
-              diag("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+            const reasoningChars = reasoningSize(accReasoning);
+            diag("STREAM_DONE", "reasoning:", reasoningChars, "content:", accContent.length);
+            if (reasoningChars > 5000 && accContent.length < 100) {
+              diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
             }
-            if (originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
+            if (originalMessages && hasReasoningValue(accReasoning)) {
               const key = await conversationHash(originalMessages, originalMessages.length, scope);
               log("CACHE stream key:", key);
-              await kvSet(key, accReasoning);
+              await kvSet(key, serializeReasoning(providerKey, accReasoning));
             }
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
@@ -576,7 +637,8 @@ export default async function handler(req) {
           try {
             const json = JSON.parse(data);
             const delta = json.choices?.[0]?.delta;
-            if (delta?.reasoning_content) accReasoning += delta.reasoning_content;
+            const chunkReasoning = readReasoning(providerKey, delta);
+            accReasoning = updateStreamReasoning(providerKey, accReasoning, chunkReasoning);
             if (delta?.content != null) accContent += delta.content;
             await writer.write(
               encoder.encode(
@@ -592,15 +654,16 @@ export default async function handler(req) {
       if (streamTimer) clearTimeout(streamTimer);
 
       if (timedOut) {
-        diag("STREAM_TIMEOUT", "reasoning:", accReasoning.length, "content:", accContent.length,
+        const reasoningChars = reasoningSize(accReasoning);
+        diag("STREAM_TIMEOUT", "reasoning:", reasoningChars, "content:", accContent.length,
             "timeout:", effectiveTimeoutSec + "s");
-        if (accReasoning.length > 5000 && accContent.length < 100) {
-          diag("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+        if (reasoningChars > 5000 && accContent.length < 100) {
+          diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
         try {
           const timeoutMsg = JSON.stringify({
             error: {
-              message: `Stream timed out after ${effectiveTimeoutSec}s. The model was still generating (reasoning: ${accReasoning.length} chars, content: ${accContent.length} chars). Retry with a smaller prompt, or increase STREAM_TIMEOUT_SECONDS.`,
+              message: `Stream timed out after ${effectiveTimeoutSec}s. The model was still generating (reasoning: ${reasoningChars} chars, content: ${accContent.length} chars). Retry with a smaller prompt, or increase STREAM_TIMEOUT_SECONDS.`,
               type: "stream_timeout",
               code: "stream_timeout",
             },
@@ -609,14 +672,15 @@ export default async function handler(req) {
         } catch {}
       }
 
-      if (!doneSeen && !timedOut && originalMessages && (accReasoning.length > 0 || accContent.length > 0)) {
-        diag("STREAM_FINALLY", "reasoning:", accReasoning.length, "content:", accContent.length);
-        if (accReasoning.length > 5000 && accContent.length < 100) {
-          diag("LOW_CONTENT_WARNING", "reasoning:", accReasoning.length, "content:", accContent.length);
+      if (!doneSeen && !timedOut && originalMessages && hasReasoningValue(accReasoning)) {
+        const reasoningChars = reasoningSize(accReasoning);
+        diag("STREAM_FINALLY", "reasoning:", reasoningChars, "content:", accContent.length);
+        if (reasoningChars > 5000 && accContent.length < 100) {
+          diag("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
         const key = await conversationHash(originalMessages, originalMessages.length, scope);
         log("CACHE finally key:", key);
-        await kvSet(key, accReasoning);
+        await kvSet(key, serializeReasoning(providerKey, accReasoning));
       }
       await writer.close();
     }
