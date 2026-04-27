@@ -510,13 +510,22 @@ export default async function handler(req) {
           diag("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
         }
       } else {
-        // Inject placeholder so the reasoning field is present.
-        // DeepSeek thinking mode requires the field on every prior assistant turn.
-        // MiniMax expects an array; DeepSeek/Kimi expect a string.
-        const placeholder = providerKey === "minimax" ? [] : "";
+        // Inject a non-empty placeholder so the reasoning field is present.
+        // DeepSeek/Kimi thinking mode require reasoning_content on every prior
+        // assistant turn (including tool-call turns) and treat empty strings as
+        // "missing", returning:
+        //   "thinking is enabled but reasoning_content is missing in assistant ..."
+        // The text below is intentionally generic: it is hidden from the client
+        // (we strip reasoning_content before responding) and only used to satisfy
+        // the provider's validator when the original reasoning was not captured
+        // (e.g. the turn was produced before this proxy was in front, was a
+        // simple greeting that produced no thinking, or the cache write was lost).
+        const placeholder = providerKey === "minimax"
+          ? [{ type: "text", text: "(prior reasoning unavailable)" }]
+          : "(prior reasoning unavailable)";
         messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
         missedCount++;
-        log("INJECT_MISS", "idx:", i, "key:", key,
+        diag("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
              "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
       }
     }
