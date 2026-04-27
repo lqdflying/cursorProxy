@@ -4,3 +4,4 @@ node_modules/
 !.env.example
 bun.lock
 .github/instructions/
+wiki/
