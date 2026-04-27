@@ -113,3 +113,25 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[cursorProxy] listening on port ${PORT}`);
 });
+
+// Graceful shutdown: stop accepting new connections, let in-flight requests
+// (including SSE streams) drain, then exit. Force-exit after a hard deadline
+// so a stuck stream can't block container shutdown forever.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const graceMs = parseInt(process.env.SHUTDOWN_GRACE_MS || "", 10);
+  const deadline = Number.isFinite(graceMs) && graceMs > 0 ? graceMs : 25000;
+  console.log(`[cursorProxy] ${signal} received, draining (max ${deadline}ms)...`);
+  server.close((err) => {
+    if (err) console.error("[cursorProxy] server.close error:", err.message);
+    process.exit(0);
+  });
+  setTimeout(() => {
+    console.warn("[cursorProxy] grace period elapsed, forcing exit");
+    process.exit(0);
+  }, deadline).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

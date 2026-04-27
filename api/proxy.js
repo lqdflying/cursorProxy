@@ -230,8 +230,18 @@ async function loadStoredReasoning(providerKey, key) {
   return deserializeReasoning(providerKey, await kvGet(key));
 }
 
+function parseRetryDelaysMs() {
+  const raw = process.env.KV_RETRY_DELAYS_MS;
+  if (!raw) return [40, 120, 240, 400];
+  const parsed = raw
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  return parsed.length > 0 ? parsed : [40, 120, 240, 400];
+}
+
 async function waitForStoredReasoning(providerKey, key) {
-  const retryDelaysMs = [40, 120, 240, 400];
+  const retryDelaysMs = parseRetryDelaysMs();
   let stored = await loadStoredReasoning(providerKey, key);
   if (stored != null) {
     return { stored, waitedMs: 0, attempts: 0 };
@@ -405,8 +415,8 @@ export default async function handler(req) {
     bodyText = await req.text();
     try {
       parsedBody = JSON.parse(bodyText);
-    } catch {
-      diag("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "firstChars:", bodyText.slice(0, 200));
+    } catch (err) {
+      diag("BODY_PARSE_ERROR", "bodyLength:", bodyText.length, "err:", err?.message);
     }
   }
 
@@ -570,9 +580,17 @@ export default async function handler(req) {
   headers.set("accept-encoding", "identity");
 
   let upstreamRes;
-  const connectController = process.env.VERCEL ? new AbortController() : null;
+  // Connect-phase timeout (cleared as soon as headers arrive — never aborts the
+  // streaming body). Safe to apply on Docker too; default 15s, override via
+  // UPSTREAM_CONNECT_TIMEOUT_MS (set to 0 to disable).
+  const connectTimeoutMs = (() => {
+    const raw = parseInt(process.env.UPSTREAM_CONNECT_TIMEOUT_MS || "", 10);
+    if (Number.isFinite(raw) && raw >= 0) return raw;
+    return 15000;
+  })();
+  const connectController = connectTimeoutMs > 0 ? new AbortController() : null;
   const connectTimer = connectController
-    ? setTimeout(() => connectController.abort(), 15000)
+    ? setTimeout(() => connectController.abort(), connectTimeoutMs)
     : null;
   try {
     upstreamRes = await fetch(upstreamUrl, {
@@ -590,7 +608,7 @@ export default async function handler(req) {
       JSON.stringify({
         error: {
           message: isTimeout
-            ? "Upstream provider timed out (>15s connecting)"
+            ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting)`
             : `Upstream fetch failed: ${err?.message}`,
           type: "upstream_error",
           code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
@@ -651,6 +669,16 @@ export default async function handler(req) {
   log("STREAM_START", "timeout:", effectiveTimeoutSec > 0 ? effectiveTimeoutSec + "s" : "none",
       "provider:", providerKey);
 
+  // Guard against an upstream that advertises text/event-stream but returns no
+  // body (misbehaving providers, 204-on-stream). Without this, getReader() throws.
+  if (!upstreamRes.body) {
+    log("STREAM_EMPTY_BODY", upstreamRes.status);
+    return new Response(null, {
+      status: upstreamRes.status,
+      headers: { "content-type": contentType || "text/event-stream" },
+    });
+  }
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
@@ -696,8 +724,11 @@ export default async function handler(req) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop();
+        const rawLines = buffer.split("\n");
+        buffer = rawLines.pop();
+        // Strip trailing \r so CRLF line endings don't leak into our re-emitted
+        // SSE frames (which use \n\n terminators).
+        const lines = rawLines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) {

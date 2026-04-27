@@ -29,9 +29,15 @@ export async function kvGet(key) {
   }
 }
 
-export async function kvSet(key, value, ttlSeconds = 7200) {
+function defaultTtlSeconds() {
+  const raw = parseInt(process.env.KV_TTL_SECONDS || "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 7200;
+}
+
+export async function kvSet(key, value, ttlSeconds) {
+  const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : defaultTtlSeconds();
   if (_driver) {
-    try { await _driver.set(key, value, "EX", ttlSeconds); } catch {}
+    try { await _driver.set(key, value, "EX", ttl); } catch {}
     return;
   }
   const url = process.env.KV_URL;
@@ -39,7 +45,7 @@ export async function kvSet(key, value, ttlSeconds = 7200) {
   if (!url || !token) return;
   try {
     await fetch(
-      `${url}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?EX=${ttlSeconds}`,
+      `${url}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?EX=${ttl}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
   } catch {}
