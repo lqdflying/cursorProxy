@@ -5,3 +5,4 @@ node_modules/
 bun.lock
 .github/instructions/
 wiki/
+.edgeone/

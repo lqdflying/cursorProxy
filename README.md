@@ -1,6 +1,6 @@
 # cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on Vercel Edge or self-host via Docker.
+A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
 - **Reasoning bridge:** caches and injects provider-specific reasoning by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively.
@@ -18,9 +18,10 @@ A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on 
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
 
-### 2. Set up Redis
+### 2. Set up KV storage
 - **Vercel:** create a free [Upstash](https://upstash.com) database → `KV_URL` + `KV_TOKEN`
 - **Docker:** add `REDIS_URL=redis://redis:6379` to your `.env`
+- **EdgeOne Pages:** create a KV namespace in the console and bind it with variable name `cursorproxy_kv`
 
 ### 3. Deploy
 
@@ -29,7 +30,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on 
 docker run -d --pull always -p 127.0.0.1:3000:3000 --env-file .env lqdflying/cursorproxy:latest
 ```
 
-For Vercel, Docker Compose, 1Panel, and Nginx reverse proxy — see [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment).
+For Vercel, EdgeOne Pages, Docker Compose, 1Panel, and Nginx reverse proxy — see [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment).
 
 ### 4. Configure Cursor
 
@@ -54,6 +55,7 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
+| `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
 
 Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration).
 
