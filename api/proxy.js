@@ -24,12 +24,11 @@ const PROVIDERS = {
 };
 
 function log(...args) {
-  if (DEBUG) console.log("[cursorProxy]", ...args);
+  if (DEBUG) console.log("[cursorProxy:proxy]", ...args);
 }
 
-/** Always-on log for genuine error conditions only (parse failures, unknown\n *  providers, upstream errors, stream timeouts). All other operational events\n *  use log() and are gated by DEBUG=true. */
 function diag(...args) {
-  console.log("[cursorProxy]", ...args);
+  console.log("[cursorProxy:proxy]", ...args);
 }
 
 function timingSafeEqualStr(a, b) {
@@ -404,6 +403,7 @@ export default async function handler(req) {
   const pathParam = searchParams.get("path") || "";
 
   log("START", req.method, req.url, "pathname:", pathname, "provider(query):", providerKey || "(infer)");
+  diag("REQ", req.method, pathname, "provider:", providerKey || "infer");
 
   if (isModelDiscoveryRequest(req, pathname, pathParam)) {
     return modelDiscoveryResponse(req);
@@ -651,6 +651,7 @@ export default async function handler(req) {
       await kvSet(replyReasoningKey, serializeReasoning(providerKey, reasoning));
     }
     log("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoningSize(reasoning));
+    diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
     return new Response(JSON.stringify(stripResponseChunk(json)), {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
@@ -799,6 +800,7 @@ export default async function handler(req) {
         }
         await cacheReasoningSnapshot(true);
       }
+      diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
     }
   })();

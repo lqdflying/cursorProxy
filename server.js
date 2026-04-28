@@ -8,9 +8,9 @@ import { setKvDriver } from "./api/kv.js";
 if (process.env.REDIS_URL) {
   const { default: Redis } = await import("ioredis");
   const redis = new Redis(process.env.REDIS_URL, { lazyConnect: false, enableReadyCheck: false });
-  redis.on("error", (err) => console.error("[cursorProxy] redis error:", err.message));
+  redis.on("error", (err) => console.error("[cursorProxy:server] redis error:", err.message));
   setKvDriver(redis);
-  console.log("[cursorProxy] using local Redis:", process.env.REDIS_URL);
+  console.log("[cursorProxy:server] using local Redis:", process.env.REDIS_URL);
 }
 
 const PORT = process.env.PORT || 3000;
@@ -84,7 +84,7 @@ const server = http.createServer(async (req, res) => {
     webResponse.headers.forEach((v, k) => { outHeaders[k] = v; });
     res.writeHead(webResponse.status, outHeaders);
 
-    console.log(`${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
+    console.log(`[cursorProxy:server] ${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
 
     if (webResponse.body) {
       const reader = webResponse.body.getReader();
@@ -98,7 +98,7 @@ const server = http.createServer(async (req, res) => {
     }
     res.end();
   } catch (err) {
-    console.error("[cursorProxy] server error:", err);
+    console.error("[cursorProxy:server] server error:", err);
     if (!res.headersSent) {
       res.writeHead(500, { "content-type": "application/json" });
       res.end(
@@ -111,7 +111,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[cursorProxy] listening on port ${PORT}`);
+  console.log(`[cursorProxy:server] listening on port ${PORT}`);
 });
 
 // Graceful shutdown: stop accepting new connections, let in-flight requests
@@ -123,13 +123,13 @@ function shutdown(signal) {
   shuttingDown = true;
   const graceMs = parseInt(process.env.SHUTDOWN_GRACE_MS || "", 10);
   const deadline = Number.isFinite(graceMs) && graceMs > 0 ? graceMs : 25000;
-  console.log(`[cursorProxy] ${signal} received, draining (max ${deadline}ms)...`);
+  console.log(`[cursorProxy:server] ${signal} received, draining (max ${deadline}ms)...`);
   server.close((err) => {
-    if (err) console.error("[cursorProxy] server.close error:", err.message);
+    if (err) console.error("[cursorProxy:server] server.close error:", err.message);
     process.exit(0);
   });
   setTimeout(() => {
-    console.warn("[cursorProxy] grace period elapsed, forcing exit");
+    console.warn("[cursorProxy:server] grace period elapsed, forcing exit");
     process.exit(0);
   }, deadline).unref();
 }

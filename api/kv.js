@@ -7,13 +7,17 @@
 
 let _driver = null; // { get(key): Promise<string|null>, set(key, value, "EX", ttl): Promise<void> }
 
+function diag(...args) {
+  console.log("[cursorProxy:kv]", ...args);
+}
+
 export function setKvDriver(driver) {
   _driver = driver;
 }
 
 export async function kvGet(key) {
   if (_driver) {
-    try { return await _driver.get(key); } catch { return null; }
+    try { return await _driver.get(key); } catch (err) { diag("GET_ERROR", "driver", err?.message); return null; }
   }
   const url = process.env.KV_URL;
   const token = process.env.KV_TOKEN;
@@ -24,7 +28,8 @@ export async function kvGet(key) {
     });
     const json = await res.json();
     return json.result ?? null;
-  } catch {
+  } catch (err) {
+    diag("GET_ERROR", "upstash", err?.message);
     return null;
   }
 }
@@ -37,7 +42,7 @@ function defaultTtlSeconds() {
 export async function kvSet(key, value, ttlSeconds) {
   const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : defaultTtlSeconds();
   if (_driver) {
-    try { await _driver.set(key, value, "EX", ttl); } catch {}
+    try { await _driver.set(key, value, "EX", ttl); } catch (err) { diag("SET_ERROR", "driver", err?.message); }
     return;
   }
   const url = process.env.KV_URL;
@@ -48,5 +53,5 @@ export async function kvSet(key, value, ttlSeconds) {
       `${url}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?EX=${ttl}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-  } catch {}
+  } catch (err) { diag("SET_ERROR", "upstash", err?.message); }
 }
