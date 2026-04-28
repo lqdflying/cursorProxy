@@ -63,6 +63,7 @@ Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Co
 
 - [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) — Step-by-step: Vercel, Docker, Compose, 1Panel, Nginx
 - [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration) — Every env var, routing logic, Cursor setup
+- [Advanced Usage](https://github.com/lqdflying/cursorProxy/wiki/Advanced-Usage-for-CursorProxy) — OAI VSCode Plugin and other OpenAI-compatible clients
 - [Architecture](https://github.com/lqdflying/cursorProxy/wiki/Architecture) — Request flow, TLS, file structure
 - [Development](https://github.com/lqdflying/cursorProxy/wiki/Development) — Contributing, adding providers
 
