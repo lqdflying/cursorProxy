@@ -1,0 +1,33 @@
+---
+description: "Edge Runtime safety rules for api/*.js — no Node.js APIs allowed"
+globs: api/**/*.js
+alwaysApply: false
+---
+
+# Edge Runtime Safety (api/)
+
+All files in `api/` run on **Vercel Edge Runtime** and **EdgeOne Pages** — Node.js APIs are unavailable.
+
+## Hard rules
+
+1. **Never import `ioredis`** in `api/`. KV access goes through `api/kv.js` only (`kvGet`/`kvSet`).
+2. **Never import `node:*`** built-ins (no `node:http`, `node:crypto`, `node:buffer`, etc.).
+3. **No Buffer-only APIs.** Use `TextEncoder`/`TextDecoder`, `crypto.subtle`, `Request`/`Response`.
+4. **Top-level `await` is OK** (Edge Runtime and Node 18+ both support it).
+5. **`export const config = { runtime: "edge" }`** in `api/proxy.js` is required for Vercel — do NOT remove it.
+
+## KV backends (api/kv.js)
+
+`api/kv.js` supports three backends auto-detected in this order:
+1. Local Redis (Docker) — injected via `setKvDriver(ioredisClient)` from `server.js`
+2. Upstash REST (Vercel) — `KV_URL` + `KV_TOKEN` env vars
+3. EdgeOne Pages KV — global namespace binding, TTL simulated with `{v, e}` wrapper
+
+- `kvGet`/`kvSet` must **never throw** — both backends swallow errors silently
+- Cache key format: `conv:<sha256(scope + ":" + JSON.stringify(messages[0..i-1]))>`
+- Scope: `providerKey + ":" + apiKeyHash` (prevents cross-provider and cross-user collisions)
+- Default TTL: 7200s (2 hours)
+
+## Hashing
+
+Use `crypto.subtle.digest("SHA-256", ...)` — available in both Edge Runtime and Node 18+. Do NOT add a crypto npm package.

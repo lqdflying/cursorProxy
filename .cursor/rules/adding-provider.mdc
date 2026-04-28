@@ -1,0 +1,45 @@
+---
+description: "Checklist for adding a new upstream provider — must update 5+ locations"
+alwaysApply: true
+---
+
+# Adding a New Provider
+
+Provider routing is replicated in multiple places. Adding a provider requires updating ALL of these:
+
+1. **`api/proxy.js` — `PROVIDERS` map**
+   ```js
+   newprovider: {
+     url: process.env.UPSTREAM_NEWPROVIDER || "https://api.newprovider.com",
+     host: "api.newprovider.com",
+     apiKeyEnv: "NEWPROVIDER_API_KEY",
+   },
+   ```
+
+2. **`server.js` — `ROUTES` array**
+   ```js
+   { pattern: /^\/newprovider\/v1\/(.+)$/, provider: "newprovider" },
+   ```
+
+3. **`vercel.json` — rewrites**
+   ```json
+   { "source": "/newprovider/v1/:path*", "destination": "/api/proxy?provider=newprovider&path=:path*" }
+   ```
+
+4. **`edge-functions/newprovider/v1/[[default]].js`** — EdgeOne route handler (copy from existing provider, change provider name)
+
+5. **`README.md`** — env table: document `NEWPROVIDER_API_KEY` and `UPSTREAM_NEWPROVIDER`
+
+6. **`.env.example`** — add `NEWPROVIDER_API_KEY` and commented `UPSTREAM_NEWPROVIDER`
+
+7. **`providerFromModel()` in proxy.js** — add prefix matching if model name starts with this provider
+
+## Reasoning handling
+
+- DeepSeek & Kimi: `reasoning_content` (string)
+- MiniMax: `reasoning_details` (object, array, or structured — sent with `reasoning_split: true`)
+- If new provider has a different reasoning field: update `reasoningField()`, `readReasoning()`, `serializeReasoning()`, `deserializeReasoning()`, `hasReasoningField()`, `updateStreamReasoning()`
+
+## Vision support
+
+- Add provider to `providersWithoutVision` array in `api/proxy.js` if it doesn't support inline images (DeepSeek and MiniMax are there; Kimi supports vision natively so it's excluded)

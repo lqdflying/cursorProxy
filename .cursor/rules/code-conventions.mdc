@@ -1,0 +1,33 @@
+---
+description: "JS coding style, logging, security, and header hygiene for the entire project"
+globs: **/*.js
+alwaysApply: false
+---
+
+# Code Conventions
+
+## Module system
+- **ES modules only** — `import`/`export`, never `require()`. `"type": "module"` in `package.json`
+- No build step, no tests, no linter, no formatter
+
+## Logging
+- All log lines use `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`, `[cursorProxy:server]`)
+- Verbose logs gated by `DEBUG === "true"` — use `log()` for debug, `diag()` for always-on diagnostics
+- **Never add unconditional `console.log` to hot paths** (every request goes through proxy.js)
+- **Never log API keys.** Only first 16 hex chars of `sha256(authHeader)` (`apiKeyHash`) may appear
+
+## Security & Headers
+- **Auth:** timing-safe comparison for `CURSORPROXY_API_KEY` (see `timingSafeEqualStr`)
+- **Forwarding headers:** override `host` to provider hostname; strip `content-length`, `transfer-encoding`, `accept-encoding`; set `accept-encoding: identity`
+- **Secrets:** all credentials via env vars. Never hardcode, never commit, never put in `vercel.json`
+
+## Streaming
+- Preserve both streaming (`text/event-stream`) and non-streaming JSON paths in `api/proxy.js`
+- Vercel-only code (e.g. AbortController timeout) is gated on `process.env.VERCEL` — never apply unconditionally
+
+## Reasoning caching (multi-turn)
+- Strip `reasoning_content`/`reasoning_details` from response before sending to client
+- Cache reasoning in KV keyed by conversation hash (messages BEFORE the assistant reply)
+- Inject reasoning into prior assistant messages on next turn
+- Fast follow-up races: retry with configurable delays (`KV_RETRY_DELAYS_MS`, default: `40,120,240,400`ms)
+- If KV miss: inject placeholder `"(prior reasoning unavailable)"` so DeepSeek/Kimi thinking mode doesn't reject the request

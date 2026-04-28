@@ -1,0 +1,40 @@
+---
+description: "cursorProxy — multi-provider AI proxy: project overview, wiki, GitHub, and deployment"
+alwaysApply: true
+---
+
+# cursorProxy Project Overview
+
+A lightweight edge-compatible proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deployed on Vercel Edge, Docker, or EdgeOne Pages.
+
+## What it does
+
+- **Reasoning bridge:** caches provider-specific `reasoning_content` (DeepSeek/Kimi) / `reasoning_details` (MiniMax) by conversation position in KV storage, injects it back on the next turn
+- **Vision bridge:** auto-converts inline `image_url` blocks to text descriptions via MiniMax VL-01 (or OpenAI Vision) for text-only models (DeepSeek, MiniMax)
+- **Model discovery:** serves `GET /v1/models` from `CURSORPROXY_MODELS` env var
+- **Auth:** `CURSORPROXY_API_KEY` via `Authorization: Bearer` or `x-api-key` header
+
+## Deployments
+
+- **Vercel Edge:** needs Upstash Redis (`KV_URL` + `KV_TOKEN`). Entry: `api/proxy.js` (`runtime: "edge"`)
+- **Docker:** `server.js` wraps the same proxy logic. Uses local Redis via `ioredis` (`REDIS_URL`) or Upstash. Built via GitHub Actions CI — pushes to `lqdflying/cursorproxy:latest` on DockerHub
+- **EdgeOne Pages:** `edge-functions/` dir, file-based routing, built-in KV (no external Redis needed)
+
+## Key files
+
+| File | Role |
+|------|------|
+| `api/proxy.js` | Core proxy handler. Edge-safe. |
+| `api/vision.js` | Image-to-text bridge. Edge-safe. |
+| `api/kv.js` | KV abstraction (Redis/Upstash/EdgeOne KV). |
+| `server.js` | Node HTTP adapter for Docker. Only place `ioredis` is imported. |
+| `vercel.json` | URL rewrites for Vercel. |
+| `edge-functions/` | EdgeOne Pages route handlers. |
+| `wiki/` | Git submodule for GitHub wiki docs. |
+
+## Git & GitHub
+
+- **Repo:** `github.com/lqdflying/cursorProxy`
+- **CI:** `.github/workflows/docker.yml` — builds multi-arch Docker image on push
+- **Wiki:** `wiki/` is a **separate git repo/submodule** (the GitHub wiki). Do NOT commit wiki changes in the main repo; push them in the wiki submodule
+- `.github/instructions/` is in `.gitignore` — instructions there are for GitHub UI, not committed
