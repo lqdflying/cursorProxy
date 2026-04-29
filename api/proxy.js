@@ -299,8 +299,7 @@ async function convertImagesToText(messages) {
   let convertedCount = 0;
   let errors = 0;
 
-  // Flatten all image_url parts to process them in parallel
-  const imageTasks = [];
+  // Flatten all image_url parts to process them with bounded concurrency
   const replacements = []; // { msgIdx, partIdx, imageUrl }
 
   for (let i = 0; i < messages.length; i++) {
@@ -324,30 +323,54 @@ async function convertImagesToText(messages) {
     return { messages, convertedCount: 0, errors: 0 };
   }
 
-  // Process all images in parallel with cache lookups
-  const results = await Promise.all(
-    replacements.map(async ({ msgIdx, partIdx, imageUrl }) => {
-      try {
-        // Check KV cache first
-        const cacheKey = await sha256ImageHash(imageUrl);
-        const cached = await kvGet(cacheKey);
-        if (cached) {
-          return { msgIdx, partIdx, description: cached, fromCache: true };
-        }
+  if (replacements.length > 1) {
+    let totalBytes = 0;
+    for (const r of replacements) totalBytes += r.imageUrl.length;
+    log("VISION_BATCH", "images:", replacements.length, "totalUriBytes:", totalBytes);
+  }
 
-        // Call vision API
-        const description = await describeImage(imageUrl);
-        if (description) {
-          // Cache the result (silent failure on cache write is fine)
-          await kvSet(cacheKey, description).catch(() => {});
-        }
-        return { msgIdx, partIdx, description, fromCache: false };
-      } catch (err) {
-        log("VISION_ERROR", err.message);
-        return { msgIdx, partIdx, description: null, error: err.message };
+  // Bounded concurrency: vision endpoints (e.g. MiniMax-VL-01) rate-limit on
+  // bursts. Cache hits short-circuit before the network call so this only
+  // throttles real upstream requests. Override via VISION_CONCURRENCY env.
+  const concurrency = (() => {
+    const raw = parseInt(process.env.VISION_CONCURRENCY || "", 10);
+    if (Number.isFinite(raw) && raw >= 1) return raw;
+    return 2;
+  })();
+
+  const processOne = async ({ msgIdx, partIdx, imageUrl }) => {
+    try {
+      const cacheKey = await sha256ImageHash(imageUrl);
+      const cached = await kvGet(cacheKey);
+      if (cached) {
+        return { msgIdx, partIdx, description: cached, fromCache: true };
       }
-    })
-  );
+
+      const description = await describeImage(imageUrl);
+      if (description) {
+        await kvSet(cacheKey, description).catch(() => {});
+      }
+      return { msgIdx, partIdx, description, fromCache: false };
+    } catch (err) {
+      // Always-on: vision failures must be visible in production so operators
+      // notice when a key/quota/oversized payload is breaking multi-image runs.
+      diag("VISION_ERROR", err?.message);
+      return { msgIdx, partIdx, description: null, error: err?.message };
+    }
+  };
+
+  const results = new Array(replacements.length);
+  let cursor = 0;
+  const workers = new Array(Math.min(concurrency, replacements.length))
+    .fill(0)
+    .map(async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= replacements.length) return;
+        results[idx] = await processOne(replacements[idx]);
+      }
+    });
+  await Promise.all(workers);
 
   // Apply replacements to a mutable copy of messages
   const updated = messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? [...m.content] : m.content }));
@@ -364,26 +387,52 @@ async function convertImagesToText(messages) {
     } else {
       updated[msgIdx].content[partIdx] = {
         type: "text",
-        text: "[Image content — vision description unavailable" + (error ? ": " + error : "") + "]",
+        text: "(image attachment unavailable" + (error ? ": " + error : "") + ")",
       };
       errors++;
     }
   }
 
-  // If a message ends up with no text parts after conversion, add a placeholder
+  // Merge consecutive text parts and (when no image_url remains) collapse to a
+  // single string. DeepSeek / MiniMax non-vision chat endpoints are not
+  // reliable about reading the 2nd+ entry of a multi-part text content array,
+  // so leaving N separate {type:"text"} parts for N images causes only the
+  // first description to be read by the model. Only touch user/system turns
+  // we already rewrote — never assistant history.
   for (let i = 0; i < updated.length; i++) {
     const m = updated[i];
+    if (m.role !== "user" && m.role !== "system") continue;
     if (!Array.isArray(m.content)) continue;
-    if (m.content.length === 0) {
-      m.content = "[Image content removed — this model does not support vision inputs.]";
+
+    const hasImages = m.content.some((p) => p?.type === "image_url");
+
+    if (!hasImages) {
+      const joined = m.content
+        .map((p) => (typeof p === "string" ? p : p?.type === "text" ? p.text : ""))
+        .filter((s) => typeof s === "string" && s.length > 0)
+        .join("\n\n");
+      m.content = joined.length > 0 ? joined : "(image attachment unavailable)";
       continue;
     }
-    // Compact: merge consecutive text parts
-    const hasText = m.content.some((p) => p?.type === "text" || typeof p === "string");
-    const hasImages = m.content.some((p) => p?.type === "image_url");
-    if (!hasText && !hasImages) {
-      m.content = "[Message contained only non-vision content]";
+
+    // image_url parts still present (vision-capable provider edge case): at
+    // least merge runs of consecutive text parts into one.
+    const merged = [];
+    for (const p of m.content) {
+      const isText = typeof p === "string" || p?.type === "text";
+      const last = merged[merged.length - 1];
+      if (isText && last && (typeof last === "string" || last.type === "text")) {
+        const lastText = typeof last === "string" ? last : last.text;
+        const curText = typeof p === "string" ? p : p.text;
+        merged[merged.length - 1] = {
+          type: "text",
+          text: (lastText || "") + "\n\n" + (curText || ""),
+        };
+      } else {
+        merged.push(p);
+      }
     }
+    m.content = merged;
   }
 
   return { messages: updated, convertedCount, errors };
@@ -557,17 +606,35 @@ export default async function handler(req) {
       convertedCount,
       errors,
     } = await convertImagesToText(parsedBody.messages);
-    if (convertedCount > 0) {
+
+    // Apply rewrites whenever ANY image_url part was processed (success OR
+    // failure). The previous gate (`convertedCount > 0`) silently dropped the
+    // failure-placeholder rewrites and forwarded the original image_url
+    // blocks upstream, where DeepSeek/MiniMax accept the request but ignore
+    // the images — producing nonsense answers.
+    if (convertedCount + errors > 0) {
       parsedBody.messages = convertedMessages;
       bodyText = JSON.stringify(parsedBody);
-      log(
+      diag(
         "CONVERTED_IMAGES",
-        convertedCount,
-        "for provider:",
-        providerKey,
-        "errors:",
-        errors
+        "ok:", convertedCount,
+        "err:", errors,
+        "provider:", providerKey
       );
+
+      // Safety net: when every image failed and the request is non-streaming,
+      // surface a 4xx so the client sees the failure on turn 1 instead of
+      // getting a degraded reply that taints subsequent turns. Streaming
+      // requests fall through (placeholders forwarded) since we cannot easily
+      // change status mid-response.
+      if (convertedCount === 0 && errors > 0 && parsedBody.stream !== true) {
+        return jsonErrorResponse(
+          502,
+          `Vision provider failed for all ${errors} image attachment(s); request not forwarded. Start a fresh conversation after fixing the vision backend.`,
+          "vision_unavailable",
+          "upstream_error"
+        );
+      }
     }
   }
 
@@ -770,6 +837,29 @@ export default async function handler(req) {
           }
         }
       }
+    } catch (err) {
+      // Expected on the timeout path: reader.cancel() makes the in-flight
+      // reader.read() reject (typically "Stream was cancelled" / AbortError).
+      // Without this catch the rejection escapes the unawaited IIFE and Vercel
+      // surfaces it as an unhandled error in the function logs even though we
+      // already emitted a graceful stream_timeout SSE frame to the client.
+      // For genuine upstream stream failures (network drop mid-stream), log
+      // once at diag level so they remain visible without being noisy.
+      if (timedOut) {
+        log("STREAM_READ_ABORTED_AFTER_TIMEOUT", err?.name, err?.message);
+      } else {
+        diag("STREAM_READ_ERROR", err?.name, err?.message);
+        try {
+          const errMsg = JSON.stringify({
+            error: {
+              message: `Upstream stream interrupted: ${err?.message || err?.name || "unknown error"}`,
+              type: "upstream_error",
+              code: "stream_read_error",
+            },
+          });
+          await writer.write(encoder.encode("data: " + errMsg + "\n\n"));
+        } catch {}
+      }
     } finally {
       if (streamTimer) clearTimeout(streamTimer);
 
@@ -803,7 +893,13 @@ export default async function handler(req) {
       diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
     }
-  })();
+  })().catch((err) => {
+    // Last-resort guard: ensure no rejection escapes the unawaited IIFE.
+    // Anything reaching here means the inner try/catch/finally itself threw
+    // (e.g. writer.close() race after cancel). Logging only — the response
+    // stream has already been returned to the client.
+    diag("STREAM_PIPE_ERROR", err?.name, err?.message);
+  });
 
   return new Response(readable, {
     status: upstreamRes.status,
