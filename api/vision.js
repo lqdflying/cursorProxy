@@ -42,14 +42,21 @@ function apiKey() {
 // Per-image vision call timeout. Vercel kills the function at 25s if no
 // initial Response has been returned, so a stuck vision call could block
 // the entire request. Default 15s; override via VISION_TIMEOUT_MS.
+// Set VISION_TIMEOUT_MS=0 to disable (e.g. for Docker where there is no
+// platform-imposed wall-clock limit).
 function visionTimeoutMs() {
-  const raw = parseInt(process.env.VISION_TIMEOUT_MS || "", 10);
-  if (Number.isFinite(raw) && raw > 0) return raw;
-  return 15000;
+  const raw = process.env.VISION_TIMEOUT_MS;
+  if (raw == null || raw === "") return 15000;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return 15000;
+  return n; // 0 = disabled
 }
 
 async function fetchWithTimeout(url, init) {
   const ms = visionTimeoutMs();
+  if (ms === 0) {
+    return fetch(url, init);
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
