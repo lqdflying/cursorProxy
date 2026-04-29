@@ -39,6 +39,31 @@ function apiKey() {
   return process.env[cfg.apiKeyEnv] || "";
 }
 
+// Per-image vision call timeout. Vercel kills the function at 25s if no
+// initial Response has been returned, so a stuck vision call could block
+// the entire request. Default 15s; override via VISION_TIMEOUT_MS.
+function visionTimeoutMs() {
+  const raw = parseInt(process.env.VISION_TIMEOUT_MS || "", 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 15000;
+}
+
+async function fetchWithTimeout(url, init) {
+  const ms = visionTimeoutMs();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new Error(`vision request timed out after ${ms}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Backends ───────────────────────────────────────────────────────────────
 
 async function describeWithMinimaxVl(base64Uri, prompt) {
@@ -54,7 +79,7 @@ async function describeWithMinimaxVl(base64Uri, prompt) {
 
   log("minimax_vl request", cfg.url, "size:", body.length);
 
-  const res = await fetch(cfg.url, {
+  const res = await fetchWithTimeout(cfg.url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -107,7 +132,7 @@ async function describeWithOpenAi(base64Uri, prompt) {
 
   log("openai request", cfg.url, "size:", body.length);
 
-  const res = await fetch(cfg.url, {
+  const res = await fetchWithTimeout(cfg.url, {
     method: "POST",
     headers: {
       "content-type": "application/json",

@@ -601,11 +601,13 @@ export default async function handler(req) {
   // and the descriptions are injected as text before forwarding.
   const providersWithoutVision = ["deepseek", "minimax"];
   if (providersWithoutVision.includes(providerKey) && parsedBody?.messages) {
+    const visionT0 = Date.now();
     const {
       messages: convertedMessages,
       convertedCount,
       errors,
     } = await convertImagesToText(parsedBody.messages);
+    const visionMs = Date.now() - visionT0;
 
     // Apply rewrites whenever ANY image_url part was processed (success OR
     // failure). The previous gate (`convertedCount > 0`) silently dropped the
@@ -619,7 +621,8 @@ export default async function handler(req) {
         "CONVERTED_IMAGES",
         "ok:", convertedCount,
         "err:", errors,
-        "provider:", providerKey
+        "provider:", providerKey,
+        "visionMs:", visionMs
       );
 
       // Safety net: when every image failed and the request is non-streaming,
@@ -632,6 +635,25 @@ export default async function handler(req) {
           502,
           `Vision provider failed for all ${errors} image attachment(s); request not forwarded. Start a fresh conversation after fixing the vision backend.`,
           "vision_unavailable",
+          "upstream_error"
+        );
+      }
+    }
+
+    // Pre-stream budget guard for Vercel Edge: the platform requires an
+    // initial Response within ~25s. If vision + reasoning injection have
+    // already eaten most of the budget, fail fast with a clear error rather
+    // than getting silently killed by the platform mid-fetch. Disabled when
+    // not running on Vercel (Docker has no such limit).
+    if (process.env.VERCEL) {
+      const elapsedMs = Date.now() - t0;
+      const budgetMs = parseInt(process.env.PRESTREAM_BUDGET_MS || "", 10) || 22000;
+      if (elapsedMs > budgetMs) {
+        diag("PRESTREAM_BUDGET_EXCEEDED", "elapsedMs:", elapsedMs, "budgetMs:", budgetMs);
+        return jsonErrorResponse(
+          504,
+          `Pre-stream work exceeded the ${budgetMs}ms budget on Vercel Edge (took ${elapsedMs}ms). Most likely cause: a slow vision API call. Lower VISION_TIMEOUT_MS, raise VISION_CONCURRENCY, or send fewer images per turn.`,
+          "prestream_timeout",
           "upstream_error"
         );
       }
