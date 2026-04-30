@@ -30,17 +30,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on 
 docker run -d --pull always -p 127.0.0.1:3000:3000 --env-file .env lqdflying/cursorproxy:latest
 ```
 
-### Docker Compose (with Redis + log rotation)
-
-```bash
-cp .env.example .env
-# Edit .env with your API keys, then:
-docker compose up -d
-```
-
-See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for Vercel, EdgeOne Pages, 1Panel, and Nginx reverse proxy.
-
-> **Log control:** `docker-compose.yml` caps container logs at 10 MiB × 3 rotated files per service. Set `DEBUG=true` in `.env` only for troubleshooting — it enables per-request access logs and verbose proxy internals. For `docker run`, add `--log-opt max-size=10m --log-opt max-file=3`.
+For Vercel, EdgeOne Pages, Docker Compose, 1Panel, and Nginx reverse proxy — see [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment).
 
 ### 4. Configure Cursor
 
