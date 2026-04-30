@@ -24,9 +24,7 @@ const PROVIDERS = {
 };
 
 function log(...args) {
-  // Verbose debug logs — only on Docker/local deploys, never on Vercel Edge.
-  // Vercel has its own log infrastructure; these internals would be noise.
-  if (DEBUG && !process.env.VERCEL) console.log("[cursorProxy:proxy]", ...args);
+  if (DEBUG) console.log("[cursorProxy:proxy]", ...args);
 }
 
 function diag(...args) {

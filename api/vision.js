@@ -11,8 +11,7 @@
 const DEBUG = process.env.DEBUG === "true";
 
 function log(...args) {
-  // Verbose debug logs — only on Docker/local deploys, never on Vercel Edge.
-  if (DEBUG && !process.env.VERCEL) console.log("[cursorProxy:vision]", ...args);
+  if (DEBUG) console.log("[cursorProxy:vision]", ...args);
 }
 
 // ─── Configuration ──────────────────────────────────────────────────────────
