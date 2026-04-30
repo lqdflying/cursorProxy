@@ -11,10 +11,73 @@ alwaysApply: false
 - No build step, no tests, no linter, no formatter
 
 ## Logging
-- All log lines use `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`, `[cursorProxy:server]`)
-- Verbose logs gated by `DEBUG === "true"` — use `log()` for debug, `diag()` for always-on diagnostics
-- **Never add unconditional `console.log` to hot paths** (every request goes through proxy.js)
-- **Never log API keys.** Only first 16 hex chars of `sha256(authHeader)` (`apiKeyHash`) may appear
+
+Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`, `[cursorProxy:server]`).
+
+### Two-tier log functions (in `api/proxy.js` and `api/vision.js`)
+
+| Function | Gate | Purpose |
+|----------|------|---------|
+| `diag()` | **always-on** | Diagnostics visible in production (Vercel, Docker, EdgeOne) |
+| `log()`  | `DEBUG === "true"` | Verbose internals: START, RESOLVED, INJECT, vision req/res, etc. |
+
+### Vercel log format (CRITICAL — DO NOT CHANGE)
+
+- `diag()` emits one REQ line and one RES line per request on Vercel:
+
+```
+[cursorProxy:proxy] REQ POST /v1/chat/completions provider: deepseek
+[cursorProxy:proxy] RES 200 provider: deepseek ms: 3531
+```
+
+- `log()` (when `DEBUG=true`) emits the same prefix-style format:
+
+```
+[cursorProxy:proxy] START POST https://one.example.com/v1/chat/completions?... pathname: /v1/chat/completions provider(query): (infer)
+[cursorProxy:proxy] RESOLVED model: deepseek-chat provider: deepseek stream: true
+[cursorProxy:proxy] INJECT idx: 3 key: conv:abc... hit: true waitedMs: 0
+```
+
+### Platform isolation: safe vs unsafe files for log changes
+
+```
+                  ┌─────────────────┐
+                  │   Vercel Edge   │
+                  │  EdgeOne Pages  │
+                  └───────┬─────────┘
+                          │ imports
+   ┌──────────────────────┼──────────────────────┐
+   │  NEVER TOUCH LOGS    │  api/proxy.js        │  ← shared: log()/diag()
+   │  IN THESE FILES      │  api/vision.js       │     changes here affect
+   │  FOR DOCKER CONTROL  │  api/kv.js           │     ALL platforms
+   └──────────────────────┴──────────────────────┘
+                          │ imports
+                  ┌───────▼─────────┐
+   SAFE TO GATE    │   server.js     │  ← Docker ONLY: never loaded on Vercel
+   ON DEBUG        │                 │     gate here for Docker log reduction
+                  └─────────────────┘
+```
+
+**`api/` files are shared across all platforms.** Any logging change in `api/proxy.js` or `api/vision.js` affects Vercel, EdgeOne, and Docker simultaneously. These files are the wrong place for platform-specific log gating.
+
+**`server.js` is Docker-only.** Vercel and EdgeOne NEVER import `server.js`. Gate the per-request access log here:
+
+```js
+const DEBUG = process.env.DEBUG === "true";
+// ...
+if (DEBUG) console.log(`[cursorProxy:server] ${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
+```
+
+Docker then gets the same `[cursorProxy:proxy] REQ ... / RES ...` lines from `diag()` that Vercel does, plus an optional `[cursorProxy:server]` wrapper line when debugging. Vercel is completely untouched.
+
+### Hard rules
+
+- **Never gate `diag()` on `process.env.VERCEL`** — `diag()` MUST emit on Vercel. The REQ/RES pair is the primary observability signal in production.
+- **Never gate `log()` on `process.env.VERCEL`** — `log()` is already gated by `DEBUG`. When a developer enables `DEBUG=true`, they want verbose output on ALL platforms.
+- **Never add a `process.env.VERCEL` guard to any log function in `api/`** — platform gating belongs in the platform-specific entry point (`server.js`), not the shared proxy layer.
+- **Never change the REQ/RES message format** — the `provider:` and `ms:` fields are relied on by log aggregators and dashboards.
+- **Never add unconditional `console.log` to hot paths** — every request goes through `proxy.js`. Use `diag()` or `log()` only.
+- **Never log API keys.** Only first 16 hex chars of `sha256(authHeader)` (`apiKeyHash`) may appear.
 
 ## Security & Headers
 - **Auth:** timing-safe comparison for `CURSORPROXY_API_KEY` (see `timingSafeEqualStr`)

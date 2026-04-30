@@ -2,6 +2,8 @@ import http from "node:http";
 import handler from "./api/proxy.js";
 import { setKvDriver } from "./api/kv.js";
 
+const DEBUG = process.env.DEBUG === "true";
+
 // ─── Local Redis (Docker) ──────────────────────────────────────────────────
 // If REDIS_URL is set, use ioredis for low-latency local cache.
 // Falls back to Upstash REST (KV_URL + KV_TOKEN) if not set.
@@ -84,7 +86,7 @@ const server = http.createServer(async (req, res) => {
     webResponse.headers.forEach((v, k) => { outHeaders[k] = v; });
     res.writeHead(webResponse.status, outHeaders);
 
-    console.log(`[cursorProxy:server] ${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
+    if (DEBUG) console.log(`[cursorProxy:server] ${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
 
     if (webResponse.body) {
       const reader = webResponse.body.getReader();
