@@ -1,6 +1,6 @@
 ---
-description: "JS coding style, logging, security, and header hygiene for the entire project"
-globs: **/*.js
+description: "JS coding style, logging, security, header hygiene, and Docker Compose conventions for the entire project"
+globs: **/*.js,**/*.yml
 alwaysApply: false
 ---
 
@@ -87,6 +87,36 @@ Docker then gets the same `[cursorProxy:proxy] REQ ... / RES ...` lines from `di
 ## Streaming
 - Preserve both streaming (`text/event-stream`) and non-streaming JSON paths in `api/proxy.js`
 - Vercel-only code (e.g. AbortController timeout) is gated on `process.env.VERCEL` — never apply unconditionally
+
+## Docker Compose (`docker-compose.yml`)
+
+### Single source of truth: `.env`
+
+- **Use `env_file: .env` only** — never add an `environment:` block that duplicates or overrides values from `.env`. All configuration lives in `.env`, with defaults documented in `.env.example`.
+- **Never hardcode secrets or URLs in the compose YAML.** The compose file is committed; `.env` is not. A value placed in `environment:` is visible to everyone who clones the repo.
+- **`REDIS_URL`** belongs in `.env` (documented as `# REDIS_URL=redis://redis:6379` in `.env.example`), not in the compose file. Adding it in `environment:` creates a collision where it is unclear which source wins, and the compose-time interpolation (`${...}`) reads from the host shell, not from `.env`, making behavior unpredictable across machines.
+
+```yaml
+# CORRECT: single source of truth
+services:
+  cursorproxy:
+    env_file:
+      - .env
+
+# WRONG: environment overrides env_file, duplicates .env, and leaks config
+services:
+  cursorproxy:
+    env_file:
+      - .env
+    environment:          # <-- DELETE THIS
+      - REDIS_URL=...
+      - DEBUG=${DEBUG:-false}
+```
+
+### Logging
+
+- Log rotation (`json-file`, `max-size: 10m`, `max-file: 3`) must be present on both `cursorproxy` and `redis` services.
+- `DEBUG` is controlled exclusively via `.env` — never baked into the compose file.
 
 ## Reasoning caching (multi-turn)
 - Strip `reasoning_content`/`reasoning_details` from response before sending to client
