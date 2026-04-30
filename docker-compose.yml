@@ -6,9 +6,6 @@ services:
       - "127.0.0.1:3000:3000"
     env_file:
       - .env
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - DEBUG=${DEBUG:-false}
     depends_on:
       redis:
         condition: service_healthy
