@@ -23,6 +23,7 @@ const ROUTES = [
   { pattern: /^\/kimi\/v1\/(.+)$/, provider: "kimi" },
   { pattern: /^\/minimax\/v1\/(.+)$/, provider: "minimax" },
   { pattern: /^\/v1\/(.+)$/, provider: null },
+  { pattern: /^\/v0\/(.+)$/, provider: null },
 ];
 
 function rewriteUrl(rawUrl, host, protocol) {

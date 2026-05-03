@@ -92,7 +92,7 @@ function isModelDiscoveryRequest(req, pathname, pathParam) {
   if (method !== "GET" && method !== "HEAD") return false;
 
   const normalizedPathParam = pathParam.replace(/^\/+|\/+$/g, "");
-  return normalizedPathParam === "models" || pathname === "/v1/models";
+  return normalizedPathParam === "models" || pathname === "/v1/models" || pathname === "/v0/models";
 }
 
 function modelDiscoveryResponse(req) {
@@ -509,6 +509,14 @@ export default async function handler(req) {
     : "";
   const upstreamUrl = provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
+
+  // Inject a default model when missing from the request body
+  if (parsedBody && !parsedBody.model) {
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7" };
+    parsedBody.model = defaults[providerKey] || "deepseek-chat";
+    bodyText = JSON.stringify(parsedBody);
+    log("MODEL_INJECTED", "defaulted to:", parsedBody.model);
+  }
 
   if (providerKey === "minimax" && parsedBody) {
     parsedBody.reasoning_split = true;
