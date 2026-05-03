@@ -60,6 +60,7 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 |---|---|---|
 | `CURSORPROXY_API_KEY` | Recommended | Client auth secret |
 | `CURSORPROXY_MODELS` | Optional | Comma- or newline-separated model IDs returned by `GET /v1/models` |
+| `DEEPSEEK_REASONING_EFFORT` | Optional | DeepSeek thinking effort: `high` (default) or `max` |
 | `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
 | `KIMI_API_KEY` | For Kimi | Upstream API key |
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |

@@ -515,6 +515,14 @@ export default async function handler(req) {
     bodyText = JSON.stringify(parsedBody);
   }
 
+  // Always inject DeepSeek thinking mode params (proxy controls this; default: high)
+  if (providerKey === "deepseek" && parsedBody) {
+    parsedBody.thinking = { type: "enabled" };
+    const effortEnv = process.env.DEEPSEEK_REASONING_EFFORT;
+    parsedBody.reasoning_effort = (effortEnv === "max") ? "max" : "high";
+    bodyText = JSON.stringify(parsedBody);
+  }
+
   const originalMessages = parsedBody?.messages ? [...parsedBody.messages] : null;
 
   const scopeUser = await cacheScopeUserId(req);
