@@ -26,8 +26,8 @@ export function setupCompatibility(context) {
 /** Rewrite incoming URL to the internal proxy format with provider and path query params. */
 export function rewriteUrl(req, provider) {
   const url = new URL(req.url);
-  // Extract path after /v1/ — e.g. /v1/chat/completions → chat/completions
-  const pathMatch = url.pathname.match(/^\/v1\/(.+)$/);
+  // Extract path after /v0/ or /v1/ — e.g. /v1/chat/completions → chat/completions
+  const pathMatch = url.pathname.match(/^\/v[01]\/(.+)$/);
   const path = pathMatch ? pathMatch[1] : "";
 
   url.pathname = "/api/proxy";
