@@ -456,7 +456,7 @@ export default async function handler(req) {
 
   if (isModelDiscoveryRequest(req, pathname, pathParam)) {
     const response = modelDiscoveryResponse(req);
-    diag("RES", response.status, "provider: models", "ms:", Date.now() - t0);
+    diag("RES", response.status, "path:", pathParam, "provider: models", "ms:", Date.now() - t0);
     return response;
   }
 
