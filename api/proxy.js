@@ -518,9 +518,11 @@ export default async function handler(req) {
   // Always inject DeepSeek thinking mode params (proxy controls this; default: high)
   if (providerKey === "deepseek" && parsedBody) {
     parsedBody.thinking = { type: "enabled" };
-    const effortEnv = process.env.DEEPSEEK_REASONING_EFFORT;
-    parsedBody.reasoning_effort = (effortEnv === "max") ? "max" : "high";
+    const effortEnv = (process.env.DEEPSEEK_REASONING_EFFORT || "").trim().replace(/^["']|["']$/g, "");
+    const effort = effortEnv === "max" ? "max" : "high";
+    parsedBody.reasoning_effort = effort;
     bodyText = JSON.stringify(parsedBody);
+    diag("THINKING", "provider: deepseek", "reasoning_effort:", effort, "raw_env:", process.env.DEEPSEEK_REASONING_EFFORT || "(unset)");
   }
 
   const originalMessages = parsedBody?.messages ? [...parsedBody.messages] : null;
