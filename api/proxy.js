@@ -455,7 +455,9 @@ export default async function handler(req) {
   diag("REQ", req.method, pathname, "provider:", providerKey || "infer");
 
   if (isModelDiscoveryRequest(req, pathname, pathParam)) {
-    return modelDiscoveryResponse(req);
+    const response = modelDiscoveryResponse(req);
+    diag("RES", response.status, "provider: models", "ms:", Date.now() - t0);
+    return response;
   }
 
   // Parse body early for model-based routing (unified /v1 without provider query)
