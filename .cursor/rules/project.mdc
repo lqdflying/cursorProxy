@@ -36,5 +36,5 @@ A lightweight edge-compatible proxy for **DeepSeek**, **Kimi**, and **MiniMax** 
 
 - **Repo:** `github.com/lqdflying/cursorProxy`
 - **CI:** `.github/workflows/docker.yml` — builds multi-arch Docker image on push
-- **Wiki:** `wiki/` is a **separate git repo/submodule** (the GitHub wiki). Do NOT commit wiki changes in the main repo; push them in the wiki submodule
+- **Wiki:** `wiki/` is a **separate git repo/submodule** (the GitHub wiki, `git@github.com:lqdflying/cursorProxy.wiki.git`). Do NOT commit wiki changes in the main repo; push them in the wiki submodule. Use `git -C wiki <command>` for all wiki operations — the Shell tool's `working_directory` parameter does not resolve submodule paths correctly
 - `.github/instructions/` is in `.gitignore` — instructions there are for GitHub UI, not committed
