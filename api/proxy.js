@@ -1039,6 +1039,7 @@ export default async function handler(req) {
     // Per Microsoft docs: temperature, top_p, presence_penalty, frequency_penalty,
     // logprobs, top_logprobs, logit_bias, max_tokens are NOT supported.
     // Standard models (gpt-4o, gpt-4.1, …) accept all of these — preserve them.
+    const hasTools = parsedBody.tools && Array.isArray(parsedBody.tools) && parsedBody.tools.length > 0;
     if (isAzureReasoningModel) {
       const reasoningUnsupported = [
         "temperature", "top_p", "presence_penalty", "frequency_penalty",
@@ -1050,12 +1051,19 @@ export default async function handler(req) {
           sanitized = true;
         }
       }
+
+      // gpt-5.5 rejects reasoning_effort + tools in /v1/chat/completions.
+      // Strip reasoning_effort when tools are present to avoid 400.
+      if (hasTools && "reasoning_effort" in parsedBody) {
+        delete parsedBody.reasoning_effort;
+        sanitized = true;
+      }
     }
 
     // Inject default reasoning effort from env for Azure OpenAI reasoning models.
-    // Only when the request body doesn't already include reasoning_effort.
+    // Skip when tools are present — gpt-5.5 rejects reasoning_effort + tools.
     const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
-    if (isAzureReasoningModel && defaultReasoningEffort && !("reasoning_effort" in parsedBody)) {
+    if (isAzureReasoningModel && defaultReasoningEffort && !("reasoning_effort" in parsedBody) && !hasTools) {
       parsedBody.reasoning_effort = defaultReasoningEffort;
       sanitized = true;
     }
