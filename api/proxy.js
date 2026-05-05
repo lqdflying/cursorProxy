@@ -749,6 +749,20 @@ export default async function handler(req) {
     } catch { /* fall through */ }
   }
 
+  // Azure endpoints reject requests carrying unknown headers or dual auth.
+  // Start with a clean header set — only Content-Type plus auth is required.
+  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
+    headers.forEach((_v, k) => headers.delete(k));
+    headers.set("content-type", "application/json");
+    if (provider.host) {
+      headers.set("host", provider.host);
+    } else {
+      try {
+        headers.set("host", new URL(upstreamUrl).hostname);
+      } catch { /* fall through */ }
+    }
+  }
+
   // Build dynamic auth header: delete Cursor's proxy auth so it doesn't
   // leak upstream as a second auth method (Azure rejects dual-auth requests).
   headers.delete("authorization");
