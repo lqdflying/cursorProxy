@@ -550,17 +550,41 @@ export default async function handler(req) {
       }
 
       // Second pass: fix Anthropic message-level issues:
-      // - Standalone tool_result items (no role) → OpenAI tool role
-      // - tool_use in assistant content → message-level tool_calls
-      // - tool_result in user content → separate tool role messages
+      // - Standalone tool_result/function_call_output items (no role) → OpenAI tool role
+      // - Standalone function_call items (no role) → assistant with tool_calls
+      // - tool_use/function_call in assistant content → message-level tool_calls
+      // - tool_result/function_call_output in user content → separate tool role messages
+      const TOOL_IN_CONTENT = ["tool_use", "function_call"];
+      const RESULT_IN_CONTENT = ["tool_result", "function_call_output"];
+      const STORE_KEY = ["tool_use_id", "call_id"];
       const normalized = [];
       for (const msg of parsedBody.messages) {
-        // Anthropic standalone tool_result item (has type, no role)
-        if (!msg.role && msg.type === "tool_result") {
+        // Anthropic standalone tool_result / function_call_output (has type, no role)
+        const isToolResult = RESULT_IN_CONTENT.includes(msg.type);
+        if (!msg.role && isToolResult) {
+          const tid = STORE_KEY.reduce((id, k) => id || msg[k], "");
           normalized.push({
             role: "tool",
-            tool_call_id: msg.tool_use_id || "",
-            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+            tool_call_id: tid || "",
+            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || msg.output || ""),
+          });
+          contentFixed = true;
+          continue;
+        }
+
+        // Anthropic standalone function_call (has type, no role) → assistant with tool_calls
+        if (!msg.role && msg.type === "function_call") {
+          normalized.push({
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: msg.id || msg.call_id || "",
+              type: "function",
+              function: {
+                name: msg.name || "",
+                arguments: typeof msg.arguments === "string" ? msg.arguments : JSON.stringify(msg.arguments || {}),
+              },
+            }],
           });
           contentFixed = true;
           continue;
@@ -572,44 +596,45 @@ export default async function handler(req) {
           let hasToolResult = false;
 
           for (const part of msg.content) {
-            if (part.type === "tool_use") {
+            if (TOOL_IN_CONTENT.includes(part.type)) {
               hasToolUse = true;
-            } else if (part.type === "tool_result") {
+            } else if (RESULT_IN_CONTENT.includes(part.type)) {
               hasToolResult = true;
             } else {
               textParts.push(part);
             }
           }
 
-          // Convert assistant tool_use content to message-level tool_calls
+          // Convert assistant tool use to message-level tool_calls
           if (hasToolUse && msg.role === "assistant") {
             msg.tool_calls = msg.content
-              .filter((p) => p.type === "tool_use")
+              .filter((p) => TOOL_IN_CONTENT.includes(p.type))
               .map((p) => ({
-                id: p.id || "",
+                id: p.id || p.call_id || "",
                 type: "function",
                 function: {
                   name: p.name || "",
-                  arguments: typeof p.input === "string" ? p.input : JSON.stringify(p.input || {}),
+                  arguments: typeof p.input === "string" ? p.input : JSON.stringify(p.input || p.arguments || {}),
                 },
               }));
             msg.content = textParts.length > 0 ? textParts : null;
             contentFixed = true;
           }
 
-          // Extract tool_result from user content into separate tool messages
+          // Extract tool_result/function_call_output from user content into separate tool messages
           if (hasToolResult) {
             for (const part of msg.content) {
-              if (part.type === "tool_result") {
+              if (RESULT_IN_CONTENT.includes(part.type)) {
+                const tid = STORE_KEY.reduce((id, k) => id || part[k], "");
                 normalized.push({
                   role: "tool",
-                  tool_call_id: part.tool_use_id || "",
-                  content: typeof part.content === "string" ? part.content : JSON.stringify(part.content),
+                  tool_call_id: tid || "",
+                  content: typeof part.content === "string" ? part.content : JSON.stringify(part.content || part.output || ""),
                 });
               }
             }
             // Keep the user message only with non-tool-result parts
-            msg.content = textParts.filter((p) => p.type !== "tool_result");
+            msg.content = textParts.filter((p) => !RESULT_IN_CONTENT.includes(p.type));
             if (msg.content.length === 0) {
               contentFixed = true;
               continue; // drop empty user messages
