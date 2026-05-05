@@ -396,45 +396,108 @@ function mapAnthropicResponseToOpenAI(json) {
  * - message_start / message_stop: ignored, no output content
  * - ping: keepalive, ignored
  *
- * Returns a synthetic OpenAI chunk object or null if the event produces no output.
+ * Returns a synthetic OpenAI chunk object, "[DONE]" string, or null if the event produces no output.
+ *
+ * @param {object} json - The parsed Anthropic SSE data event
+ * @param {Map} toolState - Map of index -> { id, name, partialJson } for tracking tool_use blocks
  */
-function mapAnthropicSSEToOpenAI(json) {
+function mapAnthropicSSEToOpenAI(json, toolState) {
   const event = json; // Anthropic SSE events are flat, e.g. { type: "content_block_delta", ... }
 
   // ignore keepalive and structural events
   if (!event || !event.type) return null;
 
   switch (event.type) {
-    case "content_block_start":
-      // Emit a role marker for the first content block (text or thinking)
-      // Text blocks: { type: "text", text: "" }
-      // Thinking blocks: { type: "thinking", thinking: "" }
-      if (event.content_block?.type === "text" || event.content_block?.type === "thinking") {
+    case "content_block_start": {
+      const idx = event.index ?? 0;
+      const block = event.content_block;
+      // Text/thinking: emit role marker
+      if (block?.type === "text" || block?.type === "thinking") {
         return {
           choices: [{
-            index: event.index ?? 0,
+            index: idx,
             delta: { role: "assistant", content: "" },
           }],
         };
       }
-      return null; // skip non-text/non-thinking blocks (e.g. tool_use) for now
+      // Tool use: store id/name for later input_json_delta accumulation
+      if (block?.type === "tool_use" && block.id) {
+        toolState.set(idx, { id: block.id, name: block.name, partialJson: "" });
+        return {
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: idx,
+                id: block.id,
+                type: "function",
+                function: { name: block.name, arguments: "" },
+              }],
+            },
+          }],
+        };
+      }
+      return null;
+    }
 
     case "content_block_delta": {
+      const idx = event.index ?? 0;
       const delta = event.delta;
       // text_delta: { type: "text_delta", text: "Hello" }
       // thinking_delta: { type: "thinking_delta", thinking: "..." }
-      const text = delta?.text_delta ?? delta?.text ?? delta?.thinking ?? "";
-      return {
-        choices: [{
-          index: event.index ?? 0,
-          delta: { content: text },
-        }],
-      };
+      if (delta?.type === "text_delta" || delta?.type === "thinking_delta") {
+        const text = delta.text ?? delta.thinking ?? "";
+        return {
+          choices: [{
+            index: idx,
+            delta: { content: text },
+          }],
+        };
+      }
+      // input_json_delta: { type: "input_json_delta", partial_json: "..." }
+      if (delta?.type === "input_json_delta") {
+        const partial = delta.partial_json ?? "";
+        const state = toolState.get(idx);
+        if (state) {
+          state.partialJson += partial;
+          return {
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: [{
+                  index: idx,
+                  function: { arguments: partial },
+                }],
+              },
+            }],
+          };
+        }
+        // No matching start event — emit partial anyway as text
+        return {
+          choices: [{
+            index: idx,
+            delta: { content: partial },
+          }],
+        };
+      }
+      return null;
     }
 
-    case "content_block_stop":
-      // No output needed; the block is complete.
+    case "content_block_stop": {
+      const idx = event.index ?? 0;
+      // Finalize tool_use blocks: emit empty delta to signal completion
+      if (toolState.has(idx)) {
+        toolState.delete(idx);
+        // Some Cursor versions need an empty tool_calls delta to finalize
+        return {
+          choices: [{
+            index: 0,
+            delta: { tool_calls: [{ index: idx, function: { arguments: "" } }] },
+          }],
+        };
+      }
       return null;
+    }
 
     case "message_delta": {
       const finishReason = event.delta?.stop_reason ?? null;
@@ -1366,6 +1429,9 @@ export default async function handler(req) {
     let accContent = "";
     let doneSeen = false;
     let lastCachedReasoningSize = 0;
+    // Track Anthropic tool_use blocks by index for converting input_json_delta
+    // to OpenAI-style tool_calls format.
+    const anthropicToolState = new Map(); // index -> { id, name, partialJson }
 
     async function cacheReasoningSnapshot(force = false) {
       if (!replyReasoningKey || !hasReasoningValue(accReasoning)) return;
@@ -1425,7 +1491,7 @@ export default async function handler(req) {
             // Anthropic uses events like content_block_delta with delta.text_delta,
             // but the proxy and Cursor expect choices[0].delta.content.
             if (providerKey === "azureanthropic") {
-              const mapped = mapAnthropicSSEToOpenAI(json);
+              const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               // Diagnostic: log event type and extracted text to debug silent streams
               log("ANTHROPIC_EVENT", json.type,
                    "index:", json.index,
