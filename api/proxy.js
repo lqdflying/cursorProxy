@@ -1023,8 +1023,12 @@ export default async function handler(req) {
       sanitized = true;
     }
 
-    // temperature: only value 1 is supported
-    if ("temperature" in parsedBody && parsedBody.temperature !== 1) {
+    // Reasoning/o-series models (gpt-5.5, o1, o3, o4-mini, …) only accept temperature=1.
+    // Standard models (gpt-4o, gpt-4.1, …) support arbitrary temperature — preserve it.
+    // Strip only when the deployment name signals a reasoning model so the user's temperature
+    // setting still takes effect on non-reasoning GPT models.
+    const isReasoningModel = /^(o\d|gpt-5\.5|gpt-o)/i.test(azureModelName || "");
+    if (isReasoningModel && "temperature" in parsedBody && parsedBody.temperature !== 1) {
       delete parsedBody.temperature;
       sanitized = true;
     }
@@ -1101,6 +1105,21 @@ export default async function handler(req) {
     );
   }
 
+  // Inject a default model when missing from the request body
+  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureanthropic: "claude-sonnet-4-6" };
+    parsedBody.model = defaults[providerKey] || "deepseek-chat";
+    bodyText = JSON.stringify(parsedBody);
+    log("MODEL_INJECTED", "defaulted to:", parsedBody.model);
+  }
+
+  // Keep azureModelName in sync with parsedBody.model — it may have been set by the
+  // default-injection block above (e.g. azureanthropic with no model in the request).
+  // Must happen before buildUrl so the URL path contains the correct deployment name.
+  if ((providerKey === "azureopenai" || providerKey === "azureanthropic") && !azureModelName) {
+    azureModelName = parsedBody?.model;
+  }
+
   // Clean up Vercel rewrite query pollution
   searchParams.delete("path");
   searchParams.delete("provider");
@@ -1112,14 +1131,6 @@ export default async function handler(req) {
     ? provider.buildUrl(azureModelName, pathParam, queryString)
     : provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
-
-  // Inject a default model when missing from the request body
-  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureanthropic: "claude-sonnet-4-6" };
-    parsedBody.model = defaults[providerKey] || "deepseek-chat";
-    bodyText = JSON.stringify(parsedBody);
-    log("MODEL_INJECTED", "defaulted to:", parsedBody.model);
-  }
 
   if (providerKey === "minimax" && parsedBody) {
     parsedBody.reasoning_split = true;
