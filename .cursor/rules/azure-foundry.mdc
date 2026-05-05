@@ -78,8 +78,9 @@ metadata, thinking, output_config
 ```
 - `max_completion_tokens` → remapped to `max_tokens` (Anthropic uses `max_tokens`)
 - `instructions` → mapped to `system` before whitelist (Cursor/Responses may send `instructions` instead of `system`; if `system` already exists, `instructions` is dropped)
-- `reasoning_effort` → mapped to `output_config.effort` before whitelist (Cursor may send OpenAI-style `reasoning_effort` for all models)
-- `output_config` controls extended thinking depth for Sonnet 4.6+ (replaces deprecated `budget_tokens`). Effort levels: `low`, `medium`, `high`, `max`
+- `reasoning_effort` → mapped to `output_config.effort` before whitelist when the effort is one of `low`, `medium`, `high`, `max`; explicit `output_config.effort` wins
+- `output_config` controls Claude effort for Sonnet 4.6+; effort levels: `low`, `medium`, `high`, `max`
+- Optional defaults: `AZURE_ANTHROPIC_THINKING` (`adaptive`, `disabled`) and `AZURE_ANTHROPIC_EFFORT` (`low`, `medium`, `high`, `max`) are injected only when the request omits those fields
 
 ## Reasoning Injection — SKIPPED for Azure
 

@@ -66,6 +66,18 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
+const AZURE_ANTHROPIC_THINKING_TYPES = new Set(["adaptive", "disabled"]);
+const AZURE_ANTHROPIC_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
+
+function cleanEnvValue(name) {
+  return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");
+}
+
+function allowedEnvValue(name, allowed) {
+  const value = cleanEnvValue(name);
+  return allowed.has(value) ? value : null;
+}
+
 function timingSafeEqualStr(a, b) {
   if (typeof a !== "string" || typeof b !== "string") return false;
   if (a.length !== b.length) return false;
@@ -1079,11 +1091,36 @@ export default async function handler(req) {
       sanitized = true;
     }
 
-    // Map OpenAI-style reasoning_effort to Anthropic output_config.effort
-    if ("reasoning_effort" in parsedBody && !("output_config" in parsedBody)) {
-      parsedBody.output_config = { effort: parsedBody.reasoning_effort };
+    // Map OpenAI-style reasoning_effort to Anthropic output_config.effort.
+    // Azure Claude accepts low/medium/high/max; ignore OpenAI-only values like "none".
+    if ("reasoning_effort" in parsedBody) {
+      if (AZURE_ANTHROPIC_EFFORT_LEVELS.has(parsedBody.reasoning_effort)) {
+        if (!parsedBody.output_config || typeof parsedBody.output_config !== "object" || Array.isArray(parsedBody.output_config)) {
+          parsedBody.output_config = {};
+        }
+        if (!parsedBody.output_config.effort) {
+          parsedBody.output_config.effort = parsedBody.reasoning_effort;
+        }
+      }
       delete parsedBody.reasoning_effort;
       sanitized = true;
+    }
+
+    const defaultThinking = allowedEnvValue("AZURE_ANTHROPIC_THINKING", AZURE_ANTHROPIC_THINKING_TYPES);
+    if (defaultThinking && !("thinking" in parsedBody)) {
+      parsedBody.thinking = { type: defaultThinking };
+      sanitized = true;
+    }
+
+    const defaultEffort = allowedEnvValue("AZURE_ANTHROPIC_EFFORT", AZURE_ANTHROPIC_EFFORT_LEVELS);
+    if (defaultEffort) {
+      if (!parsedBody.output_config || typeof parsedBody.output_config !== "object" || Array.isArray(parsedBody.output_config)) {
+        parsedBody.output_config = {};
+      }
+      if (!parsedBody.output_config.effort) {
+        parsedBody.output_config.effort = defaultEffort;
+        sanitized = true;
+      }
     }
 
     // Anthropic uses `max_tokens`, not `max_completion_tokens`
