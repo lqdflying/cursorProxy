@@ -552,6 +552,30 @@ export default async function handler(req) {
       }
     }
 
+    // Normalize Anthropic-style tool definitions to OpenAI format.
+    // Anthropic: {type, name, description, input_schema} directly on tool
+    // OpenAI:   {type, function: {name, description, parameters}}
+    if (parsedBody?.tools) {
+      let toolsFixed = false;
+      for (const tool of parsedBody.tools) {
+        if (tool.name && !tool.function) {
+          tool.function = {
+            name: tool.name,
+            description: tool.description || "",
+            parameters: tool.input_schema || {},
+          };
+          delete tool.name;
+          delete tool.description;
+          delete tool.input_schema;
+          toolsFixed = true;
+        }
+      }
+      if (toolsFixed) {
+        bodyText = JSON.stringify(parsedBody);
+        diag("TOOLS_FIXED", "Anthropic → OpenAI tool format for", providerKey);
+      }
+    }
+
     if (azureModelName?.startsWith?.("azure/")) {
       azureModelName = azureModelName.slice(6);
       log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
