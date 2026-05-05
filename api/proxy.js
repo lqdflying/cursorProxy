@@ -46,7 +46,10 @@ const PROVIDERS = {
     buildUrl(model, pathParam, queryString) {
       const resource = process.env.AZURE_FOUNDRY_RESOURCE;
       const qs = queryString ? `?${queryString}` : "";
-      return `https://${resource}.services.ai.azure.com/anthropic/v1/${pathParam}${qs}`;
+      // Remap OpenAI-compatible paths to Anthropic Messages API equivalents.
+      // Cursor sends chat/completions — Anthropic expects messages.
+      const remapped = pathParam === "chat/completions" ? "messages" : pathParam;
+      return `https://${resource}.services.ai.azure.com/anthropic/v1/${remapped}${qs}`;
     },
   },
 };
