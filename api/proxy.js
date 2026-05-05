@@ -70,7 +70,7 @@ function diag(...args) {
 
 const AZURE_ANTHROPIC_THINKING_TYPES = new Set(["adaptive", "disabled"]);
 const AZURE_ANTHROPIC_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
-const AZURE_OPENAI_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
+const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
 function cleanEnvValue(name) {
   return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");

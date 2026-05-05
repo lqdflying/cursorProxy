@@ -67,7 +67,7 @@ store, parallel_tool_calls, user
 - `max_tokens` / `max_completion_tokens` → remapped to `max_output_tokens`
 - `temperature` ≠ 1 → stripped for reasoning models only; standard models preserve user-set temperature
 - `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias` → stripped for reasoning models
-- Optional default: `AZURE_OPENAI_REASONING_EFFORT` (`low`, `medium`, `high`) — injected only for reasoning models when request omits `reasoning.effort`
+- Optional default: `AZURE_OPENAI_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) — injected only for reasoning models when request omits `reasoning.effort`; model support varies (`none` and `xhigh` are not universal)
 
 ### azureanthropic Whitelist
 ```
