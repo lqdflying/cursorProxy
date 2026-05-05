@@ -531,6 +531,27 @@ export default async function handler(req) {
       diag("INPUT_REMAPPED", "input → messages for", providerKey);
     }
 
+    // Normalize Anthropic-style content types to OpenAI equivalents.
+    // Cursor uses Anthropic format (e.g. "input_text") but Azure expects
+    // OpenAI format ("text", "image_url", etc.).
+    if (parsedBody?.messages) {
+      let contentFixed = false;
+      for (const msg of parsedBody.messages) {
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (part.type === "input_text") {
+              part.type = "text";
+              contentFixed = true;
+            }
+          }
+        }
+      }
+      if (contentFixed) {
+        bodyText = JSON.stringify(parsedBody);
+        diag("CONTENT_TYPE_FIXED", "input_text → text for", providerKey);
+      }
+    }
+
     if (azureModelName?.startsWith?.("azure/")) {
       azureModelName = azureModelName.slice(6);
       log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
