@@ -70,7 +70,7 @@ function diag(...args) {
 
 const AZURE_ANTHROPIC_THINKING_TYPES = new Set(["adaptive", "disabled"]);
 const AZURE_ANTHROPIC_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
-const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const AZURE_OPENAI_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
 
 function cleanEnvValue(name) {
   return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");
@@ -1185,11 +1185,27 @@ export default async function handler(req) {
       }
     }
 
+    // Responses API uses nested reasoning.effort, not flat reasoning_effort.
+    // Map flat reasoning_effort (from Cursor or legacy requests) to nested format.
+    if ("reasoning_effort" in parsedBody) {
+      if (!parsedBody.reasoning || typeof parsedBody.reasoning !== "object" || Array.isArray(parsedBody.reasoning)) {
+        parsedBody.reasoning = {};
+      }
+      if (!parsedBody.reasoning.effort) {
+        parsedBody.reasoning.effort = parsedBody.reasoning_effort;
+      }
+      delete parsedBody.reasoning_effort;
+      sanitized = true;
+    }
+
     // Inject default reasoning effort from env for Azure OpenAI reasoning models.
-    // Responses API supports reasoning_effort + tools natively (no gating needed).
+    // Responses API uses nested reasoning.effort, not flat reasoning_effort.
     const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
-    if (isAzureReasoningModel && defaultReasoningEffort && !("reasoning_effort" in parsedBody)) {
-      parsedBody.reasoning_effort = defaultReasoningEffort;
+    if (isAzureReasoningModel && defaultReasoningEffort && !(parsedBody.reasoning?.effort)) {
+      if (!parsedBody.reasoning || typeof parsedBody.reasoning !== "object" || Array.isArray(parsedBody.reasoning)) {
+        parsedBody.reasoning = {};
+      }
+      parsedBody.reasoning.effort = defaultReasoningEffort;
       sanitized = true;
     }
 
@@ -1198,7 +1214,7 @@ export default async function handler(req) {
     const allowed = new Set([
       "model", "input", "instructions", "stream",
       "max_completion_tokens", "max_output_tokens", "temperature", "top_p",
-      "tools", "tool_choice", "reasoning_effort",
+      "tools", "tool_choice", "reasoning",
       "store", "parallel_tool_calls", "user",
     ]);
 
