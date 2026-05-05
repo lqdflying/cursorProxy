@@ -570,8 +570,8 @@ export default async function handler(req) {
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
 
   // Inject a default model when missing from the request body
-  if (parsedBody && !parsedBody.model) {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureopenai: "gpt-5.5", azureanthropic: "claude-sonnet-4-6" };
+  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "defaulted to:", parsedBody.model);
