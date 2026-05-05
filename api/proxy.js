@@ -608,7 +608,7 @@ export default async function handler(req) {
       "messages", "temperature", "top_p", "n", "stream", "stream_options",
       "max_completion_tokens", "presence_penalty", "frequency_penalty",
       "logit_bias", "user", "tools", "tool_choice", "response_format",
-      "seed", "parallel_tool_calls", "reasoning_effort", "metadata",
+      "seed", "parallel_tool_calls", "reasoning_effort",
       "data_sources",  // Azure on-your-data
     ]);
 
