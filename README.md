@@ -70,6 +70,7 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | `AZURE_FOUNDRY_API_VERSION` | For Azure Foundry | API version (default `2024-12-01-preview`) |
 | `AZURE_OPENAI_ENDPOINT` | Optional | Override Azure OpenAI base URL |
 | `AZURE_ANTHROPIC_ENDPOINT` | Optional | Override Azure Anthropic base URL |
+| `AZURE_OPENAI_REASONING_EFFORT` | Optional | Default reasoning effort for gpt-5.5/o-series when request omits it: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `AZURE_ANTHROPIC_THINKING` | Optional | Default Claude thinking mode when request omits it: `adaptive` or `disabled` |
 | `AZURE_ANTHROPIC_EFFORT` | Optional | Default Claude effort when request omits it: `low`, `medium`, `high`, or `max` |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |

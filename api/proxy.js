@@ -68,6 +68,7 @@ function diag(...args) {
 
 const AZURE_ANTHROPIC_THINKING_TYPES = new Set(["adaptive", "disabled"]);
 const AZURE_ANTHROPIC_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
+const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 
 function cleanEnvValue(name) {
   return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");
@@ -1049,6 +1050,14 @@ export default async function handler(req) {
           sanitized = true;
         }
       }
+    }
+
+    // Inject default reasoning effort from env for Azure OpenAI reasoning models.
+    // Only when the request body doesn't already include reasoning_effort.
+    const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
+    if (isAzureReasoningModel && defaultReasoningEffort && !("reasoning_effort" in parsedBody)) {
+      parsedBody.reasoning_effort = defaultReasoningEffort;
+      sanitized = true;
     }
 
     // Known valid OpenAI chat completions params (plus Azure-specific ones).
