@@ -532,9 +532,8 @@ export default async function handler(req) {
     }
 
     // Normalize Anthropic-style content types to OpenAI equivalents.
-    // Cursor uses Anthropic format (e.g. "input_text") but Azure expects
-    // OpenAI format ("text", "image_url", etc.).
-    if (parsedBody?.messages) {
+    // Only for Azure OpenAI — Anthropic endpoint accepts native types.
+    if (providerKey === "azureopenai" && parsedBody?.messages) {
       let contentFixed = false;
       for (const msg of parsedBody.messages) {
         if (Array.isArray(msg.content)) {
@@ -553,9 +552,8 @@ export default async function handler(req) {
     }
 
     // Normalize Anthropic-style tool definitions to OpenAI format.
-    // Anthropic: {type, name, description, input_schema} directly on tool
-    // OpenAI:   {type, function: {name, description, parameters}}
-    if (parsedBody?.tools) {
+    // Only for Azure OpenAI — Anthropic endpoint expects native tool format.
+    if (providerKey === "azureopenai" && parsedBody?.tools) {
       let toolsFixed = false;
       for (const tool of parsedBody.tools) {
         if (tool.name && !tool.function) {
