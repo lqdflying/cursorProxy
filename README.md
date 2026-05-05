@@ -67,7 +67,7 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
 || `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key |
 || `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
-|| `AZURE_FOUNDRY_API_VERSION` | For Azure Foundry | API version (default `2024-12-01-preview`) |
+|| `AZURE_FOUNDRY_API_VERSION` | For Azure Foundry | API version (default `2025-04-01-preview`) |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |

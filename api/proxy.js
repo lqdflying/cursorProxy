@@ -33,7 +33,7 @@ const PROVIDERS = {
     authHeaderPrefix: "",
     buildUrl(model, pathParam, queryString) {
       const resource = process.env.AZURE_FOUNDRY_RESOURCE;
-      const version = process.env.AZURE_FOUNDRY_API_VERSION || "2024-12-01-preview";
+      const version = process.env.AZURE_FOUNDRY_API_VERSION || "2025-04-01-preview";
       const qs = queryString ? `&${queryString}` : "";
       return `https://${resource}.cognitiveservices.azure.com/openai/deployments/${model}/${pathParam}?api-version=${version}${qs}`;
     },
@@ -755,8 +755,10 @@ export default async function handler(req) {
 
   headers.delete("x-api-key");
   headers.delete("content-length");
+  headers.delete("content-type");
   headers.delete("transfer-encoding");
   headers.delete("accept-encoding");
+  headers.set("content-type", "application/json");
   headers.set("accept-encoding", "identity");
 
   let upstreamRes;
