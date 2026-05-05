@@ -1050,7 +1050,10 @@ export default async function handler(req) {
       }
       parsedBody.reasoning.effort = defaultReasoningEffort;
       sanitized = true;
-      diag("REASONING_EFFORT", "effort:", defaultReasoningEffort, "for", providerKey);
+    }
+
+    if (parsedBody.reasoning?.effort) {
+      diag("REASONING_EFFORT", "effort:", parsedBody.reasoning.effort, "provider:", providerKey);
     }
 
     // Known valid OpenAI Responses API params.
