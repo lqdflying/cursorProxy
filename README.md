@@ -1,6 +1,6 @@
 # cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
+A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
 - **Reasoning bridge:** caches and injects provider-specific reasoning by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively.
@@ -16,6 +16,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deploy on 
 - [DeepSeek](https://platform.deepseek.com) → `DEEPSEEK_API_KEY`
 - [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY`
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
+- [Azure Foundry](https://ai.azure.com) → `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_RESOURCE`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
 
 ### 2. Set up KV storage
@@ -50,7 +51,7 @@ See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for V
 | API Key | Your `CURSORPROXY_API_KEY` |
 | Model | Discovered from `GET /v1/models` when `CURSORPROXY_MODELS` is set, or manually entered |
 
-The proxy routes to the correct upstream based on the model name prefix (`deepseek*`, `kimi*`, `minimax*` / `MiniMax*`) and uses the corresponding server-side API key.
+The proxy routes to the correct upstream based on the model name prefix (`deepseek*`, `kimi*`, `minimax*` / `MiniMax*`, `azure/*`) and uses the corresponding server-side API key.
 
 ---
 
@@ -64,6 +65,9 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
 | `KIMI_API_KEY` | For Kimi | Upstream API key |
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
+|| `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key |
+|| `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
+|| `AZURE_FOUNDRY_API_VERSION` | For Azure Foundry | API version (default `2024-12-01-preview`) |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |

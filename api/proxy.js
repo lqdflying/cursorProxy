@@ -10,16 +10,44 @@ const PROVIDERS = {
     url: process.env.UPSTREAM_DEEPSEEK || "https://api.deepseek.com",
     host: "api.deepseek.com",
     apiKeyEnv: "DEEPSEEK_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
   },
   kimi: {
     url: process.env.UPSTREAM_KIMI || "https://api.moonshot.ai",
     host: "api.moonshot.ai",
     apiKeyEnv: "KIMI_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
   },
   minimax: {
     url: process.env.UPSTREAM_MINIMAX || "https://api.minimax.io",
     host: "api.minimax.io",
     apiKeyEnv: "MINIMAX_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
+  },
+  azureopenai: {
+    apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
+    authHeaderName: "api-key",
+    authHeaderPrefix: "",
+    buildUrl(model, pathParam, queryString) {
+      const resource = process.env.AZURE_FOUNDRY_RESOURCE;
+      const version = process.env.AZURE_FOUNDRY_API_VERSION || "2024-12-01-preview";
+      const qs = queryString ? `&${queryString}` : "";
+      return `https://${resource}.cognitiveservices.azure.com/openai/deployments/${model}/${pathParam}?api-version=${version}${qs}`;
+    },
+  },
+  azureanthropic: {
+    apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
+    authHeaderName: "x-api-key",
+    authHeaderPrefix: "",
+    extraHeaders: { "anthropic-version": "2023-06-01" },
+    buildUrl(model, pathParam, queryString) {
+      const resource = process.env.AZURE_FOUNDRY_RESOURCE;
+      const qs = queryString ? `?${queryString}` : "";
+      return `https://${resource}.services.ai.azure.com/anthropic/v1/${pathParam}${qs}`;
+    },
   },
 };
 
@@ -117,6 +145,11 @@ function modelDiscoveryResponse(req) {
 function providerFromModel(model) {
   if (typeof model !== "string" || !model) return null;
   const m = model.toLowerCase();
+  // Azure Foundry: azure/ prefix — claude models route to Anthropic endpoint
+  if (m.startsWith("azure/")) {
+    const bare = m.slice(6);
+    return bare.startsWith("claude") ? "azureanthropic" : "azureopenai";
+  }
   if (m.startsWith("minimax")) return "minimax";
   if (m.startsWith("kimi")) return "kimi";
   if (m.startsWith("deepseek")) return "deepseek";
@@ -481,11 +514,23 @@ export default async function handler(req) {
 
   log("RESOLVED", "model:", parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
 
+  // Strip azure/ prefix from model name before forwarding to Azure.
+  // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
+  // not the proxy-specific "azure/claude-sonnet-4-6" model ID.
+  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
+    if (parsedBody?.model?.startsWith?.("azure/")) {
+      const stripped = parsedBody.model.slice(6);
+      log("MODEL_STRIP", "from:", parsedBody.model, "to:", stripped);
+      parsedBody.model = stripped;
+      bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, or minimax (or set model to a matching provider prefix).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, azureopenai, or azureanthropic (or set model to a matching provider prefix, e.g. azure/claude-sonnet-4-6).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -509,12 +554,14 @@ export default async function handler(req) {
   const queryString = searchParams.toString()
     ? "?" + searchParams.toString()
     : "";
-  const upstreamUrl = provider.url + "/v1/" + pathParam + queryString;
+  const upstreamUrl = provider.buildUrl
+    ? provider.buildUrl(parsedBody?.model, pathParam, queryString)
+    : provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
 
   // Inject a default model when missing from the request body
   if (parsedBody && !parsedBody.model) {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7" };
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureopenai: "gpt-5.5", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "defaulted to:", parsedBody.model);
@@ -681,8 +728,28 @@ export default async function handler(req) {
   }
 
   const headers = new Headers(req.headers);
-  headers.set("host", provider.host);
-  headers.set("authorization", "Bearer " + providerSecret);
+
+  // Build dynamic host header: use provider.host when available,
+  // otherwise extract hostname from the constructed upstream URL.
+  if (provider.host) {
+    headers.set("host", provider.host);
+  } else {
+    try {
+      headers.set("host", new URL(upstreamUrl).hostname);
+    } catch { /* fall through */ }
+  }
+
+  // Build dynamic auth header
+  const authValue = provider.authHeaderPrefix + providerSecret;
+  headers.set(provider.authHeaderName, authValue);
+
+  // Apply provider-specific extra headers (e.g. anthropic-version for Azure)
+  if (provider.extraHeaders) {
+    for (const [k, v] of Object.entries(provider.extraHeaders)) {
+      headers.set(k, v);
+    }
+  }
+
   headers.delete("x-api-key");
   headers.delete("content-length");
   headers.delete("transfer-encoding");

@@ -22,6 +22,8 @@ const ROUTES = [
   { pattern: /^\/deepseek\/v1\/(.+)$/, provider: "deepseek" },
   { pattern: /^\/kimi\/v1\/(.+)$/, provider: "kimi" },
   { pattern: /^\/minimax\/v1\/(.+)$/, provider: "minimax" },
+  { pattern: /^\/azure-openai\/v1\/(.+)$/, provider: "azureopenai" },
+  { pattern: /^\/azure-anthropic\/v1\/(.+)$/, provider: "azureanthropic" },
   { pattern: /^\/v1\/(.+)$/, provider: null },
   { pattern: /^\/v0\/(.+)$/, provider: null },
 ];
