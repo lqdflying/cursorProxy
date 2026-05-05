@@ -74,10 +74,12 @@ data_sources  (Azure on-your-data)
 ```
 model, messages, system, max_tokens, temperature,
 top_p, top_k, stream, stop_sequences, tools, tool_choice,
-metadata, thinking
+metadata, thinking, output_config
 ```
 - `max_completion_tokens` → remapped to `max_tokens` (Anthropic uses `max_tokens`)
 - `instructions` → mapped to `system` before whitelist (Cursor/Responses may send `instructions` instead of `system`; if `system` already exists, `instructions` is dropped)
+- `reasoning_effort` → mapped to `output_config.effort` before whitelist (Cursor may send OpenAI-style `reasoning_effort` for all models)
+- `output_config` controls extended thinking depth for Sonnet 4.6+ (replaces deprecated `budget_tokens`). Effort levels: `low`, `medium`, `high`, `max`
 
 ## Reasoning Injection — SKIPPED for Azure
 
