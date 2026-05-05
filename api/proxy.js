@@ -534,12 +534,13 @@ export default async function handler(req) {
     // Normalize Anthropic-style content types to OpenAI equivalents.
     // Only for Azure OpenAI — Anthropic endpoint accepts native types.
     if (providerKey === "azureopenai" && parsedBody?.messages) {
+      const typeMap = { input_text: "text", output_text: "text" };
       let contentFixed = false;
       for (const msg of parsedBody.messages) {
         if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
-            if (part.type === "input_text") {
-              part.type = "text";
+            if (typeMap[part.type]) {
+              part.type = typeMap[part.type];
               contentFixed = true;
             }
           }
@@ -547,7 +548,7 @@ export default async function handler(req) {
       }
       if (contentFixed) {
         bodyText = JSON.stringify(parsedBody);
-        diag("CONTENT_TYPE_FIXED", "input_text → text for", providerKey);
+        diag("CONTENT_TYPE_FIXED", "Anthropic → OpenAI content types for", providerKey);
       }
     }
 
