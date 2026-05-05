@@ -558,14 +558,14 @@ export default async function handler(req) {
       const RESULT_IN_CONTENT = ["tool_result", "function_call_output"];
       const STORE_KEY = ["tool_use_id", "call_id", "id"];
       const normalized = [];
-      let diagDumped = false;
+      let diagCalls = false, diagResults = false;
       for (const msg of parsedBody.messages) {
         // Anthropic standalone tool_result / function_call_output (has type, no role)
         const isToolResult = RESULT_IN_CONTENT.includes(msg.type);
         if (!msg.role && isToolResult) {
-          if (!diagDumped) {
-            diag("STANDALONE_MSG_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","));
-            diagDumped = true;
+          if (!diagResults) {
+            diag("STANDALONE_RESULT_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
+            diagResults = true;
           }
           const tid = STORE_KEY.reduce((id, k) => id || msg[k], "");
           normalized.push({
@@ -579,9 +579,9 @@ export default async function handler(req) {
 
         // Anthropic standalone function_call (has type, no role) → assistant with tool_calls
         if (!msg.role && msg.type === "function_call") {
-          if (!diagDumped) {
-            diag("STANDALONE_MSG_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","));
-            diagDumped = true;
+          if (!diagCalls) {
+            diag("STANDALONE_CALL_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
+            diagCalls = true;
           }
           normalized.push({
             role: "assistant",
