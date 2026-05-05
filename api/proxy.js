@@ -546,27 +546,41 @@ export default async function handler(req) {
   }
 
   // Azure OpenAI models (especially gpt-5.5) have restricted parameter support.
-  // Strip/rewrite incompatible fields to avoid 400 errors like:
-  //  - max_tokens → unsupported, rename to max_completion_tokens
-  //  - temperature → only value 1 is supported, strip if not 1
-  //  - stop, logprobs, top_logprobs → unsupported, strip
+  // Rewrite incompatible params and strip any unknown fields via a whitelist
+  // to avoid repeated "Unknown parameter" 400 errors from Cursor-specific fields.
   if (providerKey === "azureopenai" && parsedBody) {
     let sanitized = false;
+
+    // Known valid OpenAI chat completions params (plus Azure-specific ones)
+    const allowed = new Set([
+      "messages", "temperature", "top_p", "n", "stream", "stream_options",
+      "max_completion_tokens", "presence_penalty", "frequency_penalty",
+      "logit_bias", "user", "tools", "tool_choice", "response_format",
+      "seed", "parallel_tool_calls", "reasoning_effort", "metadata",
+      "data_sources",  // Azure on-your-data
+    ]);
+
+    // Rewrite max_tokens → max_completion_tokens (gpt-5.5 rejects max_tokens)
     if ("max_tokens" in parsedBody && !("max_completion_tokens" in parsedBody)) {
       parsedBody.max_completion_tokens = parsedBody.max_tokens;
       delete parsedBody.max_tokens;
       sanitized = true;
     }
+
+    // temperature: only value 1 is supported
     if ("temperature" in parsedBody && parsedBody.temperature !== 1) {
       delete parsedBody.temperature;
       sanitized = true;
     }
-    for (const field of ["stop", "logprobs", "top_logprobs", "include", "thinking"]) {
-      if (field in parsedBody) {
-        delete parsedBody[field];
+
+    // Strip any field not in the allowed whitelist
+    for (const key of Object.keys(parsedBody)) {
+      if (!allowed.has(key)) {
+        delete parsedBody[key];
         sanitized = true;
       }
     }
+
     if (sanitized) {
       bodyText = JSON.stringify(parsedBody);
       diag("AZURE_BODY_SANITIZED", "stripped unsupported params for gpt-5.5 compatibility");
