@@ -32,10 +32,12 @@ const PROVIDERS = {
     authHeaderName: "api-key",
     authHeaderPrefix: "",
     buildUrl(model, pathParam, queryString) {
-      const resource = process.env.AZURE_FOUNDRY_RESOURCE;
+      const base = process.env.AZURE_FOUNDRY_ENDPOINT
+        || `https://${process.env.AZURE_FOUNDRY_RESOURCE}.cognitiveservices.azure.com`;
       const version = process.env.AZURE_FOUNDRY_API_VERSION || "2024-12-01-preview";
-      const qs = queryString ? `&${queryString}` : "";
-      return `https://${resource}.cognitiveservices.azure.com/openai/deployments/${model}/${pathParam}?api-version=${version}${qs}`;
+      // queryString already has leading "?" — strip it before appending with "&"
+      const qs = queryString ? `&${queryString.slice(1)}` : "";
+      return `${base}/openai/deployments/${model}/${pathParam}?api-version=${version}${qs}`;
     },
   },
   azureanthropic: {
@@ -44,8 +46,10 @@ const PROVIDERS = {
     authHeaderPrefix: "",
     extraHeaders: { "anthropic-version": "2023-06-01" },
     buildUrl(model, pathParam, queryString) {
-      const resource = process.env.AZURE_FOUNDRY_RESOURCE;
-      const qs = queryString ? `?${queryString}` : "";
+      const base = process.env.AZURE_FOUNDRY_ENDPOINT
+        || `https://${process.env.AZURE_FOUNDRY_RESOURCE}.services.ai.azure.com`;
+      // queryString already includes leading "?" — use as-is
+      const qs = queryString || "";
       // Remap OpenAI-compatible paths to Anthropic Messages API equivalents.
       // Cursor sends chat/completions — Anthropic expects messages.
       const remapped = pathParam === "chat/completions" ? "messages" : pathParam;
@@ -749,6 +753,7 @@ export default async function handler(req) {
       "max_completion_tokens", "presence_penalty", "frequency_penalty",
       "logit_bias", "user", "tools", "tool_choice", "response_format",
       "seed", "parallel_tool_calls", "reasoning_effort",
+      "stop", "logprobs", "top_logprobs",
       "data_sources",  // Azure on-your-data
     ]);
 
@@ -1032,6 +1037,9 @@ export default async function handler(req) {
   if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
     const hdrObj = {};
     headers.forEach((v, k) => (hdrObj[k] = v));
+    // Redact auth keys from logs
+    if (hdrObj["api-key"]) hdrObj["api-key"] = "***";
+    if (hdrObj["x-api-key"]) hdrObj["x-api-key"] = "***";
     diag(
       "UPSTREAM_REQUEST_DUMP",
       "url:", upstreamUrl,
