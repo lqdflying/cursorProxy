@@ -38,6 +38,23 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 [cursorProxy:proxy] INJECT idx: 3 key: conv:abc... hit: true waitedMs: 0
 ```
 
+### Log message format rules
+
+Every argument after the TITLE must be either:
+
+- A **positional value** (HTTP method, status code, path, numeric count) — used sparingly for the first 1-2 args in REQ/RES
+- A **`key: value` pair** — the `key:` argument is a string ending in `:`, followed by the value argument. This is the primary convention.
+
+**Bare values without a key prefix are forbidden.** Every value must be preceded by a `key:` label.
+
+| ✅ Correct | ❌ Wrong |
+|---|---|
+| `ANTHROPIC_EVENT type: content_block_delta index: 0` | `ANTHROPIC_EVENT content_block_delta index: 0` |
+| `MODEL_INJECTED model: gpt-5.5` | `MODEL_INJECTED defaulted to: gpt-5.5` |
+| `REQ POST /v1/chat/completions provider: deepseek` | `REQ POST /v1/chat/completions deepseek` |
+
+The first value after TITLE may be positional (e.g. `GET`, `200`, `/path`) when it's a universally understood identifier, but all subsequent values must use `key: value` form.
+
 ### Platform isolation: safe vs unsafe files for log changes
 
 ```
