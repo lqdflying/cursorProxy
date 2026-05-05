@@ -1493,7 +1493,7 @@ export default async function handler(req) {
             if (providerKey === "azureanthropic") {
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               // Diagnostic: log event type and extracted text to debug silent streams
-              log("ANTHROPIC_EVENT", json.type,
+              diag("ANTHROPIC_EVENT", json.type,
                    "index:", json.index,
                    "delta_type:", json.delta?.type,
                    "text:", json.delta?.text?.slice(0, 40),

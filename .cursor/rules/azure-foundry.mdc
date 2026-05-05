@@ -98,7 +98,9 @@ All Azure-specific logic is gated behind `providerKey === "azureopenai"` or `pro
 
 ## Anthropic SSE → OpenAI SSE Stream Transformation
 
-Azure Anthropic (and native Anthropic) returns SSE streams in a different format than OpenAI:
+Azure Anthropic (and native Anthropic) returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `api/proxy.js` performs the conversion.
+
+### Event Format Overview
 
 **Anthropic format** (named events):
 ```
@@ -124,22 +126,38 @@ data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 data: [DONE]
 ```
 
-The `mapAnthropicSSEToOpenAI()` function in `api/proxy.js` converts between these formats:
+### Full Conversion Table
 
-| Anthropic Event | OpenAI Output |
-|---|---|
-| `content_block_start` (text) | `delta: {role:"assistant",content:""}` (role marker) |
-| `content_block_delta` | `delta: {content: text_delta}` |
-| `content_block_stop` | Skip (no output) |
-| `message_delta` | `finish_reason` + `usage` |
-| `message_stop` | Emits `[DONE]` |
-| `message_start`, `ping` | Skip |
-| `error` | `finish_reason: "error"` |
+| Anthropic Event | Block/Delta Type | OpenAI Output |
+|---|---|---|
+| `content_block_start` | `text` or `thinking` | `delta: {role:"assistant",content:""}` (role marker) |
+| `content_block_start` | `tool_use` | `delta: {tool_calls:[{index,id,type:"function",function:{name,arguments:""}}]}` |
+| `content_block_delta` | `text_delta` | `delta: {content: text}` |
+| `content_block_delta` | `thinking_delta` | `delta: {content: thinking}` (fallback when no text present) |
+| `content_block_delta` | `input_json_delta` | `delta: {tool_calls:[{index,function:{arguments: partial_json}}]}` |
+| `content_block_stop` | (tool_use only) | Finalizes tool call with empty arguments delta |
+| `content_block_stop` | (text/thinking) | Skip (no output) |
+| `message_delta` | — | `finish_reason` + `usage` |
+| `message_stop` | — | Emits `[DONE]` |
+| `message_start`, `ping` | — | Skip |
+| `error` | — | `finish_reason: "error"` |
 
-Non-`data:` lines (e.g., `event: content_block_delta`) are suppressed for `azureanthropic` to avoid confusing clients that consume both event names and data.
+### Key Design Decisions
 
-Stop reason mapping:
-- `end_turn` → `stop`
-- `max_tokens` → `length`
-- `stop_sequence` → `stop`
-- `tool_use` → `tool_calls`
+1. **`event:` lines suppressed**: Non-`data:` lines (e.g., `event: content_block_delta`) are suppressed for `azureanthropic` to avoid confusing Cursor's SSE parser. Only transformed data events are emitted.
+
+2. **Tool use state tracking**: `content_block_start` stores the tool `id` and `name` in `anthropicToolState` (a `Map<index, {id, name, partialJson}>`). Subsequent `content_block_delta` events with `input_json_delta` accumulate `partial_json` and emit incremental `function.arguments`. `content_block_stop` finalizes the tool call.
+
+3. **Thinking as text fallback**: If the model produces `thinking_delta` without `text_delta`, the thinking content is emitted as `delta.content` so Cursor has visible output. This handles models that do extended thinking before (or instead of) producing text.
+
+4. **Stop reason mapping**:
+   - `end_turn` → `stop`
+   - `max_tokens` → `length`
+   - `stop_sequence` → `stop`
+   - `tool_use` → `tool_calls`
+
+### Unsupported (future work)
+- `tool_use` blocks with pre-filled `input` (vs streaming `input_json_delta`)
+- Multi-tool responses (multiple `tool_use` blocks in one turn)
+- `content_block_start` with `server_tool_use` type
+- `thinking` signature verification blocks
