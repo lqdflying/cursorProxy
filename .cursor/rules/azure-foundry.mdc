@@ -77,6 +77,7 @@ top_p, top_k, stream, stop_sequences, tools, tool_choice,
 metadata, thinking
 ```
 - `max_completion_tokens` → remapped to `max_tokens` (Anthropic uses `max_tokens`)
+- `instructions` → mapped to `system` before whitelist (Cursor/Responses may send `instructions` instead of `system`; if `system` already exists, `instructions` is dropped)
 
 ## Reasoning Injection — SKIPPED for Azure
 
@@ -178,6 +179,10 @@ data: [DONE]
 - Multi-tool responses (multiple `tool_use` blocks in one turn)
 - `content_block_start` with `server_tool_use` type
 - `thinking` signature verification blocks
+- Standalone `function_call` / `function_call_output` messages → Anthropic `tool_use` / `tool_result` content blocks. Cursor sends Anthropic-native format for Anthropic providers, so this only matters for multi-turn conversations where prior tool history was produced by a non-Anthropic provider.
+
+### Request-side additions
+- `instructions` (Responses-style) → mapped to `system` before the whitelist, so the system prompt isn't silently dropped when Cursor sends `instructions` instead of `system`.
 
 ## Security
 
