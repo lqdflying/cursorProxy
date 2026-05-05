@@ -749,7 +749,9 @@ export default async function handler(req) {
     } catch { /* fall through */ }
   }
 
-  // Build dynamic auth header
+  // Build dynamic auth header: delete Cursor's proxy auth so it doesn't
+  // leak upstream as a second auth method (Azure rejects dual-auth requests).
+  headers.delete("authorization");
   const authValue = provider.authHeaderPrefix + providerSecret;
   headers.set(provider.authHeaderName, authValue);
 
