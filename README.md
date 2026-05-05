@@ -68,6 +68,8 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 || `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key |
 || `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
 || `AZURE_FOUNDRY_API_VERSION` | For Azure Foundry | API version (default `2024-12-01-preview`) |
+|| `AZURE_OPENAI_ENDPOINT` | Optional | Override Azure OpenAI base URL |
+|| `AZURE_ANTHROPIC_ENDPOINT` | Optional | Override Azure Anthropic base URL |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |

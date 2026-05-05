@@ -32,7 +32,7 @@ const PROVIDERS = {
     authHeaderName: "api-key",
     authHeaderPrefix: "",
     buildUrl(model, pathParam, queryString) {
-      const base = process.env.AZURE_FOUNDRY_ENDPOINT
+      const base = process.env.AZURE_OPENAI_ENDPOINT
         || `https://${process.env.AZURE_FOUNDRY_RESOURCE}.cognitiveservices.azure.com`;
       const version = process.env.AZURE_FOUNDRY_API_VERSION || "2024-12-01-preview";
       // queryString already has leading "?" — strip it before appending with "&"
@@ -46,14 +46,14 @@ const PROVIDERS = {
     authHeaderPrefix: "",
     extraHeaders: { "anthropic-version": "2023-06-01" },
     buildUrl(model, pathParam, queryString) {
-      const base = process.env.AZURE_FOUNDRY_ENDPOINT
+      const base = process.env.AZURE_ANTHROPIC_ENDPOINT
         || `https://${process.env.AZURE_FOUNDRY_RESOURCE}.services.ai.azure.com`;
       // queryString already includes leading "?" — use as-is
       const qs = queryString || "";
       // Remap OpenAI-compatible paths to Anthropic Messages API equivalents.
       // Cursor sends chat/completions — Anthropic expects messages.
       const remapped = pathParam === "chat/completions" ? "messages" : pathParam;
-      return `https://${resource}.services.ai.azure.com/anthropic/v1/${remapped}${qs}`;
+      return `${base}/anthropic/v1/${remapped}${qs}`;
     },
   },
 };
@@ -1033,8 +1033,8 @@ export default async function handler(req) {
   }
 
   // Dump the exact request being sent to Azure for debugging.
-  // Remove this block once the 400 "Unsupported data type" issue is resolved.
-  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
+  // Gate behind DEBUG to avoid logging user prompts in production.
+  if (DEBUG && (providerKey === "azureopenai" || providerKey === "azureanthropic")) {
     const hdrObj = {};
     headers.forEach((v, k) => (hdrObj[k] = v));
     // Redact auth keys from logs
