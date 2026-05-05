@@ -1181,7 +1181,7 @@ export default async function handler(req) {
     const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
-    log("MODEL_INJECTED", "defaulted to:", parsedBody.model);
+    log("MODEL_INJECTED", "model:", parsedBody.model);
   }
 
   // Keep azureModelName in sync with parsedBody.model — it may have been set by the
@@ -1625,7 +1625,7 @@ export default async function handler(req) {
             if (providerKey === "azureanthropic") {
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               // Diagnostic: log event type and extracted text to debug silent streams
-              log("ANTHROPIC_EVENT", json.type,
+              log("ANTHROPIC_EVENT", "type:", json.type,
                    "index:", json.index,
                    "delta_type:", json.delta?.type,
                    "text:", json.delta?.text?.slice(0, 40),
