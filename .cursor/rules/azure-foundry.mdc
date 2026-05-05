@@ -1,0 +1,97 @@
+---
+description: Azure Foundry integration knowledge base — API formats, parameter restrictions, Anthropic→OpenAI conversion patterns learned from gpt-5.5 troubleshooting
+alwaysApply: true
+---
+
+# Azure Foundry Integration
+
+## API Surfaces
+
+Azure Foundry exposes two APIs for models like gpt-5.5:
+
+| API | URL | Auth Header | Model in |
+|---|---|---|---|
+| Chat Completions | `/openai/deployments/{model}/chat/completions?api-version=YYYY-MM-DD-preview` | `api-key` | URL path |
+| Responses | `/openai/v1/responses?api-version=preview` | `api-key` | Request body |
+
+**Chat Completions is the correct target for the proxy.** Responses API returns `output_text` (Anthropic-format) responses that Cursor can't consume, and only works with `api-version=preview`, not date-based versions.
+
+## Environment Variables
+
+```
+AZURE_FOUNDRY_API_KEY      # Required — shared by both OpenAI and Anthropic
+AZURE_FOUNDRY_RESOURCE     # Required — e.g., cloudops-llm-us2-api
+AZURE_FOUNDRY_API_VERSION  # Default 2024-12-01-preview
+AZURE_OPENAI_ENDPOINT      # Optional — override OpenAI base URL
+AZURE_ANTHROPIC_ENDPOINT   # Optional — override Anthropic base URL
+```
+
+Default URL construction when no endpoint override is set:
+- OpenAI: `https://{resource}.cognitiveservices.azure.com/openai/deployments/{model}/{path}`
+- Anthropic: `https://{resource}.services.ai.azure.com/anthropic/v1/{path}`
+
+## Cursor Sends Anthropic-Format Requests
+
+Cursor uses Anthropic message format for all providers. The proxy must convert for Azure OpenAI:
+
+### Top-level remapping
+- `input` → `messages` (both azureopenai and azureanthropic)
+
+### Content type normalization (azureopenai only)
+- `input_text` → `text`
+- `output_text` → `text`
+
+### Tool format (azureopenai only)
+- Anthropic: `{type, name, description, input_schema}` (flat)
+- OpenAI: `{type, function: {name, description, parameters}}` (wrapped)
+- Filter out `type: "custom"` tools (Cursor-internal)
+
+### Tool call/response format (azureopenai only)
+- `function_call` (no role) → `{role: "assistant", tool_calls: [...]}`
+- `function_call_output` (no role) → `{role: "tool", tool_call_id, content}`
+- Both use `call_id` field for matching
+
+### Tool interleaving
+Cursor sends all calls then all outputs. OpenAI requires `assistant→tool→assistant→tool`. Must pre-scan outputs into a `Map<call_id, output>` and interleave them with matching calls.
+
+## gpt-5.5 Parameter Restrictions
+
+| Parameter | Status |
+|---|---|
+| `max_tokens` | Rejected — rename to `max_completion_tokens` |
+| `temperature` | Only `1` supported — strip other values |
+| `stop` | Rejected (gpt-5.5) |
+| `logprobs` | Rejected (gpt-5.5) |
+| `top_logprobs` | Rejected (gpt-5.5) |
+| `reasoning_effort` | ✅ Supported |
+
+**Approach**: Use a whitelist of known valid OpenAI Chat Completions params. Strip any unknown field automatically. This catches Cursor-specific params (`include`, `reasoning`, `thinking`, `metadata`, etc.) without per-field additions.
+
+## Query String Construction
+
+`queryString` is built with a leading `?` (e.g., `?foo=bar`). When appending to an existing `?api-version=...`, strip the leading `?` first:
+```javascript
+// ✅ Correct
+const qs = queryString ? `&${queryString.slice(1)}` : "";
+
+// ❌ Wrong — produces &?foo=bar
+const qs = queryString ? `&${queryString}` : "";
+```
+
+## Security
+
+- **Auth keys never logged**: Redact `api-key` and `x-api-key` values before any diagnostic output.
+- **Request dumps behind DEBUG**: `UPSTREAM_REQUEST_DUMP` logs request bodies which contain user prompts — must be gated behind `DEBUG=true`.
+- **Header isolation**: For Azure providers, wipe all incoming headers and only add back `content-type`, `host`, and auth. This prevents Cursor's `Authorization` header from leaking upstream.
+
+## Provider Routing
+
+`providerFromModel()` routes based on model prefix:
+- `azure/claude*` → `azureanthropic`
+- `azure/*` (everything else) → `azureopenai`
+
+The `azure/` prefix is stripped before forwarding. Model field is deleted from body for `azureopenai` (deployment is in URL path).
+
+## No Impact to Other Providers
+
+All Azure-specific logic is gated behind `providerKey === "azureopenai"` or `providerKey === "azureanthropic"`. DeepSeek, Kimi, and MiniMax code paths are unchanged.
