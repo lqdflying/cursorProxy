@@ -65,12 +65,12 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
 | `KIMI_API_KEY` | For Kimi | Upstream API key |
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
-| `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key (used as Bearer for OpenAI, x-api-key for Anthropic) |
+| `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key (used as `api-key` for OpenAI, `x-api-key` for Anthropic) |
 | `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
-| `AZURE_OPENAI_API_VERSION` | For Azure Foundry | API version (default `2025-04-01-preview`; also used by Anthropic endpoint) |
+| `AZURE_OPENAI_API_VERSION` | For Azure Foundry | Azure OpenAI Responses API version (default `2025-04-01-preview`) |
 | `AZURE_OPENAI_ENDPOINT` | Optional | Override Azure OpenAI base URL (Responses API: `/openai/responses`) |
 | `AZURE_ANTHROPIC_ENDPOINT` | Optional | Override Azure Anthropic base URL |
-| `AZURE_OPENAI_REASONING_EFFORT` | Optional | Default reasoning effort for gpt-5.5/o-series when request omits it: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `AZURE_OPENAI_REASONING_EFFORT` | Optional | Default `reasoning.effort` for gpt-5.5/o-series when request omits it: `low`, `medium`, `high` |
 | `AZURE_ANTHROPIC_THINKING` | Optional | Default Claude thinking mode when request omits it: `adaptive` or `disabled` |
 | `AZURE_ANTHROPIC_EFFORT` | Optional | Default Claude effort when request omits it: `low`, `medium`, `high`, or `max` |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
