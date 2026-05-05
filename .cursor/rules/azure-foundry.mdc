@@ -95,3 +95,51 @@ The `azure/` prefix is stripped before forwarding. Model field is deleted from b
 ## No Impact to Other Providers
 
 All Azure-specific logic is gated behind `providerKey === "azureopenai"` or `providerKey === "azureanthropic"`. DeepSeek, Kimi, and MiniMax code paths are unchanged.
+
+## Anthropic SSE → OpenAI SSE Stream Transformation
+
+Azure Anthropic (and native Anthropic) returns SSE streams in a different format than OpenAI:
+
+**Anthropic format** (named events):
+```
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":50}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+**OpenAI format** (what Cursor expects):
+```
+data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+The `mapAnthropicSSEToOpenAI()` function in `api/proxy.js` converts between these formats:
+
+| Anthropic Event | OpenAI Output |
+|---|---|
+| `content_block_start` (text) | `delta: {role:"assistant",content:""}` (role marker) |
+| `content_block_delta` | `delta: {content: text_delta}` |
+| `content_block_stop` | Skip (no output) |
+| `message_delta` | `finish_reason` + `usage` |
+| `message_stop` | Emits `[DONE]` |
+| `message_start`, `ping` | Skip |
+| `error` | `finish_reason: "error"` |
+
+Non-`data:` lines (e.g., `event: content_block_delta`) are suppressed for `azureanthropic` to avoid confusing clients that consume both event names and data.
+
+Stop reason mapping:
+- `end_turn` → `stop`
+- `max_tokens` → `length`
+- `stop_sequence` → `stop`
+- `tool_use` → `tool_calls`

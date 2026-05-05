@@ -329,6 +329,106 @@ function stripResponseChunk(json) {
 }
 
 /**
+ * Convert an Anthropic SSE event into an OpenAI-compatible SSE chunk.
+ *
+ * Anthropic streaming events use content_block_delta with delta.text_delta,
+ * and message_delta with delta.stop_reason. OpenAI expects choices[0].delta.content
+ * (string) and choices[0].finish_reason.
+ *
+ * Supported Anthropic event types:
+ * - content_block_start: first block of content (type text → role: "assistant")
+ * - content_block_delta: incremental text delta
+ * - content_block_stop: stop the current block (ignored for output)
+ * - message_delta: stop_reason and usage (converted to finish_reason)
+ * - message_start / message_stop: ignored, no output content
+ * - ping: keepalive, ignored
+ *
+ * Returns a synthetic OpenAI chunk object or null if the event produces no output.
+ */
+function mapAnthropicSSEToOpenAI(json) {
+  const event = json; // Anthropic SSE events are flat, e.g. { type: "content_block_delta", ... }
+
+  // ignore keepalive and structural events
+  if (!event || !event.type) return null;
+
+  switch (event.type) {
+    case "content_block_start":
+      // content_block is e.g. { type: "text", text: "" }
+      if (event.content_block?.type === "text") {
+        return {
+          choices: [{
+            index: event.index ?? 0,
+            delta: { role: "assistant", content: "" },
+          }],
+        };
+      }
+      return null; // skip non-text blocks (e.g. tool_use) for now
+
+    case "content_block_delta": {
+      const delta = event.delta;
+      const text = delta?.text_delta ?? delta?.text ?? "";
+      return {
+        choices: [{
+          index: event.index ?? 0,
+          delta: { content: text },
+        }],
+      };
+    }
+
+    case "content_block_stop":
+      // No output needed; the block is complete.
+      return null;
+
+    case "message_delta": {
+      const finishReason = event.delta?.stop_reason ?? null;
+      const usage = event.usage ?? null;
+
+      // Anthropic stop_reason values: "end_turn", "max_tokens", "stop_sequence", "tool_use"
+      // Map to OpenAI finish_reason values
+      const finishMap = {
+        "end_turn": "stop",
+        "max_tokens": "length",
+        "stop_sequence": "stop",
+        "tool_use": "tool_calls",
+      };
+      const mappedFinish = finishReason ? (finishMap[finishReason] || finishReason) : null;
+
+      const chunk = { choices: [{ index: 0, delta: {} }] };
+
+      if (mappedFinish) {
+        chunk.choices[0].finish_reason = mappedFinish;
+      }
+
+      if (usage) {
+        chunk.usage = {
+          prompt_tokens: usage.input_tokens ?? 0,
+          completion_tokens: usage.output_tokens ?? 0,
+          total_tokens: (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
+        };
+      }
+
+      return chunk;
+    }
+
+    case "message_start":
+    case "ping":
+      return null;
+
+    case "message_stop":
+      // Signal end of Anthropic message stream — equivalent to OpenAI's [DONE]
+      return "[DONE]";
+
+    case "error":
+      // Pass through errors
+      return { choices: [{ index: 0, delta: {}, finish_reason: "error" }] };
+
+    default:
+      // Unknown events — pass through as-is
+      return null;
+  }
+}
+
+/**
  * Convert image content to text descriptions using the configured vision API.
  * Caches descriptions by image hash in KV to avoid re-processing.
  *
@@ -1224,8 +1324,12 @@ export default async function handler(req) {
         const lines = rawLines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
 
         for (const line of lines) {
+          // For Azure Anthropic, skip event: lines entirely — we convert data lines
+          // into OpenAI-compatible format and emit only the transformed chunks.
           if (!line.startsWith("data: ")) {
-            if (line.trim()) await writer.write(encoder.encode(line + "\n"));
+            if (!(providerKey === "azureanthropic")) {
+              if (line.trim()) await writer.write(encoder.encode(line + "\n"));
+            }
             continue;
           }
 
@@ -1243,7 +1347,24 @@ export default async function handler(req) {
           }
 
           try {
-            const json = JSON.parse(data);
+            let json = JSON.parse(data);
+
+            // Transform Anthropic SSE events into OpenAI-compatible format.
+            // Anthropic uses events like content_block_delta with delta.text_delta,
+            // but the proxy and Cursor expect choices[0].delta.content.
+            if (providerKey === "azureanthropic") {
+              const mapped = mapAnthropicSSEToOpenAI(json);
+              if (mapped === "[DONE]") {
+                doneSeen = true;
+                log("STREAM_DONE_VIA_MESSAGE_STOP", "content:", accContent.length);
+                await cacheReasoningSnapshot(true);
+                await writer.write(encoder.encode("data: [DONE]\n\n"));
+                continue;
+              }
+              if (!mapped) continue; // skip events that produce no output
+              json = mapped;
+            }
+
             const delta = json.choices?.[0]?.delta;
             const chunkReasoning = readReasoning(providerKey, delta);
             accReasoning = updateStreamReasoning(providerKey, accReasoning, chunkReasoning);
