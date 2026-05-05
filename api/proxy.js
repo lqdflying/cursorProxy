@@ -881,248 +881,269 @@ export default async function handler(req) {
   // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
   // not the proxy-specific "azure/claude-sonnet-4-6" model ID.
   let azureModelName = parsedBody?.model;
-  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
+  if (providerKey === "azureanthropic") {
     // Cursor sends the messages array under "input" for Azure models.
-    // Remap to "messages" so Azure OpenAI / Anthropic can process the request.
+    // Remap to "messages" so Anthropic can process the request.
     if (parsedBody && parsedBody.input && !parsedBody.messages) {
       parsedBody.messages = parsedBody.input;
       delete parsedBody.input;
       bodyText = JSON.stringify(parsedBody);
       diag("INPUT_REMAPPED", "input → messages for", providerKey);
     }
+  }
 
-    // Normalize Anthropic-style content types to OpenAI equivalents.
-    // Only for Azure OpenAI — Anthropic endpoint accepts native types.
-    if (providerKey === "azureopenai" && parsedBody?.messages) {
-      const typeMap = { input_text: "text", output_text: "text" };
-      let contentFixed = false;
+  // Azure OpenAI Responses API uses "input" natively (not "messages").
+  // Create a temporary alias so the Anthropic→OpenAI content normalization
+  // block below can operate on a consistent field name.
+  if (providerKey === "azureopenai" && parsedBody?.input && !parsedBody?.messages) {
+    parsedBody.messages = parsedBody.input;
+    // Keep parsedBody.input — restore below after normalization
+  }
 
-      // First pass: fix content types within messages
-      for (const msg of parsedBody.messages) {
-        if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (typeMap[part.type]) {
-              part.type = typeMap[part.type];
-              contentFixed = true;
+  // Normalize Anthropic-style content types to OpenAI equivalents.
+  // Only for Azure OpenAI — Anthropic endpoint accepts native types.
+  if (providerKey === "azureopenai" && parsedBody?.messages) {
+    const typeMap = { input_text: "text", output_text: "text" };
+    let contentFixed = false;
+
+    // First pass: fix content types within messages
+    for (const msg of parsedBody.messages) {
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (typeMap[part.type]) {
+            part.type = typeMap[part.type];
+            contentFixed = true;
+          }
+        }
+      }
+    }
+
+    // Second pass: fix Anthropic message-level issues:
+    // - Standalone tool_result/function_call_output items (no role) → OpenAI tool role
+    // - Standalone function_call items (no role) → assistant with tool_calls
+    // - tool_use/function_call in assistant content → message-level tool_calls
+    // - tool_result/function_call_output in user content → separate tool role messages
+    const TOOL_IN_CONTENT = ["tool_use", "function_call"];
+    const RESULT_IN_CONTENT = ["tool_result", "function_call_output"];
+    const STORE_KEY = ["tool_use_id", "call_id", "id"];
+    const normalized = [];
+    let diagCalls = false, diagResults = false;
+
+    // Pre-scan: collect standalone function_call_outputs into a map for interleaving.
+    // OpenAI requires each assistant with tool_calls to be immediately followed
+    // by its tool responses, but Cursor sends all calls then all outputs.
+    const resultMap = new Map();
+    for (const msg of parsedBody.messages) {
+      if (!msg.role && RESULT_IN_CONTENT.includes(msg.type)) {
+        const tid = STORE_KEY.reduce((id, k) => id || msg[k], "");
+        if (tid) resultMap.set(tid, msg);
+      }
+    }
+
+    for (const msg of parsedBody.messages) {
+      // Anthropic standalone tool_result / function_call_output (has type, no role)
+      // Handled via interleaving with function_call below — skip standalone here.
+      if (!msg.role && RESULT_IN_CONTENT.includes(msg.type)) {
+        if (!diagResults) {
+          diag("STANDALONE_RESULT_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
+          diagResults = true;
+        }
+        contentFixed = true;
+        continue;
+      }
+
+      // Anthropic standalone function_call (has type, no role) → assistant with tool_calls
+      if (!msg.role && msg.type === "function_call") {
+        if (!diagCalls) {
+          diag("STANDALONE_CALL_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
+          diagCalls = true;
+        }
+        const callId = msg.id || msg.call_id || "";
+        normalized.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: callId,
+            type: "function",
+            function: {
+              name: msg.name || "",
+              arguments: typeof msg.arguments === "string" ? msg.arguments : JSON.stringify(msg.arguments || {}),
+            },
+          }],
+        });
+        // Immediately follow with the matching tool response if available
+        const output = resultMap.get(callId);
+        if (output) {
+          // Normalize content types inside the output
+          const rawOut = output.content || output.output;
+          let outContent;
+          if (typeof rawOut === "string") {
+            outContent = rawOut;
+          } else if (Array.isArray(rawOut)) {
+            for (const part of rawOut) {
+              if (typeMap[part.type]) part.type = typeMap[part.type];
             }
+            outContent = JSON.stringify(rawOut);
+          } else {
+            outContent = JSON.stringify(rawOut || "");
           }
-        }
-      }
-
-      // Second pass: fix Anthropic message-level issues:
-      // - Standalone tool_result/function_call_output items (no role) → OpenAI tool role
-      // - Standalone function_call items (no role) → assistant with tool_calls
-      // - tool_use/function_call in assistant content → message-level tool_calls
-      // - tool_result/function_call_output in user content → separate tool role messages
-      const TOOL_IN_CONTENT = ["tool_use", "function_call"];
-      const RESULT_IN_CONTENT = ["tool_result", "function_call_output"];
-      const STORE_KEY = ["tool_use_id", "call_id", "id"];
-      const normalized = [];
-      let diagCalls = false, diagResults = false;
-
-      // Pre-scan: collect standalone function_call_outputs into a map for interleaving.
-      // OpenAI requires each assistant with tool_calls to be immediately followed
-      // by its tool responses, but Cursor sends all calls then all outputs.
-      const resultMap = new Map();
-      for (const msg of parsedBody.messages) {
-        if (!msg.role && RESULT_IN_CONTENT.includes(msg.type)) {
-          const tid = STORE_KEY.reduce((id, k) => id || msg[k], "");
-          if (tid) resultMap.set(tid, msg);
-        }
-      }
-
-      for (const msg of parsedBody.messages) {
-        // Anthropic standalone tool_result / function_call_output (has type, no role)
-        // Handled via interleaving with function_call below — skip standalone here.
-        if (!msg.role && RESULT_IN_CONTENT.includes(msg.type)) {
-          if (!diagResults) {
-            diag("STANDALONE_RESULT_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
-            diagResults = true;
-          }
-          contentFixed = true;
-          continue;
-        }
-
-        // Anthropic standalone function_call (has type, no role) → assistant with tool_calls
-        if (!msg.role && msg.type === "function_call") {
-          if (!diagCalls) {
-            diag("STANDALONE_CALL_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
-            diagCalls = true;
-          }
-          const callId = msg.id || msg.call_id || "";
           normalized.push({
-            role: "assistant",
-            content: null,
-            tool_calls: [{
-              id: callId,
+            role: "tool",
+            tool_call_id: callId,
+            content: outContent,
+          });
+        }
+        contentFixed = true;
+        continue;
+      }
+
+      if (Array.isArray(msg.content)) {
+        const textParts = [];
+        let hasToolUse = false;
+        let hasToolResult = false;
+
+        for (const part of msg.content) {
+          if (TOOL_IN_CONTENT.includes(part.type)) {
+            hasToolUse = true;
+          } else if (RESULT_IN_CONTENT.includes(part.type)) {
+            hasToolResult = true;
+          } else {
+            textParts.push(part);
+          }
+        }
+
+        // Convert assistant tool use to message-level tool_calls
+        if (hasToolUse && msg.role === "assistant") {
+          msg.tool_calls = msg.content
+            .filter((p) => TOOL_IN_CONTENT.includes(p.type))
+            .map((p) => ({
+              id: p.id || p.call_id || "",
               type: "function",
               function: {
-                name: msg.name || "",
-                arguments: typeof msg.arguments === "string" ? msg.arguments : JSON.stringify(msg.arguments || {}),
+                name: p.name || "",
+                arguments: typeof p.input === "string" ? p.input : JSON.stringify(p.input || p.arguments || {}),
               },
-            }],
-          });
-          // Immediately follow with the matching tool response if available
-          const output = resultMap.get(callId);
-          if (output) {
-            // Normalize content types inside the output
-            const rawOut = output.content || output.output;
-            let outContent;
-            if (typeof rawOut === "string") {
-              outContent = rawOut;
-            } else if (Array.isArray(rawOut)) {
-              for (const part of rawOut) {
-                if (typeMap[part.type]) part.type = typeMap[part.type];
-              }
-              outContent = JSON.stringify(rawOut);
-            } else {
-              outContent = JSON.stringify(rawOut || "");
+            }));
+          msg.content = textParts.length > 0 ? textParts : null;
+          contentFixed = true;
+        }
+
+        // Extract tool_result/function_call_output from user content into separate tool messages
+        if (hasToolResult) {
+          for (const part of msg.content) {
+            if (RESULT_IN_CONTENT.includes(part.type)) {
+              const tid = STORE_KEY.reduce((id, k) => id || part[k], "");
+              normalized.push({
+                role: "tool",
+                tool_call_id: tid || "",
+                content: typeof part.content === "string" ? part.content : JSON.stringify(part.content || part.output || ""),
+              });
             }
-            normalized.push({
-              role: "tool",
-              tool_call_id: callId,
-              content: outContent,
-            });
+          }
+          // Keep the user message only with non-tool-result parts
+          msg.content = textParts.filter((p) => !RESULT_IN_CONTENT.includes(p.type));
+          if (msg.content.length === 0) {
+            contentFixed = true;
+            continue; // drop empty user messages
           }
           contentFixed = true;
-          continue;
         }
-
-        if (Array.isArray(msg.content)) {
-          const textParts = [];
-          let hasToolUse = false;
-          let hasToolResult = false;
-
-          for (const part of msg.content) {
-            if (TOOL_IN_CONTENT.includes(part.type)) {
-              hasToolUse = true;
-            } else if (RESULT_IN_CONTENT.includes(part.type)) {
-              hasToolResult = true;
-            } else {
-              textParts.push(part);
-            }
-          }
-
-          // Convert assistant tool use to message-level tool_calls
-          if (hasToolUse && msg.role === "assistant") {
-            msg.tool_calls = msg.content
-              .filter((p) => TOOL_IN_CONTENT.includes(p.type))
-              .map((p) => ({
-                id: p.id || p.call_id || "",
-                type: "function",
-                function: {
-                  name: p.name || "",
-                  arguments: typeof p.input === "string" ? p.input : JSON.stringify(p.input || p.arguments || {}),
-                },
-              }));
-            msg.content = textParts.length > 0 ? textParts : null;
-            contentFixed = true;
-          }
-
-          // Extract tool_result/function_call_output from user content into separate tool messages
-          if (hasToolResult) {
-            for (const part of msg.content) {
-              if (RESULT_IN_CONTENT.includes(part.type)) {
-                const tid = STORE_KEY.reduce((id, k) => id || part[k], "");
-                normalized.push({
-                  role: "tool",
-                  tool_call_id: tid || "",
-                  content: typeof part.content === "string" ? part.content : JSON.stringify(part.content || part.output || ""),
-                });
-              }
-            }
-            // Keep the user message only with non-tool-result parts
-            msg.content = textParts.filter((p) => !RESULT_IN_CONTENT.includes(p.type));
-            if (msg.content.length === 0) {
-              contentFixed = true;
-              continue; // drop empty user messages
-            }
-            contentFixed = true;
-          }
-        }
-
-        normalized.push(msg);
       }
 
-      if (contentFixed || normalized.length !== parsedBody.messages.length) {
-        parsedBody.messages = normalized;
-        bodyText = JSON.stringify(parsedBody);
-        diag("CONTENT_TYPE_FIXED", "Anthropic → OpenAI content types for", providerKey);
-      }
+      normalized.push(msg);
     }
 
-    // Normalize content block types for Azure Anthropic.
-    // Cursor occasionally sends input_text / output_text (Responses API style)
-    // but Anthropic Messages API expects type: "text". Keep tool_use/tool_result
-    // intact since those are Anthropic-native block types.
-    if (providerKey === "azureanthropic" && parsedBody?.messages) {
-      const typeMap = { input_text: "text", output_text: "text" };
-      let fixed = false;
-      for (const msg of parsedBody.messages) {
-        if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (typeMap[part.type]) {
-              part.type = typeMap[part.type];
-              fixed = true;
-            }
-          }
-        }
-      }
-      if (fixed) {
-        bodyText = JSON.stringify(parsedBody);
-        diag("ANTHROPIC_CONTENT_FIXED", "normalised input_text/output_text → text for", providerKey);
-      }
+    if (contentFixed || normalized.length !== parsedBody.messages.length) {
+      parsedBody.messages = normalized;
+      bodyText = JSON.stringify(parsedBody);
+      diag("CONTENT_TYPE_FIXED", "Anthropic → OpenAI content types for", providerKey);
     }
+  }
 
-    // Normalize Anthropic-style tool definitions to OpenAI Responses API format.
-    // Responses API uses internally-tagged format: { type, name, description, parameters }
-    // unlike Chat Completions which wraps them in a "function" object.
-    if (providerKey === "azureopenai" && parsedBody?.tools) {
-      let toolsFixed = false;
-      const filtered = [];
-      for (const tool of parsedBody.tools) {
-        // Only "function" type tools are valid for OpenAI
-        if (tool.type && tool.type !== "function") {
-          toolsFixed = true;
-          continue;
-        }
-        // Convert Anthropic format to Responses API format (internally-tagged)
-        if (tool.name && !tool.function) {
-          tool.type = "function";
-          tool.parameters = tool.input_schema || {};
-          delete tool.description;   // optional, not needed by Responses
-          delete tool.input_schema;
-          toolsFixed = true;
-        }
-        // Already in Chat Completions format { type:"function", function:{...} }?
-        // Unwrap to Responses API format (internally-tagged).
-        else if (tool.type === "function" && tool.function) {
-          tool.name = tool.function.name || "";
-          tool.description = tool.function.description || "";
-          tool.parameters = tool.function.parameters || {};
-          delete tool.function;
-          toolsFixed = true;
-        }
-        filtered.push(tool);
-      }
-      if (toolsFixed) {
-        parsedBody.tools = filtered;
-        bodyText = JSON.stringify(parsedBody);
-        diag("TOOLS_FIXED", "Anthropic → OpenAI Responses tool format for", providerKey);
-      }
-    }
-
-    if (azureModelName?.startsWith?.("azure/")) {
-      azureModelName = azureModelName.slice(6);
-      log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
-      // Azure OpenAI Responses API: model goes in request body, NOT URL path.
-      if (providerKey === "azureopenai") {
-        parsedBody.model = azureModelName;
-      } else {
-        parsedBody.model = azureModelName;
-      }
+  // Restore input field for azureopenai after content normalization.
+  // We temporarily aliased messages ← input above so the normalization
+  // block could operate on a consistent field name.
+  if (providerKey === "azureopenai" && parsedBody?.input) {
+    if (parsedBody?.messages) {
+      parsedBody.input = parsedBody.messages;
+      delete parsedBody.messages;
+      // If the normalization block already rewrote bodyText, fix it.
+      // Otherwise this is a no-op (JSON stringify of same object).
       bodyText = JSON.stringify(parsedBody);
     }
+  }
+
+  // Normalize content block types for Azure Anthropic.
+  // Cursor occasionally sends input_text / output_text (Responses API style)
+  // but Anthropic Messages API expects type: "text". Keep tool_use/tool_result
+  // intact since those are Anthropic-native block types.
+  if (providerKey === "azureanthropic" && parsedBody?.messages) {
+    const typeMap = { input_text: "text", output_text: "text" };
+    let fixed = false;
+    for (const msg of parsedBody.messages) {
+      if (Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (typeMap[part.type]) {
+            part.type = typeMap[part.type];
+            fixed = true;
+          }
+        }
+      }
+    }
+    if (fixed) {
+      bodyText = JSON.stringify(parsedBody);
+      diag("ANTHROPIC_CONTENT_FIXED", "normalised input_text/output_text → text for", providerKey);
+    }
+  }
+
+  // Normalize Anthropic-style tool definitions to OpenAI Responses API format.
+  // Responses API uses internally-tagged format: { type, name, description, parameters }
+  // unlike Chat Completions which wraps them in a "function" object.
+  if (providerKey === "azureopenai" && parsedBody?.tools) {
+    let toolsFixed = false;
+    const filtered = [];
+    for (const tool of parsedBody.tools) {
+      // Only "function" type tools are valid for OpenAI
+      if (tool.type && tool.type !== "function") {
+        toolsFixed = true;
+        continue;
+      }
+      // Convert Anthropic format to Responses API format (internally-tagged)
+      if (tool.name && !tool.function) {
+        tool.type = "function";
+        tool.parameters = tool.input_schema || {};
+        delete tool.description;   // optional, not needed by Responses
+        delete tool.input_schema;
+        toolsFixed = true;
+      }
+      // Already in Chat Completions format { type:"function", function:{...} }?
+      // Unwrap to Responses API format (internally-tagged).
+      else if (tool.type === "function" && tool.function) {
+        tool.name = tool.function.name || "";
+        tool.description = tool.function.description || "";
+        tool.parameters = tool.function.parameters || {};
+        delete tool.function;
+        toolsFixed = true;
+      }
+      filtered.push(tool);
+    }
+    if (toolsFixed) {
+      parsedBody.tools = filtered;
+      bodyText = JSON.stringify(parsedBody);
+      diag("TOOLS_FIXED", "Anthropic → OpenAI Responses tool format for", providerKey);
+    }
+  }
+
+  if (azureModelName?.startsWith?.("azure/")) {
+    azureModelName = azureModelName.slice(6);
+    log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
+    // Azure OpenAI Responses API: model goes in request body, NOT URL path.
+    if (providerKey === "azureopenai") {
+      parsedBody.model = azureModelName;
+    } else {
+      parsedBody.model = azureModelName;
+    }
+    bodyText = JSON.stringify(parsedBody);
   }
 
   // Detect Azure OpenAI reasoning models.
@@ -1175,7 +1196,7 @@ export default async function handler(req) {
     // Known valid OpenAI Responses API params.
     // Responses API uses a different parameter set than Chat Completions.
     const allowed = new Set([
-      "model", "messages", "input", "instructions", "stream",
+      "model", "input", "instructions", "stream",
       "max_completion_tokens", "max_output_tokens", "temperature", "top_p",
       "tools", "tool_choice", "reasoning_effort",
       "store", "parallel_tool_calls", "user",
