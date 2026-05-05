@@ -561,7 +561,7 @@ export default async function handler(req) {
       delete parsedBody.temperature;
       sanitized = true;
     }
-    for (const field of ["stop", "logprobs", "top_logprobs", "include", "reasoning_effort", "thinking"]) {
+    for (const field of ["stop", "logprobs", "top_logprobs", "include", "thinking"]) {
       if (field in parsedBody) {
         delete parsedBody[field];
         sanitized = true;
