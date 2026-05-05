@@ -536,6 +536,34 @@ export default async function handler(req) {
     }
   }
 
+  // Azure OpenAI models (especially gpt-5.5) have restricted parameter support.
+  // Strip/rewrite incompatible fields to avoid 400 errors like:
+  //  - max_tokens → unsupported, rename to max_completion_tokens
+  //  - temperature → only value 1 is supported, strip if not 1
+  //  - stop, logprobs, top_logprobs → unsupported, strip
+  if (providerKey === "azureopenai" && parsedBody) {
+    let sanitized = false;
+    if ("max_tokens" in parsedBody && !("max_completion_tokens" in parsedBody)) {
+      parsedBody.max_completion_tokens = parsedBody.max_tokens;
+      delete parsedBody.max_tokens;
+      sanitized = true;
+    }
+    if ("temperature" in parsedBody && parsedBody.temperature !== 1) {
+      delete parsedBody.temperature;
+      sanitized = true;
+    }
+    for (const field of ["stop", "logprobs", "top_logprobs"]) {
+      if (field in parsedBody) {
+        delete parsedBody[field];
+        sanitized = true;
+      }
+    }
+    if (sanitized) {
+      bodyText = JSON.stringify(parsedBody);
+      diag("AZURE_BODY_SANITIZED", "stripped unsupported params for gpt-5.5 compatibility");
+    }
+  }
+
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
@@ -763,9 +791,17 @@ export default async function handler(req) {
     }
   }
 
-  // Build dynamic auth header: delete Cursor's proxy auth so it doesn't
-  // leak upstream as a second auth method (Azure rejects dual-auth requests).
+  // Clean up headers that shouldn't leak upstream
   headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("content-length");
+  headers.delete("content-type");
+  headers.delete("transfer-encoding");
+  headers.delete("accept-encoding");
+  headers.set("content-type", "application/json");
+  headers.set("accept-encoding", "identity");
+
+  // Build dynamic auth header AFTER cleanup so it's not accidentally deleted.
   const authValue = provider.authHeaderPrefix + providerSecret;
   headers.set(provider.authHeaderName, authValue);
 
@@ -776,13 +812,19 @@ export default async function handler(req) {
     }
   }
 
-  headers.delete("x-api-key");
-  headers.delete("content-length");
-  headers.delete("content-type");
-  headers.delete("transfer-encoding");
-  headers.delete("accept-encoding");
-  headers.set("content-type", "application/json");
-  headers.set("accept-encoding", "identity");
+  // Dump the exact request being sent to Azure for debugging.
+  // Remove this block once the 400 "Unsupported data type" issue is resolved.
+  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
+    const hdrObj = {};
+    headers.forEach((v, k) => (hdrObj[k] = v));
+    diag(
+      "UPSTREAM_REQUEST_DUMP",
+      "url:", upstreamUrl,
+      "method:", req.method,
+      "headers:", JSON.stringify(hdrObj),
+      "body:", (bodyText || "").slice(0, 500)
+    );
+  }
 
   let upstreamRes;
   // Connect-phase timeout (cleared as soon as headers arrive — never aborts the
