@@ -29,15 +29,17 @@ const PROVIDERS = {
   },
   azureopenai: {
     apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
-    authHeaderName: "api-key",
-    authHeaderPrefix: "",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
     buildUrl(model, pathParam, queryString) {
+      // Responses API: model is in request body, not URL path.
+      // Path remapped from chat/completions → responses.
       const base = process.env.AZURE_OPENAI_ENDPOINT
         || `https://${process.env.AZURE_FOUNDRY_RESOURCE}.cognitiveservices.azure.com`;
-      const version = process.env.AZURE_FOUNDRY_API_VERSION || "2024-12-01-preview";
-      // queryString already has leading "?" — strip it before appending with "&"
+      const version = process.env.AZURE_OPENAI_API_VERSION || "2025-04-01-preview";
+      const remapped = pathParam === "chat/completions" ? "responses" : pathParam;
       const qs = queryString ? `&${queryString.slice(1)}` : "";
-      return `${base}/openai/deployments/${model}/${pathParam}?api-version=${version}${qs}`;
+      return `${base}/openai/${remapped}?api-version=${version}${qs}`;
     },
   },
   azureanthropic: {
@@ -727,6 +729,111 @@ async function convertImagesToText(messages) {
   return { messages: updated, convertedCount, errors };
 }
 
+// ─── Azure Responses API → OpenAI Chat Completions response mappers ─────────
+
+function mapResponsesToOpenAI(json) {
+  if (!json || !json.output || !Array.isArray(json.output)) return json;
+
+  let textContent = "";
+  const toolCalls = [];
+
+  for (const item of json.output) {
+    if (item.type === "message" && item.role === "assistant") {
+      if (Array.isArray(item.content)) {
+        textContent = item.content
+          .filter((c) => c.type === "output_text")
+          .map((c) => c.text)
+          .join("");
+      } else if (typeof item.content === "string") {
+        textContent = item.content;
+      }
+    } else if (item.type === "function_call") {
+      toolCalls.push({
+        id: item.call_id || "",
+        type: "function",
+        function: {
+          name: item.name || "",
+          arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {}),
+        },
+      });
+    }
+  }
+
+  const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
+
+  return {
+    id: json.id || "resp_unknown",
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: json.model || "",
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: textContent || null,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      },
+      finish_reason: finishReason,
+    }],
+  };
+}
+
+function mapResponsesSSEToOpenAI(eventName, data, toolState) {
+  if (!data) return null;
+
+  switch (eventName) {
+    case "response.output_text.delta": {
+      const text = data.delta || "";
+      return { choices: [{ index: 0, delta: { content: text } }] };
+    }
+
+    case "response.function_call_arguments.delta": {
+      const partial = data.delta || "";
+      const callId = data.call_id || "call_0";
+      const idx = data.output_index ?? 0;
+      if (!toolState.has(callId)) {
+        toolState.set(callId, { id: callId, name: data.name || "", partialJson: "" });
+      }
+      const state = toolState.get(callId);
+      state.partialJson += partial;
+      return {
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{ index: idx, id: callId, type: "function", function: { name: state.name, arguments: partial } }],
+          },
+        }],
+      };
+    }
+
+    case "response.output_item.added": {
+      const item = data.item;
+      if (item?.type === "message" && item?.role === "assistant") {
+        return { choices: [{ index: 0, delta: { role: "assistant", content: "" } }] };
+      }
+      if (item?.type === "function_call") {
+        const callId = item.call_id || "call_0";
+        const idx = data.output_index ?? 0;
+        toolState.set(callId, { id: callId, name: item.name || "", partialJson: "" });
+        return {
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{ index: idx, id: callId, type: "function", function: { name: item.name || "", arguments: "" } }],
+            },
+          }],
+        };
+      }
+      return null;
+    }
+
+    default:
+      return null;
+  }
+}
+
+// ─── End Azure Responses API mappers ────────────────────────────────────────
+
 // ─── Main handler ──────────────────────────────────────────────────────────
 export default async function handler(req) {
   const t0 = Date.now();
@@ -967,8 +1074,9 @@ export default async function handler(req) {
       }
     }
 
-    // Normalize Anthropic-style tool definitions to OpenAI format.
-    // Only for Azure OpenAI — Anthropic endpoint expects native tool format.
+    // Normalize Anthropic-style tool definitions to OpenAI Responses API format.
+    // Responses API uses internally-tagged format: { type, name, description, parameters }
+    // unlike Chat Completions which wraps them in a "function" object.
     if (providerKey === "azureopenai" && parsedBody?.tools) {
       let toolsFixed = false;
       const filtered = [];
@@ -978,16 +1086,21 @@ export default async function handler(req) {
           toolsFixed = true;
           continue;
         }
-        // Convert Anthropic format to OpenAI format
+        // Convert Anthropic format to Responses API format (internally-tagged)
         if (tool.name && !tool.function) {
-          tool.function = {
-            name: tool.name,
-            description: tool.description || "",
-            parameters: tool.input_schema || {},
-          };
-          delete tool.name;
-          delete tool.description;
+          tool.type = "function";
+          tool.parameters = tool.input_schema || {};
+          delete tool.description;   // optional, not needed by Responses
           delete tool.input_schema;
+          toolsFixed = true;
+        }
+        // Already in Chat Completions format { type:"function", function:{...} }?
+        // Unwrap to Responses API format (internally-tagged).
+        else if (tool.type === "function" && tool.function) {
+          tool.name = tool.function.name || "";
+          tool.description = tool.function.description || "";
+          tool.parameters = tool.function.parameters || {};
+          delete tool.function;
           toolsFixed = true;
         }
         filtered.push(tool);
@@ -995,17 +1108,16 @@ export default async function handler(req) {
       if (toolsFixed) {
         parsedBody.tools = filtered;
         bodyText = JSON.stringify(parsedBody);
-        diag("TOOLS_FIXED", "Anthropic → OpenAI tool format, filtered non-function for", providerKey);
+        diag("TOOLS_FIXED", "Anthropic → OpenAI Responses tool format for", providerKey);
       }
     }
 
     if (azureModelName?.startsWith?.("azure/")) {
       azureModelName = azureModelName.slice(6);
       log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
-      // Azure OpenAI: deployment is in URL path — model field in body is
-      // redundant and can cause "Unsupported data type" rejection.
+      // Azure OpenAI Responses API: model goes in request body, NOT URL path.
       if (providerKey === "azureopenai") {
-        delete parsedBody.model;
+        parsedBody.model = azureModelName;
       } else {
         parsedBody.model = azureModelName;
       }
@@ -1039,7 +1151,6 @@ export default async function handler(req) {
     // Per Microsoft docs: temperature, top_p, presence_penalty, frequency_penalty,
     // logprobs, top_logprobs, logit_bias, max_tokens are NOT supported.
     // Standard models (gpt-4o, gpt-4.1, …) accept all of these — preserve them.
-    const hasTools = parsedBody.tools && Array.isArray(parsedBody.tools) && parsedBody.tools.length > 0;
     if (isAzureReasoningModel) {
       const reasoningUnsupported = [
         "temperature", "top_p", "presence_penalty", "frequency_penalty",
@@ -1051,33 +1162,23 @@ export default async function handler(req) {
           sanitized = true;
         }
       }
-
-      // gpt-5.5 rejects reasoning_effort + tools in /v1/chat/completions.
-      // Strip reasoning_effort when tools are present to avoid 400.
-      if (hasTools && "reasoning_effort" in parsedBody) {
-        delete parsedBody.reasoning_effort;
-        sanitized = true;
-      }
     }
 
     // Inject default reasoning effort from env for Azure OpenAI reasoning models.
-    // Skip when tools are present — gpt-5.5 rejects reasoning_effort + tools.
+    // Responses API supports reasoning_effort + tools natively (no gating needed).
     const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
-    if (isAzureReasoningModel && defaultReasoningEffort && !("reasoning_effort" in parsedBody) && !hasTools) {
+    if (isAzureReasoningModel && defaultReasoningEffort && !("reasoning_effort" in parsedBody)) {
       parsedBody.reasoning_effort = defaultReasoningEffort;
       sanitized = true;
     }
 
-    // Known valid OpenAI chat completions params (plus Azure-specific ones).
-    // Reasoning models tolerate the full set being listed here — the explicit
-    // strip above already removed the incompatible ones before this runs.
+    // Known valid OpenAI Responses API params.
+    // Responses API uses a different parameter set than Chat Completions.
     const allowed = new Set([
-      "messages", "temperature", "top_p", "n", "stream", "stream_options",
-      "max_completion_tokens", "presence_penalty", "frequency_penalty",
-      "logit_bias", "user", "tools", "tool_choice", "response_format",
-      "seed", "parallel_tool_calls", "reasoning_effort",
-      "stop", "logprobs", "top_logprobs",
-      "data_sources",  // Azure on-your-data
+      "model", "messages", "input", "instructions", "stream",
+      "max_completion_tokens", "max_output_tokens", "temperature", "top_p",
+      "tools", "tool_choice", "reasoning_effort",
+      "store", "parallel_tool_calls", "user",
     ]);
 
     // Strip any field not in the allowed whitelist
@@ -1086,6 +1187,13 @@ export default async function handler(req) {
         delete parsedBody[key];
         sanitized = true;
       }
+    }
+
+    // Responses API: set store=false to prevent state leakage across users
+    // and avoid Azure storage costs. Only inject when not explicitly set.
+    if (!("store" in parsedBody)) {
+      parsedBody.store = false;
+      sanitized = true;
     }
 
     if (sanitized) {
@@ -1500,6 +1608,11 @@ export default async function handler(req) {
       json = mapAnthropicResponseToOpenAI(json);
     }
 
+    // Convert Responses API output to Chat Completions format
+    if (providerKey === "azureopenai") {
+      json = mapResponsesToOpenAI(json);
+    }
+
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {
       log("CACHE non-stream key:", replyReasoningKey);
@@ -1562,6 +1675,10 @@ export default async function handler(req) {
     // to OpenAI-style tool_calls format.
     const anthropicToolState = new Map(); // index -> { id, name, partialJson }
 
+    // Track Azure Responses API function_call items for converting
+    // response.function_call_arguments.delta to OpenAI tool_calls.
+    const responsesToolState = new Map(); // call_id -> { id, name, partialJson }
+
     async function cacheReasoningSnapshot(force = false) {
       if (!replyReasoningKey || !hasReasoningValue(accReasoning)) return;
       const size = reasoningSize(accReasoning);
@@ -1580,6 +1697,7 @@ export default async function handler(req) {
     }
 
     try {
+      let currentResponsesEvent = ""; // track event: line for Azure OpenAI Responses SSE
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1593,8 +1711,15 @@ export default async function handler(req) {
         for (const line of lines) {
           // For Azure Anthropic, skip event: lines entirely — we convert data lines
           // into OpenAI-compatible format and emit only the transformed chunks.
+          //
+          // For Azure OpenAI (Responses API), track event: lines to use when
+          // processing data: lines — the event name tells us what type of delta it is.
+          if (providerKey === "azureopenai" && line.startsWith("event: ")) {
+            currentResponsesEvent = line.slice(7).trim();
+            continue;
+          }
           if (!line.startsWith("data: ")) {
-            if (!(providerKey === "azureanthropic")) {
+            if (!(providerKey === "azureanthropic" || providerKey === "azureopenai")) {
               if (line.trim()) await writer.write(encoder.encode(line + "\n"));
             }
             continue;
@@ -1637,6 +1762,18 @@ export default async function handler(req) {
               }
               if (!mapped) continue; // skip events that produce no output
               json = mapped;
+            }
+
+            // Transform Azure Responses API SSE events into OpenAI-compatible format.
+            // Responses API uses named events (event: response.output_text.delta)
+            // with data payloads, unlike Anthropic's data-only content_block_delta.
+            if (providerKey === "azureopenai" && currentResponsesEvent) {
+              const mapped = mapResponsesSSEToOpenAI(currentResponsesEvent, json, responsesToolState);
+              if (mapped) {
+                json = mapped;
+              } else {
+                continue; // skip events that produce no output (e.g. response.created)
+              }
             }
 
             const delta = json.choices?.[0]?.delta;
