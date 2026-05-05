@@ -21,24 +21,26 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 | `diag()` | **always-on** | Diagnostics visible in production (Vercel, Docker, EdgeOne) |
 | `log()`  | `DEBUG === "true"` | Verbose internals: START, RESOLVED, INJECT, vision req/res, etc. |
 
-### Vercel log format (CRITICAL — DO NOT CHANGE)
+### Log message format (applies to ALL platforms: Vercel, EdgeOne, Docker)
 
-- `diag()` emits one REQ line and one RES line per request on Vercel:
+Both `diag()` and `log()` emit to all platforms from the shared `api/proxy.js`. The format is identical everywhere — only the outer envelope differs (Vercel wraps each line in JSONL; Docker emits plain text to stdout).
 
+**Every line follows `[cursorProxy:<module>] TITLE arg1 arg2 ...`**
+
+`diag()` emits one REQ and one RES line per request:
 ```
 [cursorProxy:proxy] REQ POST /v1/chat/completions provider: deepseek
 [cursorProxy:proxy] RES 200 provider: deepseek ms: 3531
 ```
 
-- `log()` (when `DEBUG=true`) emits the same prefix-style format:
-
+`log()` (when `DEBUG=true`) follows the same format:
 ```
 [cursorProxy:proxy] START POST https://one.example.com/v1/chat/completions?... pathname: /v1/chat/completions provider(query): (infer)
 [cursorProxy:proxy] RESOLVED model: deepseek-chat provider: deepseek stream: true
 [cursorProxy:proxy] INJECT idx: 3 key: conv:abc... hit: true waitedMs: 0
 ```
 
-### Log message format rules
+#### Argument format rules
 
 Every argument after the TITLE must be either:
 
