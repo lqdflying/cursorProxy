@@ -1000,19 +1000,48 @@ export default async function handler(req) {
     }
   }
 
-  // Detect Azure OpenAI reasoning/o-series deployments (gpt-5.5, o1, o3, o4-mini, …).
-  // Used for temperature-stripping in the sanitization block below.
-  // Reasoning models only accept temperature=1.
+  // Detect Azure OpenAI reasoning models.
+  // Per Microsoft docs, ALL o-series (o1, o3, o4-mini, …) and ALL GPT-5.x series
+  // (gpt-5, gpt-5.1, gpt-5.2, gpt-5.3-codex, gpt-5.4*, gpt-5.5, …) are reasoning
+  // models and do NOT support: temperature, top_p, presence_penalty, frequency_penalty,
+  // logprobs, top_logprobs, logit_bias, max_tokens. Only temperature=1 is accepted.
+  // Note: ALL of these models DO support native vision (image_url) — no conversion needed.
   const isAzureReasoningModel = providerKey === "azureopenai"
-    && /^(o\d|gpt-5\.5|gpt-o)/i.test(azureModelName || "");
+    && /^(o\d|gpt-5[.\d])/i.test(azureModelName || "");
 
-  // Azure OpenAI models (especially gpt-5.5) have restricted parameter support.
+  // Azure OpenAI models have restricted parameter support.
   // Rewrite incompatible params and strip any unknown fields via a whitelist
   // to avoid repeated "Unknown parameter" 400 errors from Cursor-specific fields.
   if (providerKey === "azureopenai" && parsedBody) {
     let sanitized = false;
 
-    // Known valid OpenAI chat completions params (plus Azure-specific ones)
+    // Rewrite max_tokens → max_completion_tokens (reasoning models reject max_tokens)
+    if ("max_tokens" in parsedBody && !("max_completion_tokens" in parsedBody)) {
+      parsedBody.max_completion_tokens = parsedBody.max_tokens;
+      delete parsedBody.max_tokens;
+      sanitized = true;
+    }
+
+    // Reasoning models (all GPT-5.x and o-series) reject several standard chat params.
+    // Per Microsoft docs: temperature, top_p, presence_penalty, frequency_penalty,
+    // logprobs, top_logprobs, logit_bias, max_tokens are NOT supported.
+    // Standard models (gpt-4o, gpt-4.1, …) accept all of these — preserve them.
+    if (isAzureReasoningModel) {
+      const reasoningUnsupported = [
+        "temperature", "top_p", "presence_penalty", "frequency_penalty",
+        "logprobs", "top_logprobs", "logit_bias",
+      ];
+      for (const key of reasoningUnsupported) {
+        if (key in parsedBody) {
+          delete parsedBody[key];
+          sanitized = true;
+        }
+      }
+    }
+
+    // Known valid OpenAI chat completions params (plus Azure-specific ones).
+    // Reasoning models tolerate the full set being listed here — the explicit
+    // strip above already removed the incompatible ones before this runs.
     const allowed = new Set([
       "messages", "temperature", "top_p", "n", "stream", "stream_options",
       "max_completion_tokens", "presence_penalty", "frequency_penalty",
@@ -1021,22 +1050,6 @@ export default async function handler(req) {
       "stop", "logprobs", "top_logprobs",
       "data_sources",  // Azure on-your-data
     ]);
-
-    // Rewrite max_tokens → max_completion_tokens (gpt-5.5 rejects max_tokens)
-    if ("max_tokens" in parsedBody && !("max_completion_tokens" in parsedBody)) {
-      parsedBody.max_completion_tokens = parsedBody.max_tokens;
-      delete parsedBody.max_tokens;
-      sanitized = true;
-    }
-
-    // Reasoning/o-series models (gpt-5.5, o1, o3, o4-mini, …) only accept temperature=1.
-    // Standard models (gpt-4o, gpt-4.1, …) support arbitrary temperature — preserve it.
-    // Strip only when the deployment name signals a reasoning model so the user's temperature
-    // setting still takes effect on non-reasoning GPT models.
-    if (isAzureReasoningModel && "temperature" in parsedBody && parsedBody.temperature !== 1) {
-      delete parsedBody.temperature;
-      sanitized = true;
-    }
 
     // Strip any field not in the allowed whitelist
     for (const key of Object.keys(parsedBody)) {
@@ -1048,7 +1061,7 @@ export default async function handler(req) {
 
     if (sanitized) {
       bodyText = JSON.stringify(parsedBody);
-      diag("AZURE_BODY_SANITIZED", "stripped unsupported params for gpt-5.5 compatibility");
+      diag("AZURE_BODY_SANITIZED", "stripped unsupported params for", providerKey, isAzureReasoningModel ? "(reasoning model)" : "(standard model)");
     }
   }
 
@@ -1066,6 +1079,13 @@ export default async function handler(req) {
       sanitized = true;
     }
 
+    // Map OpenAI-style reasoning_effort to Anthropic output_config.effort
+    if ("reasoning_effort" in parsedBody && !("output_config" in parsedBody)) {
+      parsedBody.output_config = { effort: parsedBody.reasoning_effort };
+      delete parsedBody.reasoning_effort;
+      sanitized = true;
+    }
+
     // Anthropic uses `max_tokens`, not `max_completion_tokens`
     if ("max_completion_tokens" in parsedBody && !("max_tokens" in parsedBody)) {
       parsedBody.max_tokens = parsedBody.max_completion_tokens;
@@ -1075,7 +1095,7 @@ export default async function handler(req) {
     const allowed = new Set([
       "model", "messages", "system", "max_tokens", "temperature",
       "top_p", "top_k", "stream", "stop_sequences", "tools", "tool_choice",
-      "metadata", "thinking",
+      "metadata", "thinking", "output_config",
     ]);
     for (const key of Object.keys(parsedBody)) {
       if (!allowed.has(key)) {
