@@ -1,5 +1,5 @@
 ---
-description: Azure Foundry integration knowledge base — API formats, parameter restrictions, Anthropic→OpenAI conversion patterns learned from gpt-5.5 troubleshooting
+description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers azureopenai (gpt-5.5) and azureanthropic (claude-sonnet-4-6).
 alwaysApply: true
 ---
 
@@ -7,98 +7,115 @@ alwaysApply: true
 
 ## API Surfaces
 
-Azure Foundry exposes two APIs for models like gpt-5.5:
+Azure Foundry exposes two APIs:
 
-| API | URL | Auth Header | Model in |
+| Provider Key | API | URL Pattern | Auth Header |
 |---|---|---|---|
-| Chat Completions | `/openai/deployments/{model}/chat/completions?api-version=YYYY-MM-DD-preview` | `api-key` | URL path |
-| Responses | `/openai/v1/responses?api-version=preview` | `api-key` | Request body |
+| `azureopenai` | Chat Completions | `/openai/deployments/{model}/chat/completions?api-version={v}` | `api-key` |
+| `azureanthropic` | Anthropic Messages | `/anthropic/v1/messages` | `x-api-key` |
 
-**Chat Completions is the correct target for the proxy.** Responses API returns `output_text` (Anthropic-format) responses that Cursor can't consume, and only works with `api-version=preview`, not date-based versions.
+**Chat Completions is the correct target for GPT models.** The Responses API (`/openai/v1/responses`) returns `output_text` (Anthropic-format) that Cursor can't consume.
 
 ## Environment Variables
 
 ```
 AZURE_FOUNDRY_API_KEY      # Required — shared by both OpenAI and Anthropic
 AZURE_FOUNDRY_RESOURCE     # Required — e.g., cloudops-llm-us2-api
-AZURE_FOUNDRY_API_VERSION  # Default 2024-12-01-preview
-AZURE_OPENAI_ENDPOINT      # Optional — override OpenAI base URL
-AZURE_ANTHROPIC_ENDPOINT   # Optional — override Anthropic base URL
+AZURE_FOUNDRY_API_VERSION  # Default 2024-12-01-preview (azureopenai only)
+AZURE_OPENAI_ENDPOINT      # Optional — override full OpenAI base URL
+AZURE_ANTHROPIC_ENDPOINT   # Optional — override full Anthropic base URL
 ```
 
-Default URL construction when no endpoint override is set:
-- OpenAI: `https://{resource}.cognitiveservices.azure.com/openai/deployments/{model}/{path}`
-- Anthropic: `https://{resource}.services.ai.azure.com/anthropic/v1/{path}`
+Default URL construction (when no endpoint override set):
+- OpenAI: `https://{resource}.cognitiveservices.azure.com/openai/deployments/{model}/chat/completions?api-version={version}`
+- Anthropic: `https://{resource}.services.ai.azure.com/anthropic/v1/messages`
 
-## Cursor Sends Anthropic-Format Requests
+### Extra Headers
+- `azureanthropic` sets `anthropic-version: 2023-06-01` via `extraHeaders`
 
-Cursor uses Anthropic message format for all providers. The proxy must convert for Azure OpenAI:
+### Path Remapping (azureanthropic)
+The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor sends `chat/completions` but Anthropic expects `messages`.
 
-### Top-level remapping
-- `input` → `messages` (both azureopenai and azureanthropic)
+## Request Body Transformations
 
-### Content type normalization (azureopenai only)
-- `input_text` → `text`
-- `output_text` → `text`
+Cursor sends Anthropic-format requests for ALL providers. The proxy converts for Azure providers.
 
-### Tool format (azureopenai only)
-- Anthropic: `{type, name, description, input_schema}` (flat)
-- OpenAI: `{type, function: {name, description, parameters}}` (wrapped)
-- Filter out `type: "custom"` tools (Cursor-internal)
+### Shared (both azureopenai and azureanthropic)
+- `input` → `messages`: Cursor sends messages under `input`; remapped to `messages`
 
-### Tool call/response format (azureopenai only)
-- `function_call` (no role) → `{role: "assistant", tool_calls: [...]}`
-- `function_call_output` (no role) → `{role: "tool", tool_call_id, content}`
-- Both use `call_id` field for matching
+### azureopenai ONLY
+- **Content type normalization**: `input_text` → `text`, `output_text` → `text`
+- **Tool format**: Anthropic flat `{type, name, description, input_schema}` → OpenAI wrapped `{type, function: {name, description, parameters}}`
+- **Tool call/response**: `function_call` → `{role:"assistant", tool_calls:[...]}`, `function_call_output` → `{role:"tool", ...}`
+- **Tool interleaving**: OpenAI requires `assistant→tool→assistant→tool`; pre-scan outputs into `Map<call_id, output>` and interleave with matching calls
+- **Model field**: Deleted from body (deployment is in URL path)
 
-### Tool interleaving
-Cursor sends all calls then all outputs. OpenAI requires `assistant→tool→assistant→tool`. Must pre-scan outputs into a `Map<call_id, output>` and interleave them with matching calls.
+### azureanthropic ONLY
+- **Model field**: Kept in body (Anthropic requires it)
+- **Path remap**: `chat/completions` → `messages`
 
-## gpt-5.5 Parameter Restrictions
+## Body Sanitization (Whitelist Approach)
 
-| Parameter | Status |
-|---|---|
-| `max_tokens` | Rejected — rename to `max_completion_tokens` |
-| `temperature` | Only `1` supported — strip other values |
-| `stop` | Rejected (gpt-5.5) |
-| `logprobs` | Rejected (gpt-5.5) |
-| `top_logprobs` | Rejected (gpt-5.5) |
-| `reasoning_effort` | ✅ Supported |
+Both Azure providers strip unknown parameters to prevent 400 errors from Cursor-specific fields.
 
-**Approach**: Use a whitelist of known valid OpenAI Chat Completions params. Strip any unknown field automatically. This catches Cursor-specific params (`include`, `reasoning`, `thinking`, `metadata`, etc.) without per-field additions.
+### azureopenai Whitelist
+```
+messages, temperature, top_p, n, stream, stream_options,
+max_completion_tokens, presence_penalty, frequency_penalty,
+logit_bias, user, tools, tool_choice, response_format,
+seed, parallel_tool_calls, reasoning_effort,
+stop, logprobs, top_logprobs,
+data_sources  (Azure on-your-data)
+```
+- `max_tokens` → remapped to `max_completion_tokens` (gpt-5.5 rejects `max_tokens`)
+- `temperature` ≠ 1 → stripped (gpt-5.5 only supports `temperature: 1`)
+
+### azureanthropic Whitelist
+```
+model, messages, system, max_tokens, temperature,
+top_p, top_k, stream, stop_sequences, tools, tool_choice,
+metadata, thinking
+```
+- `max_completion_tokens` → remapped to `max_tokens` (Anthropic uses `max_tokens`)
+
+## Reasoning Injection — SKIPPED for Azure
+
+The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set is:
+
+```javascript
+const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
+```
 
 ## Query String Construction
 
-`queryString` is built with a leading `?` (e.g., `?foo=bar`). When appending to an existing `?api-version=...`, strip the leading `?` first:
-```javascript
-// ✅ Correct
-const qs = queryString ? `&${queryString.slice(1)}` : "";
+- **azureopenai**: `queryString` has leading `?`. Strip it before appending with `&`:
+  ```javascript
+  const qs = queryString ? `&${queryString.slice(1)}` : "";
+  ```
+- **azureanthropic**: `queryString` used as-is (Anthropic endpoint doesn't add `api-version`):
+  ```javascript
+  const qs = queryString || "";
+  ```
 
-// ❌ Wrong — produces &?foo=bar
-const qs = queryString ? `&${queryString}` : "";
-```
+## Response Transformations
 
-## Security
+### Non-Streaming (azureanthropic)
 
-- **Auth keys never logged**: Redact `api-key` and `x-api-key` values before any diagnostic output.
-- **Request dumps behind DEBUG**: `UPSTREAM_REQUEST_DUMP` logs request bodies which contain user prompts — must be gated behind `DEBUG=true`.
-- **Header isolation**: For Azure providers, wipe all incoming headers and only add back `content-type`, `host`, and auth. This prevents Cursor's `Authorization` header from leaking upstream.
+`mapAnthropicResponseToOpenAI()` converts Anthropic response format to OpenAI:
 
-## Provider Routing
+| Anthropic Field | OpenAI Field |
+|---|---|
+| `content: [{type:"text", text:"..."}]` | `choices[0].message.content` (string) |
+| `stop_reason: "end_turn"` | `choices[0].finish_reason: "stop"` |
+| `usage.input_tokens` / `output_tokens` | `usage.prompt_tokens` / `completion_tokens` |
 
-`providerFromModel()` routes based on model prefix:
-- `azure/claude*` → `azureanthropic`
-- `azure/*` (everything else) → `azureopenai`
+### Streaming (azureanthropic)
 
-The `azure/` prefix is stripped before forwarding. Model field is deleted from body for `azureopenai` (deployment is in URL path).
-
-## No Impact to Other Providers
-
-All Azure-specific logic is gated behind `providerKey === "azureopenai"` or `providerKey === "azureanthropic"`. DeepSeek, Kimi, and MiniMax code paths are unchanged.
+`mapAnthropicSSEToOpenAI()` converts Anthropic named SSE events to OpenAI-style `choices[0].delta` chunks. See the full conversion table below.
 
 ## Anthropic SSE → OpenAI SSE Stream Transformation
 
-Azure Anthropic (and native Anthropic) returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `api/proxy.js` performs the conversion.
+Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `api/proxy.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) to track tool_use blocks across events.
 
 ### Event Format Overview
 
@@ -111,7 +128,7 @@ event: content_block_delta
 data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":100,"output_tokens":50}}
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{...}}
 
 event: message_stop
 data: {"type":"message_stop"}
@@ -146,9 +163,9 @@ data: [DONE]
 
 1. **`event:` lines suppressed**: Non-`data:` lines (e.g., `event: content_block_delta`) are suppressed for `azureanthropic` to avoid confusing Cursor's SSE parser. Only transformed data events are emitted.
 
-2. **Tool use state tracking**: `content_block_start` stores the tool `id` and `name` in `anthropicToolState` (a `Map<index, {id, name, partialJson}>`). Subsequent `content_block_delta` events with `input_json_delta` accumulate `partial_json` and emit incremental `function.arguments`. `content_block_stop` finalizes the tool call.
+2. **Tool use state tracking**: `content_block_start` stores the tool `id` and `name` in `anthropicToolState`. Subsequent `content_block_delta` events with `input_json_delta` accumulate `partial_json` and emit incremental `function.arguments`. `content_block_stop` finalizes the tool call.
 
-3. **Thinking as text fallback**: If the model produces `thinking_delta` without `text_delta`, the thinking content is emitted as `delta.content` so Cursor has visible output. This handles models that do extended thinking before (or instead of) producing text.
+3. **Thinking as text fallback**: If the model produces `thinking_delta` without `text_delta`, the thinking content is emitted as `delta.content` so Cursor has visible output.
 
 4. **Stop reason mapping**:
    - `end_turn` → `stop`
@@ -161,3 +178,21 @@ data: [DONE]
 - Multi-tool responses (multiple `tool_use` blocks in one turn)
 - `content_block_start` with `server_tool_use` type
 - `thinking` signature verification blocks
+
+## Security
+
+- **Auth keys never logged**: Redact `api-key` and `x-api-key` values before any diagnostic output.
+- **Request dumps behind DEBUG**: `UPSTREAM_REQUEST_DUMP` logs request bodies which contain user prompts — must be gated behind `DEBUG=true`.
+- **Header isolation**: For Azure providers, wipe all incoming headers and only add back `content-type`, `host`, and auth. This prevents Cursor's `Authorization` header from leaking upstream.
+
+## Provider Routing
+
+`providerFromModel()` routes based on model prefix:
+- `azure/claude*` → `azureanthropic`
+- `azure/*` (everything else) → `azureopenai`
+
+The `azure/` prefix is stripped from the model name before forwarding.
+
+## No Impact to Other Providers
+
+All Azure-specific logic is gated behind `providerKey === "azureopenai"` or `providerKey === "azureanthropic"`. DeepSeek, Kimi, and MiniMax code paths are unchanged.
