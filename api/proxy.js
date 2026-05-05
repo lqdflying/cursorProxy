@@ -974,7 +974,8 @@ export default async function handler(req) {
       "url:", upstreamUrl,
       "method:", req.method,
       "headers:", JSON.stringify(hdrObj),
-      "body:", (bodyText || "").slice(0, 500)
+      "body:", (bodyText || "").slice(0, 500),
+      "msgRoles:", parsedBody?.messages?.map((m, i) => `${i}:${m.role || "(none)"} type:${m.type || "-"}`)
     );
   }
 
