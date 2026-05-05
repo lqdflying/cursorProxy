@@ -536,6 +536,8 @@ export default async function handler(req) {
     if (providerKey === "azureopenai" && parsedBody?.messages) {
       const typeMap = { input_text: "text", output_text: "text" };
       let contentFixed = false;
+
+      // First pass: fix content types within messages
       for (const msg of parsedBody.messages) {
         if (Array.isArray(msg.content)) {
           for (const part of msg.content) {
@@ -546,7 +548,81 @@ export default async function handler(req) {
           }
         }
       }
-      if (contentFixed) {
+
+      // Second pass: fix Anthropic message-level issues:
+      // - Standalone tool_result items (no role) → OpenAI tool role
+      // - tool_use in assistant content → message-level tool_calls
+      // - tool_result in user content → separate tool role messages
+      const normalized = [];
+      for (const msg of parsedBody.messages) {
+        // Anthropic standalone tool_result item (has type, no role)
+        if (!msg.role && msg.type === "tool_result") {
+          normalized.push({
+            role: "tool",
+            tool_call_id: msg.tool_use_id || "",
+            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          });
+          contentFixed = true;
+          continue;
+        }
+
+        if (Array.isArray(msg.content)) {
+          const textParts = [];
+          let hasToolUse = false;
+          let hasToolResult = false;
+
+          for (const part of msg.content) {
+            if (part.type === "tool_use") {
+              hasToolUse = true;
+            } else if (part.type === "tool_result") {
+              hasToolResult = true;
+            } else {
+              textParts.push(part);
+            }
+          }
+
+          // Convert assistant tool_use content to message-level tool_calls
+          if (hasToolUse && msg.role === "assistant") {
+            msg.tool_calls = msg.content
+              .filter((p) => p.type === "tool_use")
+              .map((p) => ({
+                id: p.id || "",
+                type: "function",
+                function: {
+                  name: p.name || "",
+                  arguments: typeof p.input === "string" ? p.input : JSON.stringify(p.input || {}),
+                },
+              }));
+            msg.content = textParts.length > 0 ? textParts : null;
+            contentFixed = true;
+          }
+
+          // Extract tool_result from user content into separate tool messages
+          if (hasToolResult) {
+            for (const part of msg.content) {
+              if (part.type === "tool_result") {
+                normalized.push({
+                  role: "tool",
+                  tool_call_id: part.tool_use_id || "",
+                  content: typeof part.content === "string" ? part.content : JSON.stringify(part.content),
+                });
+              }
+            }
+            // Keep the user message only with non-tool-result parts
+            msg.content = textParts.filter((p) => p.type !== "tool_result");
+            if (msg.content.length === 0) {
+              contentFixed = true;
+              continue; // drop empty user messages
+            }
+            contentFixed = true;
+          }
+        }
+
+        normalized.push(msg);
+      }
+
+      if (contentFixed || normalized.length !== parsedBody.messages.length) {
+        parsedBody.messages = normalized;
         bodyText = JSON.stringify(parsedBody);
         diag("CONTENT_TYPE_FIXED", "Anthropic → OpenAI content types for", providerKey);
       }
