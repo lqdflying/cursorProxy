@@ -353,8 +353,6 @@ function mapAnthropicResponseToOpenAI(json) {
             arguments: JSON.stringify(block.input || {}),
           },
         });
-        // Include tool_use result in text content so Cursor sees it
-        textContent += `\nTool: ${block.name}(${JSON.stringify(block.input || {})})`;
       }
     }
     textContent = textContent.trimStart();
@@ -1048,8 +1046,18 @@ export default async function handler(req) {
   // Azure Anthropic models (Claude) accept only Anthropic-native parameters.
   // Cursor sends OpenAI-specific params (e.g., stream_options) that Anthropic rejects.
   if (providerKey === "azureanthropic" && parsedBody) {
-    // Anthropic uses `max_tokens`, not `max_completion_tokens`
     let sanitized = false;
+
+    // Cursor/Responses-style requests may send "instructions" instead of "system"
+    if ("instructions" in parsedBody && typeof parsedBody.instructions === "string") {
+      if (!parsedBody.system) {
+        parsedBody.system = parsedBody.instructions;
+      }
+      delete parsedBody.instructions;
+      sanitized = true;
+    }
+
+    // Anthropic uses `max_tokens`, not `max_completion_tokens`
     if ("max_completion_tokens" in parsedBody && !("max_tokens" in parsedBody)) {
       parsedBody.max_tokens = parsedBody.max_completion_tokens;
       delete parsedBody.max_completion_tokens;

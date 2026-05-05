@@ -26,8 +26,10 @@ export function setupCompatibility(context) {
 /** Rewrite incoming URL to the internal proxy format with provider and path query params. */
 export function rewriteUrl(req, provider) {
   const url = new URL(req.url);
-  // Extract path after /v0/ or /v1/ — e.g. /v1/chat/completions → chat/completions
-  const pathMatch = url.pathname.match(/^\/v[01]\/(.+)$/);
+  // Extract path after the optional legacy prefix and /v0/ or /v1/.
+  // Main routes: /v1/chat/completions → chat/completions
+  // Legacy routes: /azure-anthropic/v1/chat/completions → chat/completions
+  const pathMatch = url.pathname.match(/^(?:\/azure-(?:openai|anthropic))?\/v[01]\/(.+)$/);
   const path = pathMatch ? pathMatch[1] : "";
 
   url.pathname = "/api/proxy";
