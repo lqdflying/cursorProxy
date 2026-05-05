@@ -520,11 +520,18 @@ export default async function handler(req) {
   // Strip azure/ prefix from model name before forwarding to Azure.
   // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
   // not the proxy-specific "azure/claude-sonnet-4-6" model ID.
+  let azureModelName = parsedBody?.model;
   if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
-    if (parsedBody?.model?.startsWith?.("azure/")) {
-      const stripped = parsedBody.model.slice(6);
-      log("MODEL_STRIP", "from:", parsedBody.model, "to:", stripped);
-      parsedBody.model = stripped;
+    if (azureModelName?.startsWith?.("azure/")) {
+      azureModelName = azureModelName.slice(6);
+      log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
+      // Azure OpenAI: deployment is in URL path — model field in body is
+      // redundant and can cause "Unsupported data type" rejection.
+      if (providerKey === "azureopenai") {
+        delete parsedBody.model;
+      } else {
+        parsedBody.model = azureModelName;
+      }
       bodyText = JSON.stringify(parsedBody);
     }
   }
@@ -558,7 +565,7 @@ export default async function handler(req) {
     ? "?" + searchParams.toString()
     : "";
   const upstreamUrl = provider.buildUrl
-    ? provider.buildUrl(parsedBody?.model, pathParam, queryString)
+    ? provider.buildUrl(azureModelName, pathParam, queryString)
     : provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
 
