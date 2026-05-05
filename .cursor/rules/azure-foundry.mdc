@@ -44,7 +44,7 @@ The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor 
 - **Tool format**: Anthropic flat `{type, name, description, input_schema}` or Chat Completions wrapped `{type, function:{...}}` → Responses function tools `{type:"function", name, description, parameters}`.
 - **Model field**: `azure/` prefix is stripped; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
-- **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env default is injected as nested `reasoning.effort`.
+- **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
 - **State**: `store=false` is injected when omitted.
 
 ### azureanthropic ONLY
@@ -67,7 +67,7 @@ store, parallel_tool_calls, user
 - `max_tokens` / `max_completion_tokens` → remapped to `max_output_tokens`
 - `temperature` ≠ 1 → stripped for reasoning models only; standard models preserve user-set temperature
 - `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias` → stripped for reasoning models
-- Optional default: `AZURE_OPENAI_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) — injected only for reasoning models when request omits `reasoning.effort`; model support varies (`none` and `xhigh` are not universal)
+- Env override: `AZURE_OPENAI_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) — forces `reasoning.effort` for reasoning models even when the client sends a value; model support varies (`none` and `xhigh` are not universal)
 
 ### azureanthropic Whitelist
 ```

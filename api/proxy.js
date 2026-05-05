@@ -1041,15 +1041,17 @@ export default async function handler(req) {
       sanitized = true;
     }
 
-    // Inject default reasoning effort from env for Azure OpenAI reasoning models.
-    // Responses API uses nested reasoning.effort, not flat reasoning_effort.
+    // Env wins over Cursor/client effort so deployments can centrally force
+    // the reasoning budget for Azure OpenAI reasoning models.
     const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
-    if (isAzureReasoningModel && defaultReasoningEffort && !(parsedBody.reasoning?.effort)) {
+    if (isAzureReasoningModel && defaultReasoningEffort) {
       if (!parsedBody.reasoning || typeof parsedBody.reasoning !== "object" || Array.isArray(parsedBody.reasoning)) {
         parsedBody.reasoning = {};
       }
-      parsedBody.reasoning.effort = defaultReasoningEffort;
-      sanitized = true;
+      if (parsedBody.reasoning.effort !== defaultReasoningEffort) {
+        parsedBody.reasoning.effort = defaultReasoningEffort;
+        sanitized = true;
+      }
     }
 
     if (parsedBody.reasoning?.effort) {
