@@ -329,6 +329,59 @@ function stripResponseChunk(json) {
 }
 
 /**
+ * Convert an Anthropic non-streaming response to OpenAI-compatible format.
+ *
+ * Anthropic: { id, type: "message", role: "assistant", content: [{type:"text",text:"..."}], stop_reason, usage }
+ * OpenAI:    { id, object: "chat.completion", created, model, choices: [{index, message: {role,content}, finish_reason}], usage }
+ */
+function mapAnthropicResponseToOpenAI(json) {
+  if (json.type !== "message") return json; // not an Anthropic response, pass through
+
+  // Extract text from content blocks
+  let textContent = "";
+  if (Array.isArray(json.content)) {
+    textContent = json.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+  }
+
+  // Map stop_reason
+  const stopMap = {
+    "end_turn": "stop",
+    "max_tokens": "length",
+    "stop_sequence": "stop",
+    "tool_use": "tool_calls",
+  };
+  const finishReason = stopMap[json.stop_reason] || json.stop_reason || "stop";
+
+  const result = {
+    id: json.id || "msg_unknown",
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: json.model || json.id,
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: textContent,
+      },
+      finish_reason: finishReason,
+    }],
+  };
+
+  if (json.usage) {
+    result.usage = {
+      prompt_tokens: json.usage.input_tokens ?? 0,
+      completion_tokens: json.usage.output_tokens ?? 0,
+      total_tokens: (json.usage.input_tokens ?? 0) + (json.usage.output_tokens ?? 0),
+    };
+  }
+
+  return result;
+}
+
+/**
  * Convert an Anthropic SSE event into an OpenAI-compatible SSE chunk.
  *
  * Anthropic streaming events use content_block_delta with delta.text_delta,
@@ -887,6 +940,11 @@ export default async function handler(req) {
   // Azure Anthropic models (Claude) accept only Anthropic-native parameters.
   // Cursor sends OpenAI-specific params (e.g., stream_options) that Anthropic rejects.
   if (providerKey === "azureanthropic" && parsedBody) {
+    // Anthropic uses `max_tokens`, not `max_completion_tokens`
+    if ("max_completion_tokens" in parsedBody && !("max_tokens" in parsedBody)) {
+      parsedBody.max_tokens = parsedBody.max_completion_tokens;
+      delete parsedBody.max_completion_tokens;
+    }
     const allowed = new Set([
       "model", "messages", "system", "max_tokens", "temperature",
       "top_p", "top_k", "stream", "stop_sequences", "tools", "tool_choice",
@@ -1234,6 +1292,11 @@ export default async function handler(req) {
         status: upstreamRes.status,
         headers: { "content-type": contentType || "text/plain" },
       });
+    }
+
+    // Convert Anthropic non-streaming response to OpenAI format
+    if (providerKey === "azureanthropic") {
+      json = mapAnthropicResponseToOpenAI(json);
     }
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
