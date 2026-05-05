@@ -1376,7 +1376,10 @@ export default async function handler(req) {
     }
   }
 
-  const headers = new Headers(req.headers);
+  // Azure endpoints reject requests carrying unknown headers or dual auth,
+  // so start from an empty set instead of mutating while iterating Headers.
+  const isAzureProvider = providerKey === "azureopenai" || providerKey === "azureanthropic";
+  const headers = isAzureProvider ? new Headers() : new Headers(req.headers);
 
   // Build dynamic host header: use provider.host when available,
   // otherwise extract hostname from the constructed upstream URL.
@@ -1386,20 +1389,6 @@ export default async function handler(req) {
     try {
       headers.set("host", new URL(upstreamUrl).hostname);
     } catch { /* fall through */ }
-  }
-
-  // Azure endpoints reject requests carrying unknown headers or dual auth.
-  // Start with a clean header set — only Content-Type plus auth is required.
-  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
-    headers.forEach((_v, k) => headers.delete(k));
-    headers.set("content-type", "application/json");
-    if (provider.host) {
-      headers.set("host", provider.host);
-    } else {
-      try {
-        headers.set("host", new URL(upstreamUrl).hostname);
-      } catch { /* fall through */ }
-    }
   }
 
   // Clean up headers that shouldn't leak upstream
