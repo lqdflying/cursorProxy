@@ -522,6 +522,15 @@ export default async function handler(req) {
   // not the proxy-specific "azure/claude-sonnet-4-6" model ID.
   let azureModelName = parsedBody?.model;
   if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
+    // Cursor sends the messages array under "input" for Azure models.
+    // Remap to "messages" so Azure OpenAI / Anthropic can process the request.
+    if (parsedBody && parsedBody.input && !parsedBody.messages) {
+      parsedBody.messages = parsedBody.input;
+      delete parsedBody.input;
+      bodyText = JSON.stringify(parsedBody);
+      diag("INPUT_REMAPPED", "input → messages for", providerKey);
+    }
+
     if (azureModelName?.startsWith?.("azure/")) {
       azureModelName = azureModelName.slice(6);
       log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
