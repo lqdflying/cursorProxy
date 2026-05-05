@@ -784,6 +784,27 @@ export default async function handler(req) {
     }
   }
 
+  // Azure Anthropic models (Claude) accept only Anthropic-native parameters.
+  // Cursor sends OpenAI-specific params (e.g., stream_options) that Anthropic rejects.
+  if (providerKey === "azureanthropic" && parsedBody) {
+    const allowed = new Set([
+      "model", "messages", "system", "max_tokens", "temperature",
+      "top_p", "top_k", "stream", "stop_sequences", "tools", "tool_choice",
+      "metadata", "thinking",
+    ]);
+    let sanitized = false;
+    for (const key of Object.keys(parsedBody)) {
+      if (!allowed.has(key)) {
+        delete parsedBody[key];
+        sanitized = true;
+      }
+    }
+    if (sanitized) {
+      bodyText = JSON.stringify(parsedBody);
+      diag("AZURE_BODY_SANITIZED", "stripped OpenAI-only params for Claude compatibility");
+    }
+  }
+
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
