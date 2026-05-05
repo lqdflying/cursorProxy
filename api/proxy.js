@@ -559,20 +559,26 @@ export default async function handler(req) {
       const STORE_KEY = ["tool_use_id", "call_id", "id"];
       const normalized = [];
       let diagCalls = false, diagResults = false;
+
+      // Pre-scan: collect standalone function_call_outputs into a map for interleaving.
+      // OpenAI requires each assistant with tool_calls to be immediately followed
+      // by its tool responses, but Cursor sends all calls then all outputs.
+      const resultMap = new Map();
+      for (const msg of parsedBody.messages) {
+        if (!msg.role && RESULT_IN_CONTENT.includes(msg.type)) {
+          const tid = STORE_KEY.reduce((id, k) => id || msg[k], "");
+          if (tid) resultMap.set(tid, msg);
+        }
+      }
+
       for (const msg of parsedBody.messages) {
         // Anthropic standalone tool_result / function_call_output (has type, no role)
-        const isToolResult = RESULT_IN_CONTENT.includes(msg.type);
-        if (!msg.role && isToolResult) {
+        // Handled via interleaving with function_call below — skip standalone here.
+        if (!msg.role && RESULT_IN_CONTENT.includes(msg.type)) {
           if (!diagResults) {
             diag("STANDALONE_RESULT_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
             diagResults = true;
           }
-          const tid = STORE_KEY.reduce((id, k) => id || msg[k], "");
-          normalized.push({
-            role: "tool",
-            tool_call_id: tid || "",
-            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content || msg.output || ""),
-          });
           contentFixed = true;
           continue;
         }
@@ -583,11 +589,12 @@ export default async function handler(req) {
             diag("STANDALONE_CALL_KEYS", "type:", msg.type, "keys:", Object.keys(msg).join(","), "sample:", JSON.stringify(msg).slice(0, 200));
             diagCalls = true;
           }
+          const callId = msg.id || msg.call_id || "";
           normalized.push({
             role: "assistant",
             content: null,
             tool_calls: [{
-              id: msg.id || msg.call_id || "",
+              id: callId,
               type: "function",
               function: {
                 name: msg.name || "",
@@ -595,6 +602,28 @@ export default async function handler(req) {
               },
             }],
           });
+          // Immediately follow with the matching tool response if available
+          const output = resultMap.get(callId);
+          if (output) {
+            // Normalize content types inside the output
+            const rawOut = output.content || output.output;
+            let outContent;
+            if (typeof rawOut === "string") {
+              outContent = rawOut;
+            } else if (Array.isArray(rawOut)) {
+              for (const part of rawOut) {
+                if (typeMap[part.type]) part.type = typeMap[part.type];
+              }
+              outContent = JSON.stringify(rawOut);
+            } else {
+              outContent = JSON.stringify(rawOut || "");
+            }
+            normalized.push({
+              role: "tool",
+              tool_call_id: callId,
+              content: outContent,
+            });
+          }
           contentFixed = true;
           continue;
         }
