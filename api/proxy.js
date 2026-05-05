@@ -1153,6 +1153,13 @@ export default async function handler(req) {
       bodyText = JSON.stringify(parsedBody);
       diag("AZURE_BODY_SANITIZED", "stripped OpenAI-only params for Claude compatibility");
     }
+
+    if (parsedBody.thinking?.type) {
+      diag("ANTHROPIC_THINKING", "type:", parsedBody.thinking.type, "provider:", providerKey);
+    }
+    if (parsedBody.output_config?.effort) {
+      diag("ANTHROPIC_EFFORT", "effort:", parsedBody.output_config.effort, "provider:", providerKey);
+    }
   }
 
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
