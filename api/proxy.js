@@ -1035,8 +1035,13 @@ export default async function handler(req) {
   // When KV has nothing for a given turn (e.g. trivial greeting that produced no
   // thinking, or a turn not proxied through us, or KV race), we still inject a
   // placeholder so the field is present and the provider accepts the request.
+  //
+  // Skip for providers that don't support reasoning fields:
+  // - Anthropic's Messages API rejects `reasoning_content` (Extra inputs not permitted)
+  // - Azure OpenAI's Chat Completions API may also reject it on certain models
+  const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
   let injectedCount = 0;
-  if (originalMessages) {
+  if (originalMessages && reasoningProviders.has(providerKey)) {
     const messages = parsedBody.messages;
     const assistantIndices = messages
       .map((m, i) => i)
