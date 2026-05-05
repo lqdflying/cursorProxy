@@ -1000,6 +1000,12 @@ export default async function handler(req) {
     }
   }
 
+  // Detect Azure OpenAI reasoning/o-series deployments (gpt-5.5, o1, o3, o4-mini, …).
+  // Used for temperature-stripping in the sanitization block below.
+  // Reasoning models only accept temperature=1.
+  const isAzureReasoningModel = providerKey === "azureopenai"
+    && /^(o\d|gpt-5\.5|gpt-o)/i.test(azureModelName || "");
+
   // Azure OpenAI models (especially gpt-5.5) have restricted parameter support.
   // Rewrite incompatible params and strip any unknown fields via a whitelist
   // to avoid repeated "Unknown parameter" 400 errors from Cursor-specific fields.
@@ -1027,8 +1033,7 @@ export default async function handler(req) {
     // Standard models (gpt-4o, gpt-4.1, …) support arbitrary temperature — preserve it.
     // Strip only when the deployment name signals a reasoning model so the user's temperature
     // setting still takes effect on non-reasoning GPT models.
-    const isReasoningModel = /^(o\d|gpt-5\.5|gpt-o)/i.test(azureModelName || "");
-    if (isReasoningModel && "temperature" in parsedBody && parsedBody.temperature !== 1) {
+    if (isAzureReasoningModel && "temperature" in parsedBody && parsedBody.temperature !== 1) {
       delete parsedBody.temperature;
       sanitized = true;
     }
