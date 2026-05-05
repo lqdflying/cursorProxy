@@ -406,8 +406,10 @@ function mapAnthropicSSEToOpenAI(json) {
 
   switch (event.type) {
     case "content_block_start":
-      // content_block is e.g. { type: "text", text: "" }
-      if (event.content_block?.type === "text") {
+      // Emit a role marker for the first content block (text or thinking)
+      // Text blocks: { type: "text", text: "" }
+      // Thinking blocks: { type: "thinking", thinking: "" }
+      if (event.content_block?.type === "text" || event.content_block?.type === "thinking") {
         return {
           choices: [{
             index: event.index ?? 0,
@@ -415,11 +417,13 @@ function mapAnthropicSSEToOpenAI(json) {
           }],
         };
       }
-      return null; // skip non-text blocks (e.g. tool_use) for now
+      return null; // skip non-text/non-thinking blocks (e.g. tool_use) for now
 
     case "content_block_delta": {
       const delta = event.delta;
-      const text = delta?.text_delta ?? delta?.text ?? "";
+      // text_delta: { type: "text_delta", text: "Hello" }
+      // thinking_delta: { type: "thinking_delta", thinking: "..." }
+      const text = delta?.text_delta ?? delta?.text ?? delta?.thinking ?? "";
       return {
         choices: [{
           index: event.index ?? 0,
@@ -1422,6 +1426,13 @@ export default async function handler(req) {
             // but the proxy and Cursor expect choices[0].delta.content.
             if (providerKey === "azureanthropic") {
               const mapped = mapAnthropicSSEToOpenAI(json);
+              // Diagnostic: log event type and extracted text to debug silent streams
+              log("ANTHROPIC_EVENT", json.type,
+                   "index:", json.index,
+                   "delta_type:", json.delta?.type,
+                   "text:", json.delta?.text?.slice(0, 40),
+                   "thinking:", json.delta?.thinking?.slice(0, 40),
+                   "content_block_type:", json.content_block?.type);
               if (mapped === "[DONE]") {
                 doneSeen = true;
                 log("STREAM_DONE_VIA_MESSAGE_STOP", "content:", accContent.length);
