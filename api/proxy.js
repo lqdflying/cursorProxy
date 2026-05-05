@@ -331,19 +331,33 @@ function stripResponseChunk(json) {
 /**
  * Convert an Anthropic non-streaming response to OpenAI-compatible format.
  *
- * Anthropic: { id, type: "message", role: "assistant", content: [{type:"text",text:"..."}], stop_reason, usage }
- * OpenAI:    { id, object: "chat.completion", created, model, choices: [{index, message: {role,content}, finish_reason}], usage }
+ * Anthropic: { id, type: "message", role: "assistant", content: [{type:"text",text:"..."}, {type:"tool_use",id,name,input:{}}], stop_reason, usage }
+ * OpenAI:    { id, object: "chat.completion", created, model, choices: [{index, message: {role,content,tool_calls}, finish_reason}], usage }
  */
 function mapAnthropicResponseToOpenAI(json) {
   if (json.type !== "message") return json; // not an Anthropic response, pass through
 
   // Extract text from content blocks
   let textContent = "";
+  const toolCalls = [];
   if (Array.isArray(json.content)) {
-    textContent = json.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
-      .join("");
+    for (const block of json.content) {
+      if (block.type === "text") {
+        textContent += block.text || "";
+      } else if (block.type === "tool_use") {
+        toolCalls.push({
+          id: block.id || "",
+          type: "function",
+          function: {
+            name: block.name || "",
+            arguments: JSON.stringify(block.input || {}),
+          },
+        });
+        // Include tool_use result in text content so Cursor sees it
+        textContent += `\nTool: ${block.name}(${JSON.stringify(block.input || {})})`;
+      }
+    }
+    textContent = textContent.trimStart();
   }
 
   // Map stop_reason
@@ -364,11 +378,15 @@ function mapAnthropicResponseToOpenAI(json) {
       index: 0,
       message: {
         role: "assistant",
-        content: textContent,
+        content: textContent || null,
       },
       finish_reason: finishReason,
     }],
   };
+
+  if (toolCalls.length > 0) {
+    result.choices[0].message.tool_calls = toolCalls;
+  }
 
   if (json.usage) {
     result.usage = {
@@ -915,6 +933,29 @@ export default async function handler(req) {
       }
     }
 
+    // Normalize content block types for Azure Anthropic.
+    // Cursor occasionally sends input_text / output_text (Responses API style)
+    // but Anthropic Messages API expects type: "text". Keep tool_use/tool_result
+    // intact since those are Anthropic-native block types.
+    if (providerKey === "azureanthropic" && parsedBody?.messages) {
+      const typeMap = { input_text: "text", output_text: "text" };
+      let fixed = false;
+      for (const msg of parsedBody.messages) {
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (typeMap[part.type]) {
+              part.type = typeMap[part.type];
+              fixed = true;
+            }
+          }
+        }
+      }
+      if (fixed) {
+        bodyText = JSON.stringify(parsedBody);
+        diag("ANTHROPIC_CONTENT_FIXED", "normalised input_text/output_text → text for", providerKey);
+      }
+    }
+
     // Normalize Anthropic-style tool definitions to OpenAI format.
     // Only for Azure OpenAI — Anthropic endpoint expects native tool format.
     if (providerKey === "azureopenai" && parsedBody?.tools) {
@@ -1008,16 +1049,17 @@ export default async function handler(req) {
   // Cursor sends OpenAI-specific params (e.g., stream_options) that Anthropic rejects.
   if (providerKey === "azureanthropic" && parsedBody) {
     // Anthropic uses `max_tokens`, not `max_completion_tokens`
+    let sanitized = false;
     if ("max_completion_tokens" in parsedBody && !("max_tokens" in parsedBody)) {
       parsedBody.max_tokens = parsedBody.max_completion_tokens;
       delete parsedBody.max_completion_tokens;
+      sanitized = true;
     }
     const allowed = new Set([
       "model", "messages", "system", "max_tokens", "temperature",
       "top_p", "top_k", "stream", "stop_sequences", "tools", "tool_choice",
       "metadata", "thinking",
     ]);
-    let sanitized = false;
     for (const key of Object.keys(parsedBody)) {
       if (!allowed.has(key)) {
         delete parsedBody[key];
@@ -1493,7 +1535,7 @@ export default async function handler(req) {
             if (providerKey === "azureanthropic") {
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               // Diagnostic: log event type and extracted text to debug silent streams
-              diag("ANTHROPIC_EVENT", json.type,
+              log("ANTHROPIC_EVENT", json.type,
                    "index:", json.index,
                    "delta_type:", json.delta?.type,
                    "text:", json.delta?.text?.slice(0, 40),
