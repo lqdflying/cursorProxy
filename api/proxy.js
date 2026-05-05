@@ -555,7 +555,14 @@ export default async function handler(req) {
     // Only for Azure OpenAI — Anthropic endpoint expects native tool format.
     if (providerKey === "azureopenai" && parsedBody?.tools) {
       let toolsFixed = false;
+      const filtered = [];
       for (const tool of parsedBody.tools) {
+        // Only "function" type tools are valid for OpenAI
+        if (tool.type && tool.type !== "function") {
+          toolsFixed = true;
+          continue;
+        }
+        // Convert Anthropic format to OpenAI format
         if (tool.name && !tool.function) {
           tool.function = {
             name: tool.name,
@@ -567,10 +574,12 @@ export default async function handler(req) {
           delete tool.input_schema;
           toolsFixed = true;
         }
+        filtered.push(tool);
       }
       if (toolsFixed) {
+        parsedBody.tools = filtered;
         bodyText = JSON.stringify(parsedBody);
-        diag("TOOLS_FIXED", "Anthropic → OpenAI tool format for", providerKey);
+        diag("TOOLS_FIXED", "Anthropic → OpenAI tool format, filtered non-function for", providerKey);
       }
     }
 
