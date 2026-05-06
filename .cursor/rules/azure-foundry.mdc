@@ -56,7 +56,7 @@ The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor 
 - **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` (in `api/models.js`) before the request body reaches Azure; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
 - **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
-- **State**: `store=false` is injected when omitted.
+- **State**: `store=false` is injected by the sanitizer when omitted, BUT `api/proxy.js` unconditionally sets `store=true` for all Azure OpenAI requests before the sanitizer runs. This is required — without `store=true`, Azure does not persist responses, and `previous_response_id` lookups on subsequent turns fail with `previous_response_not_found`.
 
 ### azureanthropic ONLY
 - **Model field**: Kept in body (Anthropic requires it)
@@ -110,6 +110,85 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
   ```javascript
   const qs = queryString || "";
   ```
+
+## `previous_response_id` KV Chaining (azureopenai only)
+
+Azure Responses API supports server-side conversation state via `previous_response_id`. Instead of sending the full conversation history on every turn, the proxy sends only new messages plus `previous_response_id`, and Azure replays prior state server-side. This cuts reasoning token costs significantly.
+
+### Lifecycle
+
+```
+Turn 1 (first message):                    Turn 2 (second message):
+  proxy sends full input[]                   proxy reads KV → prevRespId
+  + store=true                                sends only new input items
+  ↓                                           + previous_response_id
+  Azure returns resp_abc                      ↓
+  ↓                                           Azure reuses prior state
+  proxy caches:                                + returns resp_def
+    KV["azresp:conv:<hash(all)>"] = resp_abc   ↓
+                                               proxy caches:
+                                                 KV["azresp:conv:<hash(all)>"] = resp_def
+```
+
+### Key design decisions
+
+- **`store=true` is unconditional**: Even on first turns and KV-miss fallbacks, `store=true` must be set. The sanitizer's default `store=false` is overridden in `api/proxy.js` before the sanitizer runs. Without this, Azure won't persist the response and the next turn's `previous_response_id` lookup will fail with `previous_response_not_found`.
+- **Hash is computed from FULL input before trimming**: `conversationHash(hashItems, hashItems.length, scope)` hashes ALL items up to and including the last assistant turn. The next request hashes `slice(0, lastAssistantIdx)` to derive the same key. This is why `upTo=lastAssistantIdx` matches `upTo=messages.length` from the prior turn.
+- **Two input formats supported**: Both legacy `messages` (Chat Completions) and native `input` (Responses API) are handled. The native path skips the `normalizeAzureInput` tool-call conversion since items are already in Responses format.
+- **Trim boundary**: After KV hit, only items after `lastAssistantIdx` are forwarded. The assistant's own response items plus all subsequent user/tool items are preserved.
+- **TTL**: Response IDs use the default KV TTL (`KV_TTL_SECONDS`, default 7200s). After expiry, the lookup returns null and the proxy falls back to stateless mode (full input forwarded). This is silent — no error, just higher token costs for that turn.
+
+### Response ID capture (streaming)
+
+The response ID is captured from the `response.created` SSE event:
+
+```
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_abc..."}}
+```
+
+Two write points guarantee durability:
+1. **`response.completed` event**: earliest safe point — the stream has ended, but `finally` hasn't run yet
+2. **`finally` block**: belt-and-suspenders — catches cases where the stream ends abnormally or via a different event
+
+This is why `CACHE_AZ_RESP_ID` typically appears twice per request in logs.
+
+### Response ID capture (non-streaming)
+
+The ID is captured from `json.id` BEFORE `mapResponsesToOpenAI()` transforms the response. The mapper destroys the original structure, so the ID must be extracted first.
+
+### Why reasoning injection is skipped for Azure
+
+The reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax but is **skipped** for Azure providers:
+- **Anthropic**: rejects `reasoning_content` as "Extra inputs are not permitted"
+- **OpenAI Responses API**: uses server-side state via `previous_response_id` — reasoning is already preserved on Azure's side, so injection would be both redundant and rejected
+
+The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
+```javascript
+const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
+```
+
+### Diagnostics
+
+| Tag | Meaning |
+|-----|---------|
+| `INPUT_CHAIN` | Native input path exercised (replaces `MESSAGES_TO_INPUT` for Responses-format clients) |
+| `MESSAGES_TO_INPUT` | Legacy Chat Completions path exercised (`messages` → `input` conversion) |
+| `PREV_RESP_ID_FOUND` | KV lookup succeeded — chaining is active for this turn |
+| `PREV_RESP_ID_MISS` | KV lookup returned null — stateless fallback |
+| `CACHE_AZ_RESP_ID` | Response ID saved to KV (emitted per write, typically 2× per streaming request) |
+| `STREAM_AZ_RESP_ID` | Response ID captured from `response.created` SSE event |
+| `INPUT_HAS_LEGACY_TOOLS` | Probe fired — legacy tool items detected in native input (see `feature-verification.mdc`) |
+
+### Pitfalls (lessons learned)
+
+1. **Wrong code path**: The initial implementation only handled `messages` → `input` conversion. Cursor sends Responses-native `input` directly, so the KV block never executed. `msgRoles: undefined` in logs was the smoking gun.
+
+2. **`store` default**: The sanitizer's default `store=false` caused `previous_response_not_found` errors. `store=true` must be set before the sanitizer runs.
+
+3. **Hash before normalize**: A proposed hardening plan would have normalized input BEFORE hashing, which would have changed hash keys and invalidated all cached response IDs across the deploy boundary. Normalize AFTER hashing (or only normalize in the forwarding path, not the hash path).
+
+4. **Two-format divergence**: The `messages` and `input` branches diverged when the feature was first implemented. Both paths must be tested against real traffic — not just unit tests.
 
 ## Response Transformations
 
