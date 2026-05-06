@@ -7,7 +7,7 @@ const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "mediu
 
 function isAzureReasoningModel(providerKey, azureModelName) {
   return providerKey === "azureopenai"
-    && /^(o\d|gpt-5[.\d])/i.test(azureModelName || "");
+    && /^(o\d|gpt-5[.\d]?)/i.test(azureModelName || "");
 }
 
 function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {

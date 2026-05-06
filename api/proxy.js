@@ -173,7 +173,7 @@ export default async function handler(req) {
     parsedBody.input = parsedBody.messages;
     delete parsedBody.messages;
     bodyText = JSON.stringify(parsedBody);
-    diag("INPUT_REMAPPED", "provider:", providerKey, "from:", "messages", "to:", "input");
+    diag("MESSAGES_TO_INPUT", "provider:", providerKey, "from:", "messages", "to:", "input");
   }
 
   {
