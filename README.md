@@ -51,7 +51,7 @@ See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for V
 | API Key | Your `CURSORPROXY_API_KEY` |
 | Model | Discovered from `GET /v1/models` when `CURSORPROXY_MODELS` is set, or manually entered |
 
-The proxy routes to the correct upstream based on the model name prefix (`deepseek*`, `kimi*`, `minimax*` / `MiniMax*`, `azure/*`) and uses the corresponding server-side API key.
+The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example, `cursorproxy/gpt-5.5`) while forwarding the bare model/deployment name upstream. Configure `CURSORPROXY_MODELS` without prefixes; manually entered bare IDs are also accepted.
 
 ---
 
@@ -60,7 +60,7 @@ The proxy routes to the correct upstream based on the model name prefix (`deepse
 | Variable | Required | Description |
 |---|---|---|
 | `CURSORPROXY_API_KEY` | Recommended | Client auth secret |
-| `CURSORPROXY_MODELS` | Optional | Comma- or newline-separated model IDs returned by `GET /v1/models` |
+| `CURSORPROXY_MODELS` | Optional | Comma- or newline-separated bare model IDs. `GET /v1/models` returns them as `cursorproxy/<model>` |
 | `DEEPSEEK_REASONING_EFFORT` | Optional | DeepSeek thinking effort: `high` (default) or `max` |
 | `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
 | `KIMI_API_KEY` | For Kimi | Upstream API key |

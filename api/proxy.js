@@ -71,6 +71,8 @@ function diag(...args) {
 const AZURE_ANTHROPIC_THINKING_TYPES = new Set(["adaptive", "disabled"]);
 const AZURE_ANTHROPIC_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
 const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const PUBLIC_MODEL_PREFIX = "cursorproxy/";
+const LEGACY_AZURE_MODEL_PREFIX = "azure/";
 
 function cleanEnvValue(name) {
   return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");
@@ -106,6 +108,70 @@ function jsonErrorResponse(status, message, code, type = "invalid_request_error"
   );
 }
 
+function modelIdParts(model) {
+  if (typeof model !== "string") {
+    return {
+      input: "",
+      bare: "",
+      publicId: "",
+      hadPublicPrefix: false,
+      hadLegacyAzurePrefix: false,
+    };
+  }
+
+  let id = model.trim();
+  const lower = id.toLowerCase();
+  const hadPublicPrefix = lower.startsWith(PUBLIC_MODEL_PREFIX);
+  if (hadPublicPrefix) {
+    id = id.slice(PUBLIC_MODEL_PREFIX.length);
+  }
+
+  const lowerAfterPublic = id.toLowerCase();
+  const hadLegacyAzurePrefix = lowerAfterPublic.startsWith(LEGACY_AZURE_MODEL_PREFIX);
+  if (hadLegacyAzurePrefix) {
+    id = id.slice(LEGACY_AZURE_MODEL_PREFIX.length);
+  }
+
+  const bare = id.trim();
+  return {
+    input: model,
+    bare,
+    publicId: bare ? PUBLIC_MODEL_PREFIX + bare : "",
+    hadPublicPrefix,
+    hadLegacyAzurePrefix,
+  };
+}
+
+function publicModelId(model) {
+  return modelIdParts(model).publicId;
+}
+
+function withPublicResponseModel(json, fallbackModel) {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return json;
+
+  const fallbackPublicId = publicModelId(fallbackModel);
+  const currentPublicId = publicModelId(json.model);
+  if (currentPublicId) return { ...json, model: currentPublicId };
+
+  const shouldAddFallback = fallbackPublicId && Array.isArray(json.choices);
+  if (!shouldAddFallback) return json;
+
+  return { ...json, model: fallbackPublicId };
+}
+
+function normalizeParsedBodyModel(parsedBody) {
+  if (!parsedBody?.model) {
+    return { input: "", bare: "", publicId: "", changed: false };
+  }
+
+  const parts = modelIdParts(parsedBody.model);
+  const changed = Boolean(parts.bare && parsedBody.model !== parts.bare);
+  if (changed) {
+    parsedBody.model = parts.bare;
+  }
+  return { ...parts, changed };
+}
+
 /** If CURSORPROXY_API_KEY is set, require Bearer or x-api-key match. */
 function checkProxyAuth(req) {
   const required = process.env.CURSORPROXY_API_KEY;
@@ -128,7 +194,7 @@ function configuredModelIds() {
   const models = [];
 
   for (const value of raw.split(/[,\r\n]+/)) {
-    const id = value.trim();
+    const id = publicModelId(value);
     if (!id || seen.has(id)) continue;
     seen.add(id);
     models.push(id);
@@ -166,12 +232,15 @@ function modelDiscoveryResponse(req) {
 
 function providerFromModel(model) {
   if (typeof model !== "string" || !model) return null;
-  const m = model.toLowerCase();
-  // Azure Foundry: azure/ prefix — claude models route to Anthropic endpoint
-  if (m.startsWith("azure/")) {
-    const bare = m.slice(6);
-    return bare.startsWith("claude") ? "azureanthropic" : "azureopenai";
+  const parts = modelIdParts(model);
+  const m = parts.bare.toLowerCase();
+  // Backward compatibility: legacy azure/ IDs still route to Azure, but are
+  // normalized to cursorproxy/ IDs at the client-facing boundary.
+  if (parts.hadLegacyAzurePrefix) {
+    return m.startsWith("claude") ? "azureanthropic" : "azureopenai";
   }
+  if (m.startsWith("claude")) return "azureanthropic";
+  if (m.startsWith("gpt-") || /^o\d/i.test(m)) return "azureopenai";
   if (m.startsWith("minimax")) return "minimax";
   if (m.startsWith("kimi")) return "kimi";
   if (m.startsWith("deepseek")) return "deepseek";
@@ -868,19 +937,27 @@ export default async function handler(req) {
     }
   }
 
+  const clientModelName = parsedBody?.model;
   if (!providerKey) {
-    providerKey = providerFromModel(parsedBody?.model);
+    providerKey = providerFromModel(clientModelName);
   }
   if (!providerKey) {
     providerKey = "deepseek";
   }
 
-  log("RESOLVED", "model:", parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
+  let modelNames = normalizeParsedBodyModel(parsedBody);
+  let upstreamModelName = modelNames.bare;
+  let responseModelName = modelNames.publicId;
+  if (modelNames.changed) {
+    bodyText = JSON.stringify(parsedBody);
+    log("MODEL_STRIP", "from:", modelNames.input, "to:", upstreamModelName);
+  }
 
-  // Strip azure/ prefix from model name before forwarding to Azure.
+  log("RESOLVED", "model:", responseModelName || parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
+
   // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
-  // not the proxy-specific "azure/claude-sonnet-4-6" model ID.
-  let azureModelName = parsedBody?.model;
+  // not client-facing proxy model IDs such as "cursorproxy/claude-sonnet-4-6".
+  let azureModelName = upstreamModelName;
   if (providerKey === "azureanthropic") {
     // Cursor sends the messages array under "input" for Azure models.
     // Remap to "messages" so Anthropic can process the request.
@@ -961,18 +1038,6 @@ export default async function handler(req) {
       bodyText = JSON.stringify(parsedBody);
       diag("TOOLS_FIXED", "Anthropic → OpenAI Responses tool format for", providerKey);
     }
-  }
-
-  if (azureModelName?.startsWith?.("azure/")) {
-    azureModelName = azureModelName.slice(6);
-    log("MODEL_STRIP", "from:", parsedBody.model, "to:", azureModelName);
-    // Azure OpenAI Responses API: model goes in request body, NOT URL path.
-    if (providerKey === "azureopenai") {
-      parsedBody.model = azureModelName;
-    } else {
-      parsedBody.model = azureModelName;
-    }
-    bodyText = JSON.stringify(parsedBody);
   }
 
   // Detect Azure OpenAI reasoning models.
@@ -1168,7 +1233,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, azureopenai, or azureanthropic (or set model to a matching provider prefix, e.g. azure/claude-sonnet-4-6).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6 or claude-sonnet-4-6).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -1193,11 +1258,19 @@ export default async function handler(req) {
     log("MODEL_INJECTED", "model:", parsedBody.model);
   }
 
-  // Keep azureModelName in sync with parsedBody.model — it may have been set by the
-  // default-injection block above (e.g. azureanthropic with no model in the request).
+  modelNames = normalizeParsedBodyModel(parsedBody);
+  upstreamModelName = modelNames.bare;
+  responseModelName = modelNames.publicId;
+  if (modelNames.changed) {
+    bodyText = JSON.stringify(parsedBody);
+    log("MODEL_STRIP", "from:", modelNames.input, "to:", upstreamModelName);
+  }
+
+  // Keep azureModelName in sync with parsedBody.model — it may have been set or
+  // normalized above (e.g. azureanthropic with no model in the request).
   // Must happen before buildUrl so the URL path contains the correct deployment name.
   if ((providerKey === "azureopenai" || providerKey === "azureanthropic") && !azureModelName) {
-    azureModelName = parsedBody?.model;
+    azureModelName = upstreamModelName;
   }
 
   // Clean up Vercel rewrite query pollution
@@ -1507,6 +1580,8 @@ export default async function handler(req) {
       json = mapResponsesToOpenAI(json);
     }
 
+    json = withPublicResponseModel(json, responseModelName);
+
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {
       log("CACHE non-stream key:", replyReasoningKey);
@@ -1677,6 +1752,7 @@ export default async function handler(req) {
               await cacheReasoningSnapshot();
             }
             if (delta?.content != null) accContent += delta.content;
+            json = withPublicResponseModel(json, responseModelName);
             await writer.write(
               encoder.encode(
                 "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"
