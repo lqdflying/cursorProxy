@@ -187,107 +187,155 @@ export default async function handler(req) {
 
   // Azure OpenAI Responses API uses "input" natively. Do not normalize native
   // Responses input items (input_text, output_text, function_call_output, etc.).
-  // Only support legacy Chat Completions clients by renaming messages → input.
+  // Azure OpenAI previous_response_id chaining via KV.
+  //
+  // Supports two input formats from the client:
+  //   1. Legacy Chat Completions `messages` — renamed to `input` with
+  //      tool-call normalization (role:"tool" → function_call_output,
+  //      assistant.tool_calls → function_call items).
+  //   2. Native Responses API `input` — items already in Responses format.
   //
   // When a prior assistant turn exists, try to recover the response ID from KV
   // and use previous_response_id chaining so Azure reuses server-side context
   // instead of re-reasoning from scratch on every turn. Falls back to stateless
   // full-input-array mode on KV miss.
-  if (providerKey === "azureopenai" && parsedBody?.messages && !parsedBody?.input) {
-    const azureOriginalMessages = [...parsedBody.messages];
-    const azureScopeUser = await cacheScopeUserId(req);
-    const azureScope = providerKey + ":" + azureScopeUser;
+  if (providerKey === "azureopenai") {
+    const hasMessages = parsedBody?.messages && !parsedBody?.input;
+    const hasInput = parsedBody?.input && Array.isArray(parsedBody.input);
 
-    // Compute later reply key now so we can write the response ID after the
-    // upstream call, even though parsedBody.messages is deleted below.
-    azureReplyKey = await conversationHash(azureOriginalMessages, azureOriginalMessages.length, azureScope);
+    if (hasMessages || hasInput) {
+      const azureScopeUser = await cacheScopeUserId(req);
+      const azureScope = providerKey + ":" + azureScopeUser;
 
-    // Find the index of the last assistant message (if any).
-    // conversationHash(messages, upTo, scope) hashes messages.slice(0, upTo),
-    // so upTo=lastAssistantIdx gives messages BEFORE the assistant. That slice
-    // equals the full-message write key from the prior turn (where upTo was
-    // messages.length and the last message was the assistant at lastAssistantIdx).
-    const lastAssistantIdx = azureOriginalMessages.reduce(
-      (last, m, i) => (m.role === "assistant" ? i : last),
-      -1,
-    );
+      // Build a normalized array for hashing and finding the last assistant
+      // turn.  For messages we use the Chat Completions array directly (role
+      // field already present).  For native input items in Responses format,
+      // the role is either explicit (item.role) or implied by the type
+      // (function_call → assistant, function_call_output → tool).  The hash
+      // array is used only for conversationHash(), which does
+      // JSON.stringify(slice) — same items produce the same key across turns.
+      let hashItems;
+      let lastAssistantIdx = -1;
 
-    let prevRespId = null;
-    if (lastAssistantIdx >= 0) {
-      const prevRespKey = await conversationHash(azureOriginalMessages, lastAssistantIdx, azureScope);
-      const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
-      if (readResult) {
-        prevRespId = readResult;
-        diag("PREV_RESP_ID_FOUND", "key:", prevRespKey, "id:", prevRespId);
+      if (hasMessages) {
+        hashItems = [...parsedBody.messages];
+        lastAssistantIdx = hashItems.reduce(
+          (last, m, i) => (m.role === "assistant" ? i : last),
+          -1,
+        );
       } else {
-        diag("PREV_RESP_ID_MISS", "key:", prevRespKey);
+        // hasInput — native Responses-format array
+        hashItems = parsedBody.input;
+        lastAssistantIdx = hashItems.reduce((last, item, i) => {
+          if (item.role === "assistant") return i;
+          if (item.type === "function_call") return i; // function calls = assistant turn
+          if (item.type === "message" && item.role === "assistant") return i;
+          return last;
+        }, -1);
+      }
+
+      // Compute the reply key now so we can save the response ID after the
+      // upstream call (messages are deleted below in the messages path).
+      // conversationHash(messages, upTo, scope) hashes messages.slice(0, upTo),
+      // so upTo=hashItems.length hashes ALL items.
+      azureReplyKey = await conversationHash(hashItems, hashItems.length, azureScope);
+
+      // Look up a cached response ID from the prior turn.
+      // upTo=lastAssistantIdx gives items BEFORE the assistant. That slice
+      // equals the full-message write key from the prior turn (where upTo was
+      // messages.length and the last message was the assistant).
+      let prevRespId = null;
+      if (lastAssistantIdx >= 0) {
+        const prevRespKey = await conversationHash(hashItems, lastAssistantIdx, azureScope);
+        const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
+        if (readResult) {
+          prevRespId = readResult;
+          diag("PREV_RESP_ID_FOUND", "key:", prevRespKey, "id:", prevRespId);
+        } else {
+          diag("PREV_RESP_ID_MISS", "key:", prevRespKey);
+        }
+      }
+
+      // store=true is required for previous_response_id lookups to work.
+      // Even on first/KV-miss turns we must persist the response so the ID
+      // we save to KV is actually retrievable on the next turn.  The sanitizer
+      // below only injects store=false when the field is absent, so setting it
+      // here unconditionally overrides that default.
+      parsedBody.store = true;
+
+      if (hasMessages) {
+        // Chat Completions → Responses conversion with tool-call normalization.
+        // Chat Completions clients use role:"tool" for tool results and
+        // assistant.tool_calls for function calls.  The Responses API expects
+        // function_call_output and function_call items respectively.
+        const normalizeAzureInput = (item) => {
+          // Tool result
+          if (item.role === "tool") {
+            return [{
+              type: "function_call_output",
+              call_id: item.tool_call_id || "",
+              output: typeof item.content === "string"
+                ? item.content
+                : JSON.stringify(item.content || ""),
+            }];
+          }
+          // Assistant with tool_calls: emit text content (if any), then each
+          // tool call as a function_call item that the Responses API can thread.
+          if (item.role === "assistant" && item.tool_calls?.length) {
+            const items = [];
+            if (item.content) {
+              items.push({ type: "message", role: "assistant", content: item.content });
+            }
+            for (const tc of item.tool_calls) {
+              items.push({
+                type: "function_call",
+                call_id: tc.id || "",
+                name: tc.function?.name || "",
+                arguments: tc.function?.arguments || "{}",
+              });
+            }
+            return items;
+          }
+          return [item];
+        };
+
+        if (prevRespId) {
+          // Only send input items that appeared AFTER the last assistant.
+          // Azure replays the full prior conversation server-side.
+          parsedBody.input = parsedBody.messages.slice(lastAssistantIdx + 1)
+            .reduce((acc, item) => {
+              acc.push(...normalizeAzureInput(item));
+              return acc;
+            }, []);
+          parsedBody.previous_response_id = prevRespId;
+        } else {
+          // Stateless fallback — full input array (but response is still stored
+          // so the NEXT turn can chain from it).
+          parsedBody.input = parsedBody.messages.reduce((acc, item) => {
+            acc.push(...normalizeAzureInput(item));
+            return acc;
+          }, []);
+        }
+        delete parsedBody.messages;
+        bodyText = JSON.stringify(parsedBody);
+        diag("MESSAGES_TO_INPUT", "provider:", providerKey,
+             "inputItems:", parsedBody.input.length,
+             "prevResp:", prevRespId ? prevRespId.slice(0, 20) + "..." : "(none)");
+      } else {
+        // Native input — items already in Responses API format, no conversion
+        // needed.  On KV hit: trim to items after last assistant and chain.
+        // On KV miss: leave the full input as-is for stateless mode.
+        if (prevRespId) {
+          parsedBody.input = parsedBody.input.slice(lastAssistantIdx + 1);
+          parsedBody.previous_response_id = prevRespId;
+        }
+        bodyText = JSON.stringify(parsedBody);
+        diag("INPUT_CHAIN", "provider:", providerKey,
+             "inputItems:", parsedBody.input.length,
+             "trimmed:", prevRespId ? "yes" : "no (stateless)",
+             "prevResp:", prevRespId ? prevRespId.slice(0, 20) + "..." : "(none)");
       }
     }
-
-    // store=true is required for previous_response_id lookups to work.
-    // Even on first/KV-miss turns we must persist the response so the ID
-    // we save to KV is actually retrievable on the next turn.  The sanitizer
-    // below only injects store=false when the field is absent, so setting it
-    // here unconditionally overrides that default.
-    parsedBody.store = true;
-
-    // Chat Completions clients use role:"tool" for tool results and
-    // assistant.tool_calls for function calls.  The Responses API expects
-    // function_call_output and function_call items respectively.  Normalize
-    // both so the input is valid regardless of chaining mode.
-    const normalizeAzureInput = (item) => {
-      // Tool result
-      if (item.role === "tool") {
-        return [{
-          type: "function_call_output",
-          call_id: item.tool_call_id || "",
-          output: typeof item.content === "string"
-            ? item.content
-            : JSON.stringify(item.content || ""),
-        }];
-      }
-      // Assistant with tool_calls: emit text content (if any), then each
-      // tool call as a function_call item that the Responses API can thread.
-      if (item.role === "assistant" && item.tool_calls?.length) {
-        const items = [];
-        if (item.content) {
-          items.push({ type: "message", role: "assistant", content: item.content });
-        }
-        for (const tc of item.tool_calls) {
-          items.push({
-            type: "function_call",
-            call_id: tc.id || "",
-            name: tc.function?.name || "",
-            arguments: tc.function?.arguments || "{}",
-          });
-        }
-        return items;
-      }
-      return [item];
-    };
-
-    if (prevRespId) {
-      // Only send input items that appeared AFTER the last assistant.
-      // Azure replays the full prior conversation server-side.
-      parsedBody.input = azureOriginalMessages.slice(lastAssistantIdx + 1)
-        .reduce((acc, item) => {
-          acc.push(...normalizeAzureInput(item));
-          return acc;
-        }, []);
-      parsedBody.previous_response_id = prevRespId;
-    } else {
-      // Stateless fallback — full input array (but response is still stored
-      // so the NEXT turn can chain from it).
-      parsedBody.input = azureOriginalMessages.reduce((acc, item) => {
-        acc.push(...normalizeAzureInput(item));
-        return acc;
-      }, []);
-    }
-    delete parsedBody.messages;
-    bodyText = JSON.stringify(parsedBody);
-    diag("MESSAGES_TO_INPUT", "provider:", providerKey,
-         "inputItems:", parsedBody.input.length,
-         "prevResp:", prevRespId ? prevRespId.slice(0, 20) + "..." : "(none)");
   }
 
   {
