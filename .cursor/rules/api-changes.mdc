@@ -1,16 +1,18 @@
 ---
-description: Mandatory documentation verification before API or provider changes
+description: Mandatory documentation verification before any code change — bug fixes, features, parameter handling, provider integration. Applies even when not explicitly asked.
 alwaysApply: true
 ---
 
 # Pre-Change Documentation Verification
 
-Before making **any** code change that touches provider integration, model capabilities, API parameter handling, or bug fixes related to upstream API behavior, you MUST:
+Before making **any** code change — bug fixes, new features, provider integration, model capabilities, API parameter handling, or any other code modification — you MUST verify your assumptions against official documentation first. **Do this even if the user does not explicitly ask you to.**
 
-1. **Search Microsoft MCP docs** (`microsoft_docs_search`) for model-specific parameter support, API version compatibility, and feature limitations (vision, streaming, tool use, reasoning, temperature, etc.).
+1. **Search Microsoft MCP docs** (`microsoft_docs_search` via the `user-microsoftdocs` MCP server) for model-specific parameter support, API version compatibility, feature limitations (vision, streaming, tool use, reasoning, temperature, etc.), and auth requirements.
 
-2. **Search the web** (`WebSearch`) for current documentation, changelogs, or migration guides when MCP docs are insufficient.
+2. **Search the web** (`WebSearch`) for current documentation, changelogs, or migration guides when MCP docs are insufficient or when the library/service is not Microsoft-specific.
 
-3. **Confirm your assumptions** against the documentation before writing code. Do not assume a model supports or rejects a feature based on its name, series, or similarity to other models.
+3. **Fetch full doc pages** (`microsoft_docs_fetch` or `WebFetch`) when search results are incomplete or when you need detailed parameter lists, request/response schemas, or code examples.
 
-This rule exists because assumptions based on naming patterns (e.g., "all reasoning models lack vision") can be wrong — Microsoft's own docs showed GPT-5.5 and most o-series models DO support image input despite being reasoning models.
+4. **Confirm your assumptions** against the documentation before writing code. Do not assume a model supports or rejects a feature based on its name, series, or similarity to other models.
+
+This rule exists because assumptions based on naming patterns (e.g., "all reasoning models lack vision", "reasoning_effort values are the same across API versions") can be wrong. We burned multiple deployment cycles on avoidable 400 errors that documentation would have prevented.
