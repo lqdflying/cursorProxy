@@ -32,14 +32,28 @@ Provider routing is replicated in multiple places. Adding a provider requires up
 
 6. **`.env.example`** — add `NEWPROVIDER_API_KEY` and commented `UPSTREAM_NEWPROVIDER`
 
-7. **`providerFromModel()` in proxy.js** — add prefix matching if model name starts with this provider
+7. **`providerFromModel()` in `api/models.js`** — add prefix matching if model name starts with this provider
 
 ## Reasoning handling
 
+Reasoning helpers live in **`api/reasoning.js`**, not `api/proxy.js`.
+
 - DeepSeek & Kimi: `reasoning_content` (string)
 - MiniMax: `reasoning_details` (object, array, or structured — sent with `reasoning_split: true`)
-- If new provider has a different reasoning field: update `reasoningField()`, `readReasoning()`, `serializeReasoning()`, `deserializeReasoning()`, `hasReasoningField()`, `updateStreamReasoning()`
+- If new provider has a different reasoning field, update these functions in `api/reasoning.js`: `reasoningField()`, `readReasoning()`, `serializeReasoning()`, `deserializeReasoning()` (private), `hasReasoningField()` (private), `updateStreamReasoning()`
+- Add the provider key to the `reasoningProviders` set inside `injectStoredReasoning()` if its assistant turns must carry reasoning back upstream
+- Anthropic and Azure OpenAI are intentionally excluded from `reasoningProviders` (they reject `reasoning_content`)
 
 ## Vision support
 
 - Add provider to `providersWithoutVision` array in `api/proxy.js` if it doesn't support inline images (DeepSeek and MiniMax are there; Kimi supports vision natively so it's excluded)
+- The vision bridge orchestration lives in `api/vision-bridge.js` (`convertImagesToText`); the upstream HTTP call lives in `api/vision.js` (`describeImage`). Neither needs editing for a new provider.
+
+## Azure-specific transforms
+
+If the new provider is an Azure Foundry deployment:
+
+- Body sanitizers live in `api/azure-openai.js` (`sanitizeAzureOpenAIBody`, `normalizeAzureOpenAITools`) and `api/azure-anthropic.js` (`sanitizeAzureAnthropicBody`, `remapAnthropicInput`, `normalizeAnthropicContentTypes`)
+- Response/SSE mappers live in the same files (`mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `mapAnthropicResponseToOpenAI`, `mapAnthropicSSEToOpenAI`)
+- Add provider-specific URL construction via `buildUrl()` inside the `PROVIDERS` map in `api/proxy.js`
+- Reasoning model detection logic lives in `isAzureReasoningModel()` in `api/azure-openai.js`

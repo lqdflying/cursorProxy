@@ -22,15 +22,44 @@ A lightweight edge-compatible proxy for **DeepSeek**, **Kimi**, and **MiniMax** 
 
 ## Key files
 
-| File | Role |
-|------|------|
-| `api/proxy.js` | Core proxy handler. Edge-safe. |
-| `api/vision.js` | Image-to-text bridge. Edge-safe. |
-| `api/kv.js` | KV abstraction (Redis/Upstash/EdgeOne KV). |
-| `server.js` | Node HTTP adapter for Docker. Only place `ioredis` is imported. |
-| `vercel.json` | URL rewrites for Vercel. |
-| `edge-functions/` | EdgeOne Pages route handlers. |
-| `wiki/` | Git submodule for GitHub wiki docs. |
+All `api/*.js` files are edge-safe (no `node:*`, no `ioredis`).
+
+| File | Role | Log tag |
+|------|------|---------|
+| `api/proxy.js` | Main handler — orchestrates auth, model routing, sanitizers, reasoning injection, vision bridge, upstream fetch, non-stream + streaming SSE pipeline. Holds the `PROVIDERS` map. | `[cursorProxy:proxy]` |
+| `api/auth.js` | `checkProxyAuth`, `extractProxySecret`, `jsonErrorResponse`, `cleanEnvValue`, `allowedEnvValue`, `timingSafeEqualStr`. | (no logs) |
+| `api/models.js` | Model ID parsing (`modelIdParts`, `publicModelId`, `withPublicResponseModel`, `normalizeParsedBodyModel`), provider routing (`providerFromModel`), discovery (`isModelDiscoveryRequest`, `modelDiscoveryResponse`, `configuredModelIds`). | (no logs) |
+| `api/cache.js` | Hashing helpers (`sha256ImageHash`, `cacheScopeUserId`, `conversationHash`). | (no logs) |
+| `api/reasoning.js` | Reasoning bridge — `reasoningField`, `readReasoning`, `serializeReasoning`, `updateStreamReasoning`, `stripResponseChunk`, `reasoningSize`, `hasReasoningValue`, `injectStoredReasoning` (orchestrator). | `[cursorProxy:reasoning]` |
+| `api/azure-openai.js` | Azure OpenAI Responses API — `sanitizeAzureOpenAIBody`, `normalizeAzureOpenAITools`, `mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `isAzureReasoningModel`. | `[cursorProxy:azure-openai]` |
+| `api/azure-anthropic.js` | Azure Anthropic Messages API — `remapAnthropicInput`, `normalizeAnthropicContentTypes`, `sanitizeAzureAnthropicBody`, `mapAnthropicResponseToOpenAI`, `mapAnthropicSSEToOpenAI`. | `[cursorProxy:azure-anthropic]` |
+| `api/vision-bridge.js` | `convertImagesToText` — flattens `image_url` parts, calls vision provider with bounded concurrency, caches descriptions in KV. | `[cursorProxy:vision]` |
+| `api/vision.js` | Upstream vision HTTP call (`describeImage`) for MiniMax VL-01 / OpenAI Vision. | `[cursorProxy:vision]` |
+| `api/kv.js` | KV abstraction (Redis/Upstash/EdgeOne KV). | `[cursorProxy:kv]` |
+| `api/logger.js` | `createLogger(tag)` factory returning `{ log, diag }` — single source of truth for `DEBUG` gating in extracted modules. | (n/a) |
+| `server.js` | Node HTTP adapter for Docker. Only place `ioredis` is imported. | `[cursorProxy:server]` |
+| `vercel.json` | URL rewrites for Vercel. | — |
+| `edge-functions/` | EdgeOne Pages route handlers. | — |
+| `wiki/` | Git submodule for GitHub wiki docs. | — |
+
+## Module dependency map
+
+```
+                                api/proxy.js (entry: handler + PROVIDERS)
+                                      │
+        ┌────────────┬────────────┬───┴──────────┬─────────────────┬───────────────────┐
+        ▼            ▼            ▼              ▼                 ▼                   ▼
+  api/auth.js  api/models.js  api/cache.js  api/reasoning.js  api/azure-openai.js  api/vision-bridge.js
+                                                  │            api/azure-anthropic.js   │
+                                                  ▼            (both use auth.js)       ▼
+                                             api/kv.js                              api/vision.js
+                                                                                        │
+                                                                                        ▼
+                                                                                    api/kv.js
+
+  api/cache.js → api/auth.js (extractProxySecret)
+  Helper modules use createLogger() from api/logger.js for tagged log output.
+```
 
 ## Git & GitHub
 

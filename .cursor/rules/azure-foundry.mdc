@@ -5,6 +5,17 @@ alwaysApply: true
 
 # Azure Foundry Integration
 
+## Where the code lives
+
+| Concern | Module |
+|---|---|
+| Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `api/proxy.js` |
+| `azureopenai` body sanitizer / tool format / mappers | `api/azure-openai.js` |
+| `azureanthropic` body sanitizer / input remap / content-type fix / mappers | `api/azure-anthropic.js` |
+| Streaming SSE pump that calls the mappers above | inline IIFE in `api/proxy.js` |
+| Reasoning bridge gating (`reasoningProviders`) | `injectStoredReasoning()` in `api/reasoning.js` |
+| Model prefix stripping (`modelIdParts`, `withPublicResponseModel`, `providerFromModel`) | `api/models.js` |
+
 ## API Surfaces
 
 Azure Foundry exposes two APIs:
@@ -42,7 +53,7 @@ The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor 
 - **Native Responses input is preserved**: do not rewrite `input_text`, `output_text`, `function_call`, or `function_call_output` items.
 - **Legacy fallback**: if a client sends `messages` without `input`, rename `messages` → `input`.
 - **Tool format**: Anthropic flat `{type, name, description, input_schema}` or Chat Completions wrapped `{type, function:{...}}` → Responses function tools `{type:"function", name, description, parameters}`.
-- **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` before the request body reaches Azure; bare deployment name stays in request body.
+- **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` (in `api/models.js`) before the request body reaches Azure; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
 - **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
 - **State**: `store=false` is injected when omitted.
@@ -83,7 +94,7 @@ metadata, thinking, output_config
 
 ## Reasoning Injection — SKIPPED for Azure
 
-The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set is:
+The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
 
 ```javascript
 const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
@@ -104,7 +115,7 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
 
 ### Non-Streaming (azureopenai)
 
-`mapResponsesToOpenAI()` converts Responses API output to Chat Completions shape:
+`mapResponsesToOpenAI()` (in `api/azure-openai.js`) converts Responses API output to Chat Completions shape:
 
 | Responses Field | OpenAI-Compatible Field |
 |---|---|
@@ -113,11 +124,11 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
 
 ### Streaming (azureopenai)
 
-`mapResponsesSSEToOpenAI()` converts Responses named SSE events such as `response.output_text.delta`, `response.output_item.added`, and `response.function_call_arguments.delta` into OpenAI-style `choices[0].delta` chunks. Suppress raw `event:` lines for `azureopenai`; emit only transformed `data:` chunks.
+`mapResponsesSSEToOpenAI()` (in `api/azure-openai.js`) converts Responses named SSE events such as `response.output_text.delta`, `response.output_item.added`, and `response.function_call_arguments.delta` into OpenAI-style `choices[0].delta` chunks. Suppress raw `event:` lines for `azureopenai`; emit only transformed `data:` chunks.
 
 ### Non-Streaming (azureanthropic)
 
-`mapAnthropicResponseToOpenAI()` converts Anthropic response format to OpenAI:
+`mapAnthropicResponseToOpenAI()` (in `api/azure-anthropic.js`) converts Anthropic response format to OpenAI:
 
 | Anthropic Field | OpenAI Field |
 |---|---|
@@ -127,11 +138,11 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
 
 ### Streaming (azureanthropic)
 
-`mapAnthropicSSEToOpenAI()` converts Anthropic named SSE events to OpenAI-style `choices[0].delta` chunks. See the full conversion table below.
+`mapAnthropicSSEToOpenAI()` (in `api/azure-anthropic.js`) converts Anthropic named SSE events to OpenAI-style `choices[0].delta` chunks. See the full conversion table below.
 
 ## Anthropic SSE → OpenAI SSE Stream Transformation
 
-Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `api/proxy.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) to track tool_use blocks across events.
+Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `api/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming IIFE in `api/proxy.js` to thread tool_use blocks across events.
 
 ### Event Format Overview
 
@@ -207,11 +218,11 @@ data: [DONE]
 
 ## Provider Routing
 
-`providerFromModel()` strips the `cursorproxy/` prefix (and legacy `azure/`) via `modelIdParts()`, then routes by bare name pattern:
+`providerFromModel()` (in `api/models.js`) strips the `cursorproxy/` prefix (and legacy `azure/`) via `modelIdParts()`, then routes by bare name pattern:
 - `claude*` → `azureanthropic`
 - `gpt-*` or `o\d*` (e.g. `gpt-5.5`, `o4-mini`) → `azureopenai`
 
-The `cursorproxy/` prefix is stripped from the model name before forwarding and re-added to response model fields via `withPublicResponseModel()`.
+The `cursorproxy/` prefix is stripped from the model name before forwarding and re-added to response model fields via `withPublicResponseModel()` (in `api/models.js`).
 
 ## No Impact to Other Providers
 
