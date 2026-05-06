@@ -93,6 +93,7 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
     "max_output_tokens", "temperature", "top_p",
     "tools", "tool_choice", "reasoning",
     "store", "parallel_tool_calls", "user",
+    "previous_response_id",
   ]);
 
   // Strip any field not in the allowed whitelist

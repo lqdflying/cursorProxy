@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { kvSet } from "./kv.js";
+import { kvGet, kvSet } from "./kv.js";
 import {
   mapAnthropicResponseToOpenAI,
   mapAnthropicSSEToOpenAI,
@@ -104,8 +104,27 @@ function upstreamApiKey(providerKey) {
   return process.env[meta.apiKeyEnv] || "";
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAzResponseId(key, retries = 2) {
+  // Response IDs are written to KV before the proxy responds to Cursor,
+  // so the next request usually finds the key immediately. Short retry
+  // window covers the rare race where Cursor fires the next turn while
+  // the current turn's finally block is still flushing.
+  const delays = retries > 0 ? [0, 80, 200] : [0];
+  for (let i = 0; i < Math.min(delays.length, retries + 1); i++) {
+    if (i > 0) await sleep(delays[i]);
+    const stored = await kvGet(key);
+    if (stored) return stored;
+  }
+  return null;
+}
+
 export default async function handler(req) {
   const t0 = Date.now();
+  let azureReplyKey = null; // KV key for saving Azure response ID
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
 
@@ -169,11 +188,80 @@ export default async function handler(req) {
   // Azure OpenAI Responses API uses "input" natively. Do not normalize native
   // Responses input items (input_text, output_text, function_call_output, etc.).
   // Only support legacy Chat Completions clients by renaming messages → input.
+  //
+  // When a prior assistant turn exists, try to recover the response ID from KV
+  // and use previous_response_id chaining so Azure reuses server-side context
+  // instead of re-reasoning from scratch on every turn. Falls back to stateless
+  // full-input-array mode on KV miss.
   if (providerKey === "azureopenai" && parsedBody?.messages && !parsedBody?.input) {
-    parsedBody.input = parsedBody.messages;
+    const azureOriginalMessages = [...parsedBody.messages];
+    const azureScopeUser = await cacheScopeUserId(req);
+    const azureScope = providerKey + ":" + azureScopeUser;
+
+    // Compute later reply key now so we can write the response ID after the
+    // upstream call, even though parsedBody.messages is deleted below.
+    azureReplyKey = await conversationHash(azureOriginalMessages, azureOriginalMessages.length, azureScope);
+
+    // Find the index of the last assistant message (if any).
+    // conversationHash(messages, upTo, scope) hashes messages.slice(0, upTo),
+    // so upTo=lastAssistantIdx gives messages BEFORE the assistant. That slice
+    // equals the full-message write key from the prior turn (where upTo was
+    // messages.length and the last message was the assistant at lastAssistantIdx).
+    const lastAssistantIdx = azureOriginalMessages.reduce(
+      (last, m, i) => (m.role === "assistant" ? i : last),
+      -1,
+    );
+
+    let prevRespId = null;
+    if (lastAssistantIdx >= 0) {
+      const prevRespKey = await conversationHash(azureOriginalMessages, lastAssistantIdx, azureScope);
+      const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
+      if (readResult) {
+        prevRespId = readResult;
+        diag("PREV_RESP_ID_FOUND", "key:", prevRespKey, "id:", prevRespId);
+      } else {
+        diag("PREV_RESP_ID_MISS", "key:", prevRespKey);
+      }
+    }
+
+    // store=true is required for previous_response_id lookups to work.
+    // Even on first/KV-miss turns we must persist the response so the ID
+    // we save to KV is actually retrievable on the next turn.  The sanitizer
+    // below only injects store=false when the field is absent, so setting it
+    // here unconditionally overrides that default.
+    parsedBody.store = true;
+
+    // Chat Completions clients send role:"tool" for function results, but
+    // the Responses API expects function_call_output items.  Convert those
+    // inline so the input is valid regardless of chaining mode.
+    const convertToolMessages = (item) => {
+      if (item.role === "tool") {
+        return {
+          type: "function_call_output",
+          call_id: item.tool_call_id || "",
+          output: typeof item.content === "string"
+            ? item.content
+            : JSON.stringify(item.content || ""),
+        };
+      }
+      return item;
+    };
+
+    if (prevRespId) {
+      // Only send input items that appeared AFTER the last assistant.
+      // Azure replays the full prior conversation server-side.
+      parsedBody.input = azureOriginalMessages.slice(lastAssistantIdx + 1).map(convertToolMessages);
+      parsedBody.previous_response_id = prevRespId;
+    } else {
+      // Stateless fallback — full input array (but response is still stored
+      // so the NEXT turn can chain from it).
+      parsedBody.input = azureOriginalMessages.map(convertToolMessages);
+    }
     delete parsedBody.messages;
     bodyText = JSON.stringify(parsedBody);
-    diag("MESSAGES_TO_INPUT", "provider:", providerKey, "from:", "messages", "to:", "input");
+    diag("MESSAGES_TO_INPUT", "provider:", providerKey,
+         "inputItems:", parsedBody.input.length,
+         "prevResp:", prevRespId ? prevRespId.slice(0, 20) + "..." : "(none)");
   }
 
   {
@@ -494,7 +582,14 @@ export default async function handler(req) {
 
     // Convert Responses API output to Chat Completions format
     if (providerKey === "azureopenai") {
+      const azureRespId = json.id;
       json = mapResponsesToOpenAI(json);
+      // Save the Azure response ID to KV so the next turn can chain via
+      // previous_response_id instead of re-sending the full conversation.
+      if (azureRespId && azureReplyKey) {
+        log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId);
+        await kvSet("azresp:" + azureReplyKey, azureRespId);
+      }
     }
 
     json = withPublicResponseModel(json, responseModelName);
@@ -557,6 +652,7 @@ export default async function handler(req) {
     let accContent = "";
     let doneSeen = false;
     let lastCachedReasoningSize = 0;
+    let azureResponseId = null; // captured from response.created for KV write
     // Track Anthropic tool_use blocks by index for converting input_json_delta
     // to OpenAI-style tool_calls format.
     const anthropicToolState = new Map(); // index -> { id, name, partialJson }
@@ -580,6 +676,13 @@ export default async function handler(req) {
       const writePromise = kvSet(replyReasoningKey, serializeReasoning(providerKey, accReasoning))
         .catch((err) => log("CACHE_WRITE_ERROR", err?.message));
       if (force) await writePromise;
+    }
+
+    async function cacheAzResponseId() {
+      if (!azureResponseId || !azureReplyKey) return;
+      log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureResponseId);
+      await kvSet("azresp:" + azureReplyKey, azureResponseId)
+        .catch((err) => log("CACHE_AZ_WRITE_ERROR", err?.message));
     }
 
     try {
@@ -613,6 +716,9 @@ export default async function handler(req) {
 
           const data = line.slice(6).trim();
           if (data === "[DONE]") {
+            // Avoid double [DONE] emission when response.completed was already
+            // handled above (Azure Responses API may emit both).
+            if (doneSeen) continue;
             doneSeen = true;
             const reasoningChars = reasoningSize(accReasoning);
             log("STREAM_DONE", "reasoning:", reasoningChars, "content:", accContent.length);
@@ -620,6 +726,7 @@ export default async function handler(req) {
               log("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
             }
             await cacheReasoningSnapshot(true);
+            await cacheAzResponseId();
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
           }
@@ -658,7 +765,27 @@ export default async function handler(req) {
               if (mapped) {
                 json = mapped;
               } else {
-                continue; // skip events that produce no output (e.g. response.created)
+                // Capture the response ID from the first SSE event so we can
+                // write it to KV and enable previous_response_id chaining on
+                // the next turn.
+                if (currentResponsesEvent === "response.created" && !azureResponseId) {
+                  azureResponseId = json?.response?.id || null;
+                  if (azureResponseId) {
+                    log("STREAM_AZ_RESP_ID", "id:", azureResponseId);
+                  }
+                }
+                // Emit downstream [DONE] when the Responses API signals completion.
+                // Cursor expects OpenAI Chat Completions stream semantics, which
+                // always terminate with data: [DONE].  Without this, a stream that
+                // ends via response.completed (no raw [DONE] line) looks hung.
+                if (currentResponsesEvent === "response.completed") {
+                  doneSeen = true;
+                  log("STREAM_DONE_VIA_RESPONSE_COMPLETED", "content:", accContent.length);
+                  await cacheReasoningSnapshot(true);
+                  await cacheAzResponseId();
+                  await writer.write(encoder.encode("data: [DONE]\n\n"));
+                }
+                continue; // skip events that produce no output
               }
             }
 
@@ -732,6 +859,15 @@ export default async function handler(req) {
           log("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
         await cacheReasoningSnapshot(true);
+      }
+
+      // Azure response ID may have been captured from response.created but
+      // not yet cached — either because the stream ended via response.completed
+      // (no data: [DONE]), or because originalMessages is null for Azure so
+      // the reasoning guard above short-circuits.  Write it here when available
+      // and the stream finished normally (not timed out).
+      if (!timedOut) {
+        await cacheAzResponseId();
       }
       diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
