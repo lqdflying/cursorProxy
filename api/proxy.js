@@ -231,31 +231,57 @@ export default async function handler(req) {
     // here unconditionally overrides that default.
     parsedBody.store = true;
 
-    // Chat Completions clients send role:"tool" for function results, but
-    // the Responses API expects function_call_output items.  Convert those
-    // inline so the input is valid regardless of chaining mode.
-    const convertToolMessages = (item) => {
+    // Chat Completions clients use role:"tool" for tool results and
+    // assistant.tool_calls for function calls.  The Responses API expects
+    // function_call_output and function_call items respectively.  Normalize
+    // both so the input is valid regardless of chaining mode.
+    const normalizeAzureInput = (item) => {
+      // Tool result
       if (item.role === "tool") {
-        return {
+        return [{
           type: "function_call_output",
           call_id: item.tool_call_id || "",
           output: typeof item.content === "string"
             ? item.content
             : JSON.stringify(item.content || ""),
-        };
+        }];
       }
-      return item;
+      // Assistant with tool_calls: emit text content (if any), then each
+      // tool call as a function_call item that the Responses API can thread.
+      if (item.role === "assistant" && item.tool_calls?.length) {
+        const items = [];
+        if (item.content) {
+          items.push({ type: "message", role: "assistant", content: item.content });
+        }
+        for (const tc of item.tool_calls) {
+          items.push({
+            type: "function_call",
+            call_id: tc.id || "",
+            name: tc.function?.name || "",
+            arguments: tc.function?.arguments || "{}",
+          });
+        }
+        return items;
+      }
+      return [item];
     };
 
     if (prevRespId) {
       // Only send input items that appeared AFTER the last assistant.
       // Azure replays the full prior conversation server-side.
-      parsedBody.input = azureOriginalMessages.slice(lastAssistantIdx + 1).map(convertToolMessages);
+      parsedBody.input = azureOriginalMessages.slice(lastAssistantIdx + 1)
+        .reduce((acc, item) => {
+          acc.push(...normalizeAzureInput(item));
+          return acc;
+        }, []);
       parsedBody.previous_response_id = prevRespId;
     } else {
       // Stateless fallback — full input array (but response is still stored
       // so the NEXT turn can chain from it).
-      parsedBody.input = azureOriginalMessages.map(convertToolMessages);
+      parsedBody.input = azureOriginalMessages.reduce((acc, item) => {
+        acc.push(...normalizeAzureInput(item));
+        return acc;
+      }, []);
     }
     delete parsedBody.messages;
     bodyText = JSON.stringify(parsedBody);
