@@ -329,14 +329,18 @@ export default async function handler(req) {
         // Lightweight detection probe: scan for Chat-Completions-shaped tool
         // entries that the current path does NOT normalize.  If these appear
         // in production, a full normalization pass (shared helper) is warranted.
-        // Otherwise this path stays simple and the probe is a no-op.
-        const hasLegacyToolItems = parsedBody.input.some(
-          (item) => item.role === "tool"
-            || (item.role === "assistant" && item.tool_calls?.length),
-        );
-        if (hasLegacyToolItems) {
+        // Category counts tell us which specific shapes need handling.
+        let nRoleTool = 0;
+        let nAssistantToolCalls = 0;
+        for (const item of parsedBody.input) {
+          if (item.role === "tool") { nRoleTool++; continue; }
+          if (item.role === "assistant" && item.tool_calls?.length) { nAssistantToolCalls++; }
+        }
+        if (nRoleTool > 0 || nAssistantToolCalls > 0) {
           diag("INPUT_HAS_LEGACY_TOOLS", "provider:", providerKey,
-               "totalItems:", parsedBody.input.length);
+               "totalItems:", parsedBody.input.length,
+               "roleTool:", nRoleTool,
+               "assistantToolCalls:", nAssistantToolCalls);
         }
 
         if (prevRespId) {
