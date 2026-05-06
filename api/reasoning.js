@@ -1,7 +1,7 @@
 import { kvGet, kvSet } from "./kv.js";
 import { createLogger } from "./logger.js";
 
-const { log } = createLogger("reasoning");
+const { log, diag } = createLogger("reasoning");
 
 function reasoningField(providerKey) {
   return providerKey === "minimax" ? "reasoning_details" : "reasoning_content";
@@ -200,8 +200,73 @@ async function injectStoredReasoning({
   return { parsedBody, injectedCount };
 }
 
+// Extract thinking blocks from a non-streaming Azure Claude response.
+// Returns array of {type:"thinking", thinking:"..."} blocks, or null if none found.
+function extractClaudeThinkingBlocks(responseJson) {
+  if (!responseJson?.content || !Array.isArray(responseJson.content)) return null;
+  const blocks = responseJson.content.filter((b) => b?.type === "thinking" && b.thinking);
+  return blocks.length > 0 ? blocks : null;
+}
+
+// Inject cached Claude thinking blocks into ALL prior assistant messages
+// that have string content (non-tool turns). Tool-using assistants already
+// have array content; thinking blocks are prepended to the existing array.
+// Returns count of messages injected.
+async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash) {
+  const messages = parsedBody.messages;
+  if (!messages) return 0;
+
+  const assistantIndices = messages
+    .map((m, i) => i)
+    .filter((i) => {
+      const msg = messages[i];
+      if (msg.role !== "assistant") return false;
+      // Skip messages that already have multi-block content with a thinking block
+      if (Array.isArray(msg.content)) {
+        const hasThinking = msg.content.some((b) => b?.type === "thinking");
+        if (hasThinking) return false;
+      }
+      return true;
+    });
+
+  if (assistantIndices.length === 0) return 0;
+
+  const fetched = await Promise.all(
+    assistantIndices.map(async (i) => {
+      const key = await conversationHash(originalMessages, i, scope);
+      const raw = await kvGet("claude_thinking:" + key);
+      const hit = raw != null;
+      log("CLAUDE_THINKING_LOOKUP", "idx:", i, "key:", key, "hit:", hit);
+      return { i, key, raw, hit };
+    })
+  );
+
+  let injectedCount = 0;
+  for (const { i, key, raw, hit } of fetched) {
+    if (!hit) {
+      diag("CLAUDE_THINKING_MISS", "idx:", i, "key:", key);
+      continue;
+    }
+    let blocks;
+    try { blocks = JSON.parse(raw); } catch { continue; }
+    if (!Array.isArray(blocks) || blocks.length === 0) continue;
+
+    const currentContent = messages[i].content;
+    if (Array.isArray(currentContent)) {
+      messages[i].content = [...blocks, ...currentContent];
+    } else {
+      messages[i].content = [...blocks, { type: "text", text: String(currentContent || "") }];
+    }
+    injectedCount++;
+    diag("CLAUDE_THINKING_INJECTED", "idx:", i, "key:", key, "blocks:", blocks.length);
+  }
+  return injectedCount;
+}
+
 export {
+  extractClaudeThinkingBlocks,
   hasReasoningValue,
+  injectClaudeThinkingBlocks,
   injectStoredReasoning,
   readReasoning,
   reasoningField,

@@ -24,7 +24,9 @@ import {
   withPublicResponseModel,
 } from "./models.js";
 import {
+  extractClaudeThinkingBlocks,
   hasReasoningValue,
+  injectClaudeThinkingBlocks,
   injectStoredReasoning,
   readReasoning,
   reasoningSize,
@@ -482,6 +484,21 @@ export default async function handler(req) {
   }
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
 
+  // --- Claude thinking block injection (azureanthropic only) ---
+  // Inject cached thinking blocks into prior assistant messages so Claude
+  // doesn't re-reason from scratch on every turn when thinking.type === "adaptive".
+  // The existing reasoning bridge (DeepSeek/Kimi/MiniMax) uses reasoning_content
+  // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
+  if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type === "adaptive") {
+    const claudeScopeUser = await cacheScopeUserId(req);
+    const claudeScope = providerKey + ":" + claudeScopeUser;
+    const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, claudeScope, conversationHash);
+    if (claudeInjected > 0) {
+      bodyText = JSON.stringify(parsedBody);
+      diag("CLAUDE_THINKING_INJECTED", "count:", claudeInjected);
+    }
+  }
+
   // Convert images to text for providers that don't support vision inputs
   // DeepSeek and MiniMax chat endpoints do not accept inline image_url content.
   // The vision API (MiniMax VL-01 by default) is called to describe images,
@@ -667,8 +684,20 @@ export default async function handler(req) {
       });
     }
 
-    // Convert Anthropic non-streaming response to OpenAI format
+    // Convert Anthropic non-streaming response to OpenAI format.
+    // Extract and cache thinking blocks BEFORE mapping, since the mapper
+    // discards them (only text/tool_use blocks survive the conversion).
     if (providerKey === "azureanthropic") {
+      if (parsedBody?.thinking?.type === "adaptive" && replyReasoningKey) {
+        const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
+        const thinkingBlocks = extractClaudeThinkingBlocks(json);
+        if (thinkingBlocks) {
+          log("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", thinkingBlocks.length);
+          await kvSet(claudeThinkKey, JSON.stringify(thinkingBlocks))
+            .catch((err) => log("CLAUDE_THINKING_WRITE_ERROR", err?.message));
+          diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", thinkingBlocks.length);
+        }
+      }
       json = mapAnthropicResponseToOpenAI(json);
     }
 
@@ -753,6 +782,22 @@ export default async function handler(req) {
     // response.function_call_arguments.delta to OpenAI tool_calls.
     const responsesToolState = new Map(); // call_id -> { id, name, partialJson }
 
+    // Track Claude thinking blocks for KV caching (azureanthropic + adaptive thinking).
+    // Thinking deltas are accumulated here instead of being forwarded to Cursor,
+    // then written to KV when the stream completes.
+    let claudeThinkBuffer = "";
+    const claudeThinkActive = providerKey === "azureanthropic" &&
+      parsedBody?.thinking?.type === "adaptive";
+
+    async function cacheClaudeThinking() {
+      if (!claudeThinkActive || !claudeThinkBuffer || !replyReasoningKey) return;
+      const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
+      const blocks = [{ type: "thinking", thinking: claudeThinkBuffer }];
+      await kvSet(claudeThinkKey, JSON.stringify(blocks))
+        .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
+      diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "chars:", claudeThinkBuffer.length);
+    }
+
     async function cacheReasoningSnapshot(force = false) {
       if (!replyReasoningKey || !hasReasoningValue(accReasoning)) return;
       const size = reasoningSize(accReasoning);
@@ -819,6 +864,7 @@ export default async function handler(req) {
             }
             await cacheReasoningSnapshot(true);
             await cacheAzResponseId();
+            await cacheClaudeThinking();
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
           }
@@ -830,6 +876,18 @@ export default async function handler(req) {
             // Anthropic uses events like content_block_delta with delta.text_delta,
             // but the proxy and Cursor expect choices[0].delta.content.
             if (providerKey === "azureanthropic") {
+              // When adaptive thinking is active, suppress thinking_delta events:
+              // accumulate thinking text into claudeThinkBuffer instead of forwarding
+              // to Cursor.  Also suppress content_block_start for thinking blocks
+              // (which would emit an empty role marker).
+              if (claudeThinkActive && json?.delta?.type === "thinking_delta") {
+                claudeThinkBuffer += (json.delta.thinking || "");
+                continue;
+              }
+              if (claudeThinkActive && json?.type === "content_block_start" &&
+                  json?.content_block?.type === "thinking") {
+                continue;
+              }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               // Diagnostic: log event type and extracted text to debug silent streams
               log("ANTHROPIC_EVENT", "type:", json.type,
@@ -842,6 +900,7 @@ export default async function handler(req) {
                 doneSeen = true;
                 log("STREAM_DONE_VIA_MESSAGE_STOP", "content:", accContent.length);
                 await cacheReasoningSnapshot(true);
+                await cacheClaudeThinking();
                 await writer.write(encoder.encode("data: [DONE]\n\n"));
                 continue;
               }
@@ -960,6 +1019,7 @@ export default async function handler(req) {
       // and the stream finished normally (not timed out).
       if (!timedOut) {
         await cacheAzResponseId();
+        await cacheClaudeThinking();
       }
       diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
