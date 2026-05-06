@@ -1,7 +1,38 @@
 export const config = { runtime: "edge" };
 
-import { kvGet, kvSet } from "./kv.js";
-import { describeImage } from "./vision.js";
+import { kvSet } from "./kv.js";
+import {
+  mapAnthropicResponseToOpenAI,
+  mapAnthropicSSEToOpenAI,
+  normalizeAnthropicContentTypes,
+  remapAnthropicInput,
+  sanitizeAzureAnthropicBody,
+} from "./azure-anthropic.js";
+import {
+  mapResponsesSSEToOpenAI,
+  mapResponsesToOpenAI,
+  normalizeAzureOpenAITools,
+  sanitizeAzureOpenAIBody,
+} from "./azure-openai.js";
+import { checkProxyAuth, jsonErrorResponse } from "./auth.js";
+import { cacheScopeUserId, conversationHash, sha256ImageHash } from "./cache.js";
+import {
+  isModelDiscoveryRequest,
+  modelDiscoveryResponse,
+  normalizeParsedBodyModel,
+  providerFromModel,
+  withPublicResponseModel,
+} from "./models.js";
+import {
+  hasReasoningValue,
+  injectStoredReasoning,
+  readReasoning,
+  reasoningSize,
+  serializeReasoning,
+  stripResponseChunk,
+  updateStreamReasoning,
+} from "./reasoning.js";
+import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
 
@@ -68,842 +99,11 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
-const AZURE_ANTHROPIC_THINKING_TYPES = new Set(["adaptive", "disabled"]);
-const AZURE_ANTHROPIC_EFFORT_LEVELS = new Set(["low", "medium", "high", "max"]);
-const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-const PUBLIC_MODEL_PREFIX = "cursorproxy/";
-const LEGACY_AZURE_MODEL_PREFIX = "azure/";
-
-function cleanEnvValue(name) {
-  return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");
-}
-
-function allowedEnvValue(name, allowed) {
-  const value = cleanEnvValue(name);
-  return allowed.has(value) ? value : null;
-}
-
-function timingSafeEqualStr(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  if (a.length !== b.length) return false;
-  let out = 0;
-  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return out === 0;
-}
-
-function extractProxySecret(req) {
-  const auth = req.headers.get("authorization");
-  if (auth?.startsWith("Bearer ")) return auth.slice(7).trim();
-  const xk = req.headers.get("x-api-key");
-  if (xk) return xk.trim();
-  return null;
-}
-
-function jsonErrorResponse(status, message, code, type = "invalid_request_error") {
-  return new Response(
-    JSON.stringify({
-      error: { message, type, code },
-    }),
-    { status, headers: { "content-type": "application/json" } }
-  );
-}
-
-function modelIdParts(model) {
-  if (typeof model !== "string") {
-    return {
-      input: "",
-      bare: "",
-      publicId: "",
-      hadPublicPrefix: false,
-      hadLegacyAzurePrefix: false,
-    };
-  }
-
-  let id = model.trim();
-  const lower = id.toLowerCase();
-  const hadPublicPrefix = lower.startsWith(PUBLIC_MODEL_PREFIX);
-  if (hadPublicPrefix) {
-    id = id.slice(PUBLIC_MODEL_PREFIX.length);
-  }
-
-  const lowerAfterPublic = id.toLowerCase();
-  const hadLegacyAzurePrefix = lowerAfterPublic.startsWith(LEGACY_AZURE_MODEL_PREFIX);
-  if (hadLegacyAzurePrefix) {
-    id = id.slice(LEGACY_AZURE_MODEL_PREFIX.length);
-  }
-
-  const bare = id.trim();
-  return {
-    input: model,
-    bare,
-    publicId: bare ? PUBLIC_MODEL_PREFIX + bare : "",
-    hadPublicPrefix,
-    hadLegacyAzurePrefix,
-  };
-}
-
-function publicModelId(model) {
-  return modelIdParts(model).publicId;
-}
-
-function withPublicResponseModel(json, fallbackModel) {
-  if (!json || typeof json !== "object" || Array.isArray(json)) return json;
-
-  const fallbackPublicId = publicModelId(fallbackModel);
-  const currentPublicId = publicModelId(json.model);
-  if (currentPublicId) return { ...json, model: currentPublicId };
-
-  const shouldAddFallback = fallbackPublicId && Array.isArray(json.choices);
-  if (!shouldAddFallback) return json;
-
-  return { ...json, model: fallbackPublicId };
-}
-
-function normalizeParsedBodyModel(parsedBody) {
-  if (!parsedBody?.model) {
-    return { input: "", bare: "", publicId: "", changed: false };
-  }
-
-  const parts = modelIdParts(parsedBody.model);
-  const changed = Boolean(parts.bare && parsedBody.model !== parts.bare);
-  if (changed) {
-    parsedBody.model = parts.bare;
-  }
-  return { ...parts, changed };
-}
-
-/** If CURSORPROXY_API_KEY is set, require Bearer or x-api-key match. */
-function checkProxyAuth(req) {
-  const required = process.env.CURSORPROXY_API_KEY;
-  if (!required) return null;
-  const secret = extractProxySecret(req);
-  if (!secret || !timingSafeEqualStr(secret, required)) {
-    return jsonErrorResponse(
-      401,
-      "Incorrect API key provided.",
-      "invalid_api_key",
-      "invalid_request_error"
-    );
-  }
-  return null;
-}
-
-function configuredModelIds() {
-  const raw = process.env.CURSORPROXY_MODELS || "";
-  const seen = new Set();
-  const models = [];
-
-  for (const value of raw.split(/[,\r\n]+/)) {
-    const id = publicModelId(value);
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    models.push(id);
-  }
-
-  return models;
-}
-
-function isModelDiscoveryRequest(req, pathname, pathParam) {
-  const method = req.method.toUpperCase();
-  if (method !== "GET" && method !== "HEAD") return false;
-
-  const normalizedPathParam = pathParam.replace(/^\/+|\/+$/g, "");
-  return normalizedPathParam === "models" || pathname === "/v1/models" || pathname === "/v0/models";
-}
-
-function modelDiscoveryResponse(req) {
-  const body = JSON.stringify({
-    object: "list",
-    data: configuredModelIds().map((id) => ({
-      id,
-      object: "model",
-      owned_by: "cursorProxy",
-    })),
-  });
-
-  return new Response(req.method.toUpperCase() === "HEAD" ? null : body, {
-    status: 200,
-    headers: {
-      "content-type": "application/json",
-      "cache-control": "no-store",
-    },
-  });
-}
-
-function providerFromModel(model) {
-  if (typeof model !== "string" || !model) return null;
-  const parts = modelIdParts(model);
-  const m = parts.bare.toLowerCase();
-  // Backward compatibility: legacy azure/ IDs still route to Azure, but are
-  // normalized to cursorproxy/ IDs at the client-facing boundary.
-  if (parts.hadLegacyAzurePrefix) {
-    return m.startsWith("claude") ? "azureanthropic" : "azureopenai";
-  }
-  if (m.startsWith("claude")) return "azureanthropic";
-  if (m.startsWith("gpt-") || /^o\d/i.test(m)) return "azureopenai";
-  if (m.startsWith("minimax")) return "minimax";
-  if (m.startsWith("kimi")) return "kimi";
-  if (m.startsWith("deepseek")) return "deepseek";
-  return null;
-}
-
 function upstreamApiKey(providerKey) {
   const meta = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
   return process.env[meta.apiKeyEnv] || "";
 }
 
-async function sha256Prefix(text, prefix) {
-  const data = new TextEncoder().encode(String(text));
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return (
-    prefix +
-    Array.from(new Uint8Array(hash))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("")
-      .substring(0, 40)
-  );
-}
-
-// Hash image content (data URI or URL) for vision description caching
-async function sha256ImageHash(dataUri) {
-  const data = new TextEncoder().encode(dataUri);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return "img:" + Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .substring(0, 40);
-}
-
-// Short stable hash — isolates cache per proxy client (or anon when no proxy key configured)
-async function apiKeyHash(authHeader) {
-  if (!authHeader) return "anon";
-  const data = new TextEncoder().encode(authHeader);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .substring(0, 16);
-}
-
-async function cacheScopeUserId(req) {
-  if (process.env.CURSORPROXY_API_KEY) {
-    const t = extractProxySecret(req);
-    return apiKeyHash(t ? `Bearer ${t}` : "");
-  }
-  return apiKeyHash(null);
-}
-
-// Hash all messages BEFORE index `upTo` to identify a conversation turn.
-// scope = "<providerKey>:<apiKeyHash>" prevents cross-provider and cross-user cache collisions.
-async function conversationHash(messages, upTo, scope) {
-  const prefix = messages.slice(0, upTo);
-  return sha256Prefix(scope + ":" + JSON.stringify(prefix), "conv:");
-}
-
-function reasoningField(providerKey) {
-  return providerKey === "minimax" ? "reasoning_details" : "reasoning_content";
-}
-
-function hasReasoningValue(value) {
-  if (value == null) return false;
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (typeof value === "object") return Object.keys(value).length > 0;
-  return true;
-}
-
-function readReasoning(providerKey, obj) {
-  if (!obj) return null;
-  const field = reasoningField(providerKey);
-  if (!Object.prototype.hasOwnProperty.call(obj, field)) return null;
-  const value = obj[field];
-  return hasReasoningValue(value) ? value : null;
-}
-
-function reasoningSize(value) {
-  if (!hasReasoningValue(value)) return 0;
-  if (typeof value === "string") return value.length;
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return 0;
-  }
-}
-
-function serializeReasoning(providerKey, value) {
-  return providerKey === "minimax" ? JSON.stringify(value) : String(value);
-}
-
-function deserializeReasoning(providerKey, stored) {
-  if (!hasReasoningValue(stored)) return null;
-  if (providerKey !== "minimax") return stored;
-  try {
-    const parsed = JSON.parse(stored);
-    return hasReasoningValue(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function loadStoredReasoning(providerKey, key) {
-  return deserializeReasoning(providerKey, await kvGet(key));
-}
-
-function parseRetryDelaysMs() {
-  const raw = process.env.KV_RETRY_DELAYS_MS;
-  if (!raw) return [40, 120, 240, 400];
-  const parsed = raw
-    .split(",")
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => Number.isFinite(n) && n >= 0);
-  return parsed.length > 0 ? parsed : [40, 120, 240, 400];
-}
-
-async function waitForStoredReasoning(providerKey, key) {
-  const retryDelaysMs = parseRetryDelaysMs();
-  let stored = await loadStoredReasoning(providerKey, key);
-  if (stored != null) {
-    return { stored, waitedMs: 0, attempts: 0 };
-  }
-
-  let waitedMs = 0;
-  for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
-    const delay = retryDelaysMs[attempt];
-    await sleep(delay);
-    waitedMs += delay;
-    stored = await loadStoredReasoning(providerKey, key);
-    if (stored != null) {
-      return { stored, waitedMs, attempts: attempt + 1 };
-    }
-  }
-
-  return { stored: null, waitedMs, attempts: retryDelaysMs.length };
-}
-
-function hasReasoningField(providerKey, obj) {
-  return obj && Object.prototype.hasOwnProperty.call(obj, reasoningField(providerKey));
-}
-
-function updateStreamReasoning(providerKey, current, value) {
-  if (!hasReasoningValue(value)) return current;
-  if (providerKey === "minimax") return value;
-  return (current || "") + value;
-}
-
-function stripReasoning(obj) {
-  if (!obj) return obj;
-  const { reasoning_content, reasoning_details, ...rest } = obj;
-  return rest;
-}
-
-function stripResponseChunk(json) {
-  if (!json.choices) return json;
-  return {
-    ...json,
-    choices: json.choices.map((c) => ({
-      ...c,
-      ...(c.message ? { message: stripReasoning(c.message) } : {}),
-      ...(c.delta ? { delta: stripReasoning(c.delta) } : {}),
-    })),
-  };
-}
-
-/**
- * Convert an Anthropic non-streaming response to OpenAI-compatible format.
- *
- * Anthropic: { id, type: "message", role: "assistant", content: [{type:"text",text:"..."}, {type:"tool_use",id,name,input:{}}], stop_reason, usage }
- * OpenAI:    { id, object: "chat.completion", created, model, choices: [{index, message: {role,content,tool_calls}, finish_reason}], usage }
- */
-function mapAnthropicResponseToOpenAI(json) {
-  if (json.type !== "message") return json; // not an Anthropic response, pass through
-
-  // Extract text from content blocks
-  let textContent = "";
-  const toolCalls = [];
-  if (Array.isArray(json.content)) {
-    for (const block of json.content) {
-      if (block.type === "text") {
-        textContent += block.text || "";
-      } else if (block.type === "tool_use") {
-        toolCalls.push({
-          id: block.id || "",
-          type: "function",
-          function: {
-            name: block.name || "",
-            arguments: JSON.stringify(block.input || {}),
-          },
-        });
-      }
-    }
-    textContent = textContent.trimStart();
-  }
-
-  // Map stop_reason
-  const stopMap = {
-    "end_turn": "stop",
-    "max_tokens": "length",
-    "stop_sequence": "stop",
-    "tool_use": "tool_calls",
-  };
-  const finishReason = stopMap[json.stop_reason] || json.stop_reason || "stop";
-
-  const result = {
-    id: json.id || "msg_unknown",
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model: json.model || json.id,
-    choices: [{
-      index: 0,
-      message: {
-        role: "assistant",
-        content: textContent || null,
-      },
-      finish_reason: finishReason,
-    }],
-  };
-
-  if (toolCalls.length > 0) {
-    result.choices[0].message.tool_calls = toolCalls;
-  }
-
-  if (json.usage) {
-    result.usage = {
-      prompt_tokens: json.usage.input_tokens ?? 0,
-      completion_tokens: json.usage.output_tokens ?? 0,
-      total_tokens: (json.usage.input_tokens ?? 0) + (json.usage.output_tokens ?? 0),
-    };
-  }
-
-  return result;
-}
-
-/**
- * Convert an Anthropic SSE event into an OpenAI-compatible SSE chunk.
- *
- * Anthropic streaming events use content_block_delta with delta.text_delta,
- * and message_delta with delta.stop_reason. OpenAI expects choices[0].delta.content
- * (string) and choices[0].finish_reason.
- *
- * Supported Anthropic event types:
- * - content_block_start: first block of content (type text → role: "assistant")
- * - content_block_delta: incremental text delta
- * - content_block_stop: stop the current block (ignored for output)
- * - message_delta: stop_reason and usage (converted to finish_reason)
- * - message_start / message_stop: ignored, no output content
- * - ping: keepalive, ignored
- *
- * Returns a synthetic OpenAI chunk object, "[DONE]" string, or null if the event produces no output.
- *
- * @param {object} json - The parsed Anthropic SSE data event
- * @param {Map} toolState - Map of index -> { id, name, partialJson } for tracking tool_use blocks
- */
-function mapAnthropicSSEToOpenAI(json, toolState) {
-  const event = json; // Anthropic SSE events are flat, e.g. { type: "content_block_delta", ... }
-
-  // ignore keepalive and structural events
-  if (!event || !event.type) return null;
-
-  switch (event.type) {
-    case "content_block_start": {
-      const idx = event.index ?? 0;
-      const block = event.content_block;
-      // Text/thinking: emit role marker
-      if (block?.type === "text" || block?.type === "thinking") {
-        return {
-          choices: [{
-            index: idx,
-            delta: { role: "assistant", content: "" },
-          }],
-        };
-      }
-      // Tool use: store id/name for later input_json_delta accumulation
-      if (block?.type === "tool_use" && block.id) {
-        toolState.set(idx, { id: block.id, name: block.name, partialJson: "" });
-        return {
-          choices: [{
-            index: 0,
-            delta: {
-              tool_calls: [{
-                index: idx,
-                id: block.id,
-                type: "function",
-                function: { name: block.name, arguments: "" },
-              }],
-            },
-          }],
-        };
-      }
-      return null;
-    }
-
-    case "content_block_delta": {
-      const idx = event.index ?? 0;
-      const delta = event.delta;
-      // text_delta: { type: "text_delta", text: "Hello" }
-      // thinking_delta: { type: "thinking_delta", thinking: "..." }
-      if (delta?.type === "text_delta" || delta?.type === "thinking_delta") {
-        const text = delta.text ?? delta.thinking ?? "";
-        return {
-          choices: [{
-            index: idx,
-            delta: { content: text },
-          }],
-        };
-      }
-      // input_json_delta: { type: "input_json_delta", partial_json: "..." }
-      if (delta?.type === "input_json_delta") {
-        const partial = delta.partial_json ?? "";
-        const state = toolState.get(idx);
-        if (state) {
-          state.partialJson += partial;
-          return {
-            choices: [{
-              index: 0,
-              delta: {
-                tool_calls: [{
-                  index: idx,
-                  function: { arguments: partial },
-                }],
-              },
-            }],
-          };
-        }
-        // No matching start event — emit partial anyway as text
-        return {
-          choices: [{
-            index: idx,
-            delta: { content: partial },
-          }],
-        };
-      }
-      return null;
-    }
-
-    case "content_block_stop": {
-      const idx = event.index ?? 0;
-      // Finalize tool_use blocks: emit empty delta to signal completion
-      if (toolState.has(idx)) {
-        toolState.delete(idx);
-        // Some Cursor versions need an empty tool_calls delta to finalize
-        return {
-          choices: [{
-            index: 0,
-            delta: { tool_calls: [{ index: idx, function: { arguments: "" } }] },
-          }],
-        };
-      }
-      return null;
-    }
-
-    case "message_delta": {
-      const finishReason = event.delta?.stop_reason ?? null;
-      const usage = event.usage ?? null;
-
-      // Anthropic stop_reason values: "end_turn", "max_tokens", "stop_sequence", "tool_use"
-      // Map to OpenAI finish_reason values
-      const finishMap = {
-        "end_turn": "stop",
-        "max_tokens": "length",
-        "stop_sequence": "stop",
-        "tool_use": "tool_calls",
-      };
-      const mappedFinish = finishReason ? (finishMap[finishReason] || finishReason) : null;
-
-      const chunk = { choices: [{ index: 0, delta: {} }] };
-
-      if (mappedFinish) {
-        chunk.choices[0].finish_reason = mappedFinish;
-      }
-
-      if (usage) {
-        chunk.usage = {
-          prompt_tokens: usage.input_tokens ?? 0,
-          completion_tokens: usage.output_tokens ?? 0,
-          total_tokens: (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
-        };
-      }
-
-      return chunk;
-    }
-
-    case "message_start":
-    case "ping":
-      return null;
-
-    case "message_stop":
-      // Signal end of Anthropic message stream — equivalent to OpenAI's [DONE]
-      return "[DONE]";
-
-    case "error":
-      // Pass through errors
-      return { choices: [{ index: 0, delta: {}, finish_reason: "error" }] };
-
-    default:
-      // Unknown events — pass through as-is
-      return null;
-  }
-}
-
-/**
- * Convert image content to text descriptions using the configured vision API.
- * Caches descriptions by image hash in KV to avoid re-processing.
- *
- * @param {Array} messages - The messages array from the request body.
- * @returns {Promise<{messages: Array, convertedCount: number, errors: number}>}
- */
-async function convertImagesToText(messages) {
-  let convertedCount = 0;
-  let errors = 0;
-
-  // Flatten all image_url parts to process them with bounded concurrency
-  const replacements = []; // { msgIdx, partIdx, imageUrl }
-
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (m.role !== "user" && m.role !== "system") continue;
-    const content = m.content;
-    if (!Array.isArray(content)) continue;
-
-    for (let j = 0; j < content.length; j++) {
-      const part = content[j];
-      if (part?.type !== "image_url") continue;
-
-      const imageUrl = part.image_url?.url;
-      if (!imageUrl) continue;
-
-      replacements.push({ msgIdx: i, partIdx: j, imageUrl });
-    }
-  }
-
-  if (replacements.length === 0) {
-    return { messages, convertedCount: 0, errors: 0 };
-  }
-
-  if (replacements.length > 1) {
-    let totalBytes = 0;
-    for (const r of replacements) totalBytes += r.imageUrl.length;
-    log("VISION_BATCH", "images:", replacements.length, "totalUriBytes:", totalBytes);
-  }
-
-  // Bounded concurrency: vision endpoints (e.g. MiniMax-VL-01) rate-limit on
-  // bursts. Cache hits short-circuit before the network call so this only
-  // throttles real upstream requests. Override via VISION_CONCURRENCY env.
-  const concurrency = (() => {
-    const raw = parseInt(process.env.VISION_CONCURRENCY || "", 10);
-    if (Number.isFinite(raw) && raw >= 1) return raw;
-    return 2;
-  })();
-
-  const processOne = async ({ msgIdx, partIdx, imageUrl }) => {
-    try {
-      const cacheKey = await sha256ImageHash(imageUrl);
-      const cached = await kvGet(cacheKey);
-      if (cached) {
-        return { msgIdx, partIdx, description: cached, fromCache: true };
-      }
-
-      const description = await describeImage(imageUrl);
-      if (description) {
-        await kvSet(cacheKey, description).catch(() => {});
-      }
-      return { msgIdx, partIdx, description, fromCache: false };
-    } catch (err) {
-      // Always-on: vision failures must be visible in production so operators
-      // notice when a key/quota/oversized payload is breaking multi-image runs.
-      diag("VISION_ERROR", err?.message);
-      return { msgIdx, partIdx, description: null, error: err?.message };
-    }
-  };
-
-  const results = new Array(replacements.length);
-  let cursor = 0;
-  const workers = new Array(Math.min(concurrency, replacements.length))
-    .fill(0)
-    .map(async () => {
-      while (true) {
-        const idx = cursor++;
-        if (idx >= replacements.length) return;
-        results[idx] = await processOne(replacements[idx]);
-      }
-    });
-  await Promise.all(workers);
-
-  // Apply replacements to a mutable copy of messages
-  const updated = messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? [...m.content] : m.content }));
-
-  for (const r of results) {
-    const { msgIdx, partIdx, description, error } = r;
-    if (description) {
-      updated[msgIdx].content[partIdx] = {
-        type: "text",
-        text: "[Image content: " + description + "]",
-      };
-      convertedCount++;
-      log("VISION_CONVERTED", "msg:", msgIdx, "part:", partIdx, "cached:", r.fromCache);
-    } else {
-      updated[msgIdx].content[partIdx] = {
-        type: "text",
-        text: "(image attachment unavailable" + (error ? ": " + error : "") + ")",
-      };
-      errors++;
-    }
-  }
-
-  // Merge consecutive text parts and (when no image_url remains) collapse to a
-  // single string. DeepSeek / MiniMax non-vision chat endpoints are not
-  // reliable about reading the 2nd+ entry of a multi-part text content array,
-  // so leaving N separate {type:"text"} parts for N images causes only the
-  // first description to be read by the model. Only touch user/system turns
-  // we already rewrote — never assistant history.
-  for (let i = 0; i < updated.length; i++) {
-    const m = updated[i];
-    if (m.role !== "user" && m.role !== "system") continue;
-    if (!Array.isArray(m.content)) continue;
-
-    const hasImages = m.content.some((p) => p?.type === "image_url");
-
-    if (!hasImages) {
-      const joined = m.content
-        .map((p) => (typeof p === "string" ? p : p?.type === "text" ? p.text : ""))
-        .filter((s) => typeof s === "string" && s.length > 0)
-        .join("\n\n");
-      m.content = joined.length > 0 ? joined : "(image attachment unavailable)";
-      continue;
-    }
-
-    // image_url parts still present (vision-capable provider edge case): at
-    // least merge runs of consecutive text parts into one.
-    const merged = [];
-    for (const p of m.content) {
-      const isText = typeof p === "string" || p?.type === "text";
-      const last = merged[merged.length - 1];
-      if (isText && last && (typeof last === "string" || last.type === "text")) {
-        const lastText = typeof last === "string" ? last : last.text;
-        const curText = typeof p === "string" ? p : p.text;
-        merged[merged.length - 1] = {
-          type: "text",
-          text: (lastText || "") + "\n\n" + (curText || ""),
-        };
-      } else {
-        merged.push(p);
-      }
-    }
-    m.content = merged;
-  }
-
-  return { messages: updated, convertedCount, errors };
-}
-
-// ─── Azure Responses API → OpenAI Chat Completions response mappers ─────────
-
-function mapResponsesToOpenAI(json) {
-  if (!json || !json.output || !Array.isArray(json.output)) return json;
-
-  let textContent = "";
-  const toolCalls = [];
-
-  for (const item of json.output) {
-    if (item.type === "message" && item.role === "assistant") {
-      if (Array.isArray(item.content)) {
-        textContent = item.content
-          .filter((c) => c.type === "output_text")
-          .map((c) => c.text)
-          .join("");
-      } else if (typeof item.content === "string") {
-        textContent = item.content;
-      }
-    } else if (item.type === "function_call") {
-      toolCalls.push({
-        id: item.call_id || "",
-        type: "function",
-        function: {
-          name: item.name || "",
-          arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {}),
-        },
-      });
-    }
-  }
-
-  const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
-
-  return {
-    id: json.id || "resp_unknown",
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model: json.model || "",
-    choices: [{
-      index: 0,
-      message: {
-        role: "assistant",
-        content: textContent || null,
-        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-      },
-      finish_reason: finishReason,
-    }],
-  };
-}
-
-function mapResponsesSSEToOpenAI(eventName, data, toolState) {
-  if (!data) return null;
-
-  switch (eventName) {
-    case "response.output_text.delta": {
-      const text = data.delta || "";
-      return { choices: [{ index: 0, delta: { content: text } }] };
-    }
-
-    case "response.function_call_arguments.delta": {
-      const partial = data.delta || "";
-      const callId = data.call_id || "call_0";
-      const idx = data.output_index ?? 0;
-      if (!toolState.has(callId)) {
-        toolState.set(callId, { id: callId, name: data.name || "", partialJson: "" });
-      }
-      const state = toolState.get(callId);
-      state.partialJson += partial;
-      return {
-        choices: [{
-          index: 0,
-          delta: {
-            tool_calls: [{ index: idx, id: callId, type: "function", function: { name: state.name, arguments: partial } }],
-          },
-        }],
-      };
-    }
-
-    case "response.output_item.added": {
-      const item = data.item;
-      if (item?.type === "message" && item?.role === "assistant") {
-        return { choices: [{ index: 0, delta: { role: "assistant", content: "" } }] };
-      }
-      if (item?.type === "function_call") {
-        const callId = item.call_id || "call_0";
-        const idx = data.output_index ?? 0;
-        toolState.set(callId, { id: callId, name: item.name || "", partialJson: "" });
-        return {
-          choices: [{
-            index: 0,
-            delta: {
-              tool_calls: [{ index: idx, id: callId, type: "function", function: { name: item.name || "", arguments: "" } }],
-            },
-          }],
-        };
-      }
-      return null;
-    }
-
-    default:
-      return null;
-  }
-}
-
-// ─── End Azure Responses API mappers ────────────────────────────────────────
-
-// ─── Main handler ──────────────────────────────────────────────────────────
 export default async function handler(req) {
   const t0 = Date.now();
   const authErr = checkProxyAuth(req);
@@ -958,14 +158,11 @@ export default async function handler(req) {
   // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
   // not client-facing proxy model IDs such as "cursorproxy/claude-sonnet-4-6".
   let azureModelName = upstreamModelName;
-  if (providerKey === "azureanthropic") {
-    // Cursor sends the messages array under "input" for Azure models.
-    // Remap to "messages" so Anthropic can process the request.
-    if (parsedBody && parsedBody.input && !parsedBody.messages) {
-      parsedBody.messages = parsedBody.input;
-      delete parsedBody.input;
+  {
+    const remapResult = remapAnthropicInput(providerKey, parsedBody);
+    parsedBody = remapResult.parsedBody;
+    if (remapResult.changed) {
       bodyText = JSON.stringify(parsedBody);
-      diag("INPUT_REMAPPED", "input → messages for", providerKey);
     }
   }
 
@@ -976,256 +173,38 @@ export default async function handler(req) {
     parsedBody.input = parsedBody.messages;
     delete parsedBody.messages;
     bodyText = JSON.stringify(parsedBody);
-    diag("INPUT_REMAPPED", "messages → input for", providerKey);
+    diag("INPUT_REMAPPED", "provider:", providerKey, "from:", "messages", "to:", "input");
   }
 
-  // Normalize content block types for Azure Anthropic.
-  // Cursor occasionally sends input_text / output_text (Responses API style)
-  // but Anthropic Messages API expects type: "text". Keep tool_use/tool_result
-  // intact since those are Anthropic-native block types.
-  if (providerKey === "azureanthropic" && parsedBody?.messages) {
-    const typeMap = { input_text: "text", output_text: "text" };
-    let fixed = false;
-    for (const msg of parsedBody.messages) {
-      if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (typeMap[part.type]) {
-            part.type = typeMap[part.type];
-            fixed = true;
-          }
-        }
-      }
-    }
-    if (fixed) {
+  {
+    const contentTypeResult = normalizeAnthropicContentTypes(providerKey, parsedBody);
+    parsedBody = contentTypeResult.parsedBody;
+    if (contentTypeResult.changed) {
       bodyText = JSON.stringify(parsedBody);
-      diag("ANTHROPIC_CONTENT_FIXED", "normalised input_text/output_text → text for", providerKey);
     }
   }
 
-  // Normalize Anthropic-style tool definitions to OpenAI Responses API format.
-  // Responses API uses internally-tagged format: { type, name, description, parameters }
-  // unlike Chat Completions which wraps them in a "function" object.
-  if (providerKey === "azureopenai" && parsedBody?.tools) {
-    let toolsFixed = false;
-    const filtered = [];
-    for (const tool of parsedBody.tools) {
-      // Only "function" type tools are valid for OpenAI
-      if (tool.type && tool.type !== "function") {
-        toolsFixed = true;
-        continue;
-      }
-      // Convert Anthropic format to Responses API format (internally-tagged)
-      if (tool.name && !tool.function) {
-        tool.type = "function";
-        tool.parameters = tool.input_schema || {};
-        delete tool.description;   // optional, not needed by Responses
-        delete tool.input_schema;
-        toolsFixed = true;
-      }
-      // Already in Chat Completions format { type:"function", function:{...} }?
-      // Unwrap to Responses API format (internally-tagged).
-      else if (tool.type === "function" && tool.function) {
-        tool.name = tool.function.name || "";
-        tool.description = tool.function.description || "";
-        tool.parameters = tool.function.parameters || {};
-        delete tool.function;
-        toolsFixed = true;
-      }
-      filtered.push(tool);
-    }
-    if (toolsFixed) {
-      parsedBody.tools = filtered;
+  {
+    const toolsResult = normalizeAzureOpenAITools(providerKey, parsedBody);
+    parsedBody = toolsResult.parsedBody;
+    if (toolsResult.changed) {
       bodyText = JSON.stringify(parsedBody);
-      diag("TOOLS_FIXED", "Anthropic → OpenAI Responses tool format for", providerKey);
     }
   }
 
-  // Detect Azure OpenAI reasoning models.
-  // Per Microsoft docs, ALL o-series (o1, o3, o4-mini, …) and ALL GPT-5.x series
-  // (gpt-5, gpt-5.1, gpt-5.2, gpt-5.3-codex, gpt-5.4*, gpt-5.5, …) are reasoning
-  // models and do NOT support: temperature, top_p, presence_penalty, frequency_penalty,
-  // logprobs, top_logprobs, logit_bias, max_tokens. Only temperature=1 is accepted.
-  // Note: ALL of these models DO support native vision (image_url) — no conversion needed.
-  const isAzureReasoningModel = providerKey === "azureopenai"
-    && /^(o\d|gpt-5[.\d])/i.test(azureModelName || "");
-
-  // Azure OpenAI models have restricted parameter support.
-  // Rewrite incompatible params and strip any unknown fields via a whitelist
-  // to avoid repeated "Unknown parameter" 400 errors from Cursor-specific fields.
-  if (providerKey === "azureopenai" && parsedBody) {
-    let sanitized = false;
-
-    // Responses API uses max_output_tokens. Accept legacy Chat Completions
-    // token-limit fields from clients and map them before the whitelist runs.
-    if ("max_tokens" in parsedBody && !("max_output_tokens" in parsedBody)) {
-      parsedBody.max_output_tokens = parsedBody.max_tokens;
-      delete parsedBody.max_tokens;
-      sanitized = true;
-    }
-    if ("max_completion_tokens" in parsedBody && !("max_output_tokens" in parsedBody)) {
-      parsedBody.max_output_tokens = parsedBody.max_completion_tokens;
-      delete parsedBody.max_completion_tokens;
-      sanitized = true;
-    }
-    if ("max_tokens" in parsedBody) {
-      delete parsedBody.max_tokens;
-      sanitized = true;
-    }
-    if ("max_completion_tokens" in parsedBody) {
-      delete parsedBody.max_completion_tokens;
-      sanitized = true;
-    }
-
-    // Reasoning models (all GPT-5.x and o-series) reject several standard chat params.
-    // Per Microsoft docs: temperature, top_p, presence_penalty, frequency_penalty,
-    // logprobs, top_logprobs, logit_bias, max_tokens are NOT supported.
-    // Standard models (gpt-4o, gpt-4.1, …) accept all of these — preserve them.
-    if (isAzureReasoningModel) {
-      const reasoningUnsupported = [
-        "temperature", "top_p", "presence_penalty", "frequency_penalty",
-        "logprobs", "top_logprobs", "logit_bias",
-      ];
-      for (const key of reasoningUnsupported) {
-        if (key in parsedBody) {
-          delete parsedBody[key];
-          sanitized = true;
-        }
-      }
-    }
-
-    // Responses API uses nested reasoning.effort, not flat reasoning_effort.
-    // Map flat reasoning_effort (from Cursor or legacy requests) to nested format.
-    if ("reasoning_effort" in parsedBody) {
-      if (!parsedBody.reasoning || typeof parsedBody.reasoning !== "object" || Array.isArray(parsedBody.reasoning)) {
-        parsedBody.reasoning = {};
-      }
-      if (!parsedBody.reasoning.effort) {
-        parsedBody.reasoning.effort = parsedBody.reasoning_effort;
-      }
-      delete parsedBody.reasoning_effort;
-      sanitized = true;
-    }
-
-    // Env wins over Cursor/client effort so deployments can centrally force
-    // the reasoning budget for Azure OpenAI reasoning models.
-    const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
-    if (isAzureReasoningModel && defaultReasoningEffort) {
-      if (!parsedBody.reasoning || typeof parsedBody.reasoning !== "object" || Array.isArray(parsedBody.reasoning)) {
-        parsedBody.reasoning = {};
-      }
-      if (parsedBody.reasoning.effort !== defaultReasoningEffort) {
-        parsedBody.reasoning.effort = defaultReasoningEffort;
-        sanitized = true;
-      }
-    }
-
-    if (parsedBody.reasoning?.effort) {
-      diag("REASONING_EFFORT", "effort:", parsedBody.reasoning.effort, "provider:", providerKey);
-    }
-
-    // Known valid OpenAI Responses API params.
-    // Responses API uses a different parameter set than Chat Completions.
-    const allowed = new Set([
-      "model", "input", "instructions", "stream",
-      "max_output_tokens", "temperature", "top_p",
-      "tools", "tool_choice", "reasoning",
-      "store", "parallel_tool_calls", "user",
-    ]);
-
-    // Strip any field not in the allowed whitelist
-    for (const key of Object.keys(parsedBody)) {
-      if (!allowed.has(key)) {
-        delete parsedBody[key];
-        sanitized = true;
-      }
-    }
-
-    // Responses API: set store=false to prevent state leakage across users
-    // and avoid Azure storage costs. Only inject when not explicitly set.
-    if (!("store" in parsedBody)) {
-      parsedBody.store = false;
-      sanitized = true;
-    }
-
-    if (sanitized) {
+  {
+    const openAiSanitized = sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName);
+    parsedBody = openAiSanitized.parsedBody;
+    if (openAiSanitized.sanitized) {
       bodyText = JSON.stringify(parsedBody);
-      diag("AZURE_BODY_SANITIZED", "stripped unsupported params for", providerKey, isAzureReasoningModel ? "(reasoning model)" : "(standard model)");
     }
   }
 
-  // Azure Anthropic models (Claude) accept only Anthropic-native parameters.
-  // Cursor sends OpenAI-specific params (e.g., stream_options) that Anthropic rejects.
-  if (providerKey === "azureanthropic" && parsedBody) {
-    let sanitized = false;
-
-    // Cursor/Responses-style requests may send "instructions" instead of "system"
-    if ("instructions" in parsedBody && typeof parsedBody.instructions === "string") {
-      if (!parsedBody.system) {
-        parsedBody.system = parsedBody.instructions;
-      }
-      delete parsedBody.instructions;
-      sanitized = true;
-    }
-
-    // Map OpenAI-style reasoning_effort to Anthropic output_config.effort.
-    // Azure Claude accepts low/medium/high/max; ignore OpenAI-only values like "none".
-    if ("reasoning_effort" in parsedBody) {
-      if (AZURE_ANTHROPIC_EFFORT_LEVELS.has(parsedBody.reasoning_effort)) {
-        if (!parsedBody.output_config || typeof parsedBody.output_config !== "object" || Array.isArray(parsedBody.output_config)) {
-          parsedBody.output_config = {};
-        }
-        if (!parsedBody.output_config.effort) {
-          parsedBody.output_config.effort = parsedBody.reasoning_effort;
-        }
-      }
-      delete parsedBody.reasoning_effort;
-      sanitized = true;
-    }
-
-    const defaultThinking = allowedEnvValue("AZURE_ANTHROPIC_THINKING", AZURE_ANTHROPIC_THINKING_TYPES);
-    if (defaultThinking && !("thinking" in parsedBody)) {
-      parsedBody.thinking = { type: defaultThinking };
-      sanitized = true;
-    }
-
-    const defaultEffort = allowedEnvValue("AZURE_ANTHROPIC_EFFORT", AZURE_ANTHROPIC_EFFORT_LEVELS);
-    if (defaultEffort) {
-      if (!parsedBody.output_config || typeof parsedBody.output_config !== "object" || Array.isArray(parsedBody.output_config)) {
-        parsedBody.output_config = {};
-      }
-      if (!parsedBody.output_config.effort) {
-        parsedBody.output_config.effort = defaultEffort;
-        sanitized = true;
-      }
-    }
-
-    // Anthropic uses `max_tokens`, not `max_completion_tokens`
-    if ("max_completion_tokens" in parsedBody && !("max_tokens" in parsedBody)) {
-      parsedBody.max_tokens = parsedBody.max_completion_tokens;
-      delete parsedBody.max_completion_tokens;
-      sanitized = true;
-    }
-    const allowed = new Set([
-      "model", "messages", "system", "max_tokens", "temperature",
-      "top_p", "top_k", "stream", "stop_sequences", "tools", "tool_choice",
-      "metadata", "thinking", "output_config",
-    ]);
-    for (const key of Object.keys(parsedBody)) {
-      if (!allowed.has(key)) {
-        delete parsedBody[key];
-        sanitized = true;
-      }
-    }
-    if (sanitized) {
+  {
+    const anthropicSanitized = sanitizeAzureAnthropicBody(providerKey, parsedBody);
+    parsedBody = anthropicSanitized.parsedBody;
+    if (anthropicSanitized.sanitized) {
       bodyText = JSON.stringify(parsedBody);
-      diag("AZURE_BODY_SANITIZED", "stripped OpenAI-only params for Claude compatibility");
-    }
-
-    if (parsedBody.thinking?.type) {
-      diag("ANTHROPIC_THINKING", "type:", parsedBody.thinking.type, "provider:", providerKey);
-    }
-    if (parsedBody.output_config?.effort) {
-      diag("ANTHROPIC_EFFORT", "effort:", parsedBody.output_config.effort, "provider:", providerKey);
     }
   }
 
@@ -1308,79 +287,17 @@ export default async function handler(req) {
     ? await conversationHash(originalMessages, originalMessages.length, scope)
     : null;
 
-  // Inject stored reasoning into ALL prior assistant messages by position.
-  //
-  // DeepSeek thinking mode REQUIRES reasoning_content on every prior assistant
-  // turn (including tool-calling ones) — otherwise it returns:
-  //   "The `reasoning_content` in the thinking mode must be passed back to the API."
-  // When KV has nothing for a given turn (e.g. trivial greeting that produced no
-  // thinking, or a turn not proxied through us, or KV race), we still inject a
-  // placeholder so the field is present and the provider accepts the request.
-  //
-  // Skip for providers that don't support reasoning fields:
-  // - Anthropic's Messages API rejects `reasoning_content` (Extra inputs not permitted)
-  // - Azure OpenAI's Chat Completions API may also reject it on certain models
-  const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
   let injectedCount = 0;
-  if (originalMessages && reasoningProviders.has(providerKey)) {
-    const messages = parsedBody.messages;
-    const assistantIndices = messages
-      .map((m, i) => i)
-      .filter((i) =>
-        messages[i].role === "assistant" &&
-        !hasReasoningField(providerKey, messages[i])
-      );
-
-    const fetched = await Promise.all(
-      assistantIndices.map(async (i) => {
-        const key = await conversationHash(originalMessages, i, scope);
-        const result = await waitForStoredReasoning(providerKey, key);
-        log(
-          "INJECT idx:",
-          i,
-          "key:",
-          key,
-          "hit:",
-          result.stored != null,
-          "waitedMs:",
-          result.waitedMs
-        );
-        return { i, key, ...result };
-      })
-    );
-
-    let missedCount = 0;
-    let recoveredCount = 0;
-    for (const { i, stored, key, waitedMs, attempts } of fetched) {
-      if (stored != null) {
-        messages[i] = { ...messages[i], [reasoningField(providerKey)]: stored };
-        injectedCount++;
-        if (waitedMs > 0) {
-          recoveredCount++;
-          log("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
-        }
-      } else {
-        // Inject a non-empty placeholder so the reasoning field is present.
-        // DeepSeek/Kimi thinking mode require reasoning_content on every prior
-        // assistant turn (including tool-call turns) and treat empty strings as
-        // "missing", returning:
-        //   "thinking is enabled but reasoning_content is missing in assistant ..."
-        // The text below is intentionally generic: it is hidden from the client
-        // (we strip reasoning_content before responding) and only used to satisfy
-        // the provider's validator when the original reasoning was not captured
-        // (e.g. the turn was produced before this proxy was in front, was a
-        // simple greeting that produced no thinking, or the cache write was lost).
-        const placeholder = providerKey === "minimax"
-          ? [{ type: "text", text: "(prior reasoning unavailable)" }]
-          : "(prior reasoning unavailable)";
-        messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
-        missedCount++;
-        log("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
-             "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
-      }
-    }
-    if (recoveredCount > 0) log("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
-    if (missedCount > 0) log("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
+  if (originalMessages) {
+    const injected = await injectStoredReasoning({
+      providerKey,
+      parsedBody,
+      originalMessages,
+      scope,
+      conversationHash,
+    });
+    parsedBody = injected.parsedBody;
+    injectedCount = injected.injectedCount;
     bodyText = JSON.stringify(parsedBody);
   }
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
@@ -1396,7 +313,7 @@ export default async function handler(req) {
       messages: convertedMessages,
       convertedCount,
       errors,
-    } = await convertImagesToText(parsedBody.messages);
+    } = await convertImagesToText(parsedBody.messages, sha256ImageHash);
     const visionMs = Date.now() - visionT0;
 
     // Apply rewrites whenever ANY image_url part was processed (success OR
