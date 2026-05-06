@@ -18,7 +18,7 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 
 | Tag | Source file(s) | Purpose |
 |-----|----------------|---------|
-| `[cursorProxy:proxy]` | `api/proxy.js` | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, INJECTED, UPSTREAM_*, STREAM_*, etc. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
+| `[cursorProxy:proxy]` | `api/proxy.js` | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, INJECTED, UPSTREAM_*, STREAM_*, etc. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
 | `[cursorProxy:reasoning]` | `api/reasoning.js` | Reasoning bridge internals: INJECT, INJECT_PLACEHOLDER, INJECT_RECOVERED, INJECT_MISS. |
 | `[cursorProxy:azure-openai]` | `api/azure-openai.js` | Azure OpenAI Responses API sanitization: AZURE_BODY_SANITIZED, REASONING_EFFORT, TOOLS_FIXED. |
 | `[cursorProxy:azure-anthropic]` | `api/azure-anthropic.js` | Azure Claude sanitization: AZURE_BODY_SANITIZED, INPUT_REMAPPED, ANTHROPIC_CONTENT_FIXED, ANTHROPIC_THINKING, ANTHROPIC_EFFORT. |

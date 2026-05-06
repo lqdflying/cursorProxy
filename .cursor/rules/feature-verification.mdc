@@ -1,0 +1,87 @@
+---
+description: "Post-change verification: dry-run log analysis, probe-first pattern, and KV/cache key stability for feature changes"
+globs: **/*.js
+alwaysApply: true
+---
+
+# Feature Verification
+
+When adding or changing a code path that is gated by a conditional (e.g., `if (parsedBody?.messages && !parsedBody?.input)`), after deploying, verify the path actually ran. "All 200s, no errors" does NOT mean the feature is active — the conditional may silently select a different branch.
+
+## Dry-run log verification (mandatory for new code paths)
+
+After deploying a new feature, export production logs and count diagnostic tags. A feature that produces diagnostic output only in its own branch will have zero occurrences if the branch never executes.
+
+Example from the `previous_response_id` chaining rollout:
+- `STREAM_AZ_RESP_ID`: 20 — the streaming code ran
+- `PREV_RESP_ID_FOUND`: 0 — the chaining block was NEVER entered
+- `msgRoles: undefined` — confirmed the client sent `input`, not `messages`
+
+**Rule:** For any feature gated behind a conditional, verify ALL of these are non-zero in production logs:
+- The feature's diagnostic tag (proves the branch executed)
+- A counter-diagnostic (proves we can distinguish hit vs miss)
+
+If a tag is zero, the feature is inert regardless of upstream status codes.
+
+## Probe-first pattern
+
+Before adding normalization, conversion, or compatibility code that handles a specific input shape, first add a **passive detection probe** and let it run in production.
+
+```js
+// PROBE: scan for legacy items without mutating anything
+let nRoleTool = 0;
+let nAssistantToolCalls = 0;
+for (const item of parsedBody.input) {
+  if (item.role === "tool") { nRoleTool++; continue; }
+  if (item.role === "assistant" && item.tool_calls?.length) { nAssistantToolCalls++; }
+}
+if (nRoleTool > 0 || nAssistantToolCalls > 0) {
+  diag("INPUT_HAS_LEGACY_TOOLS", "provider:", providerKey,
+       "roleTool:", nRoleTool, "assistantToolCalls:", nAssistantToolCalls);
+}
+```
+
+**Rules for probes:**
+- Must be a **single linear scan** — no allocations, no mutations, no request body changes
+- Must log **category counts**, not just a boolean — tells you *which* shape appeared, not just *that* something appeared
+- Must use `diag()` (always-on) so it's visible in production without `DEBUG=true`
+- Must be a no-op when no matches found (zero log output, zero overhead beyond the scan)
+
+**When the probe fires:** you have production data justifying the normalization work.
+
+**When the probe stays at zero after multiple sessions:** the normalization is not needed. Delete the probe or leave it as passive monitoring.
+
+## KV/cache key stability
+
+Any change to the input of `conversationHash()` or any other KV key computation can silently invalidate all previously cached values. A key that changes across deploys causes **100% cache miss rate** until the cache naturally repopulates.
+
+**Rules for hash input changes:**
+1. Before changing anything fed into `conversationHash()`, trace the full lifecycle: write (what key is saved under) → read (what key is looked up)
+2. If the read key and write key can differ across deploys, the feature will break for the first N turns after deploy
+3. Prefer normalizing request bodies AFTER hashing, not before
+4. If normalization before hashing is unavoidable, accept that cached keys from the prior deploy will be orphaned
+
+**Cross-check after deploy:** verify that `PREV_RESP_ID_FOUND` keys match keys that were previously emitted by `CACHE_AZ_RESP_ID`:
+
+```bash
+comm -23 \
+  <(rg 'PREV_RESP_ID_FOUND key: conv:[a-f0-9]+' log.txt | sort -u) \
+  <(rg 'CACHE_AZ_RESP_ID key: conv:[a-f0-9]+' log.txt | sort -u)
+# Empty output = all lookups resolved against previously cached keys
+```
+
+## Two-branch features (shared logic across input formats)
+
+When a feature must work for two input formats (e.g., `messages` and `input`), implement and verify **both branches before merging**. A feature that only runs in one branch appears to work (the other branch doesn't error — it just silently ignores the feature) but is dead code for the untested path.
+
+**Rule:** If a feature adds conditional logic like:
+
+```js
+if (hasMessages) {
+  // feature implementation
+} else {
+  // native input — consider whether the feature should also apply here
+}
+```
+
+Export diagnostic tags from BOTH branches so a production log export reveals which path is taken. If only one branch's tags appear, the feature is only partially deployed.
