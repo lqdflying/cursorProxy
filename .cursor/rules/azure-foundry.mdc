@@ -42,7 +42,7 @@ The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor 
 - **Native Responses input is preserved**: do not rewrite `input_text`, `output_text`, `function_call`, or `function_call_output` items.
 - **Legacy fallback**: if a client sends `messages` without `input`, rename `messages` → `input`.
 - **Tool format**: Anthropic flat `{type, name, description, input_schema}` or Chat Completions wrapped `{type, function:{...}}` → Responses function tools `{type:"function", name, description, parameters}`.
-- **Model field**: `azure/` prefix is stripped; bare deployment name stays in request body.
+- **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` before the request body reaches Azure; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
 - **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
 - **State**: `store=false` is injected when omitted.
@@ -207,11 +207,11 @@ data: [DONE]
 
 ## Provider Routing
 
-`providerFromModel()` routes based on model prefix:
-- `azure/claude*` → `azureanthropic`
-- `azure/*` (everything else) → `azureopenai`
+`providerFromModel()` strips the `cursorproxy/` prefix (and legacy `azure/`) via `modelIdParts()`, then routes by bare name pattern:
+- `claude*` → `azureanthropic`
+- `gpt-*` or `o\d*` (e.g. `gpt-5.5`, `o4-mini`) → `azureopenai`
 
-The `azure/` prefix is stripped from the model name before forwarding.
+The `cursorproxy/` prefix is stripped from the model name before forwarding and re-added to response model fields via `withPublicResponseModel()`.
 
 ## No Impact to Other Providers
 
