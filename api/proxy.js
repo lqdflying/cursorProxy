@@ -217,6 +217,7 @@ export default async function handler(req) {
       // JSON.stringify(slice) — same items produce the same key across turns.
       let hashItems;
       let lastAssistantIdx = -1;
+      let hashBoundaryIdx = -1;
 
       if (hasMessages) {
         hashItems = [...parsedBody.messages];
@@ -224,15 +225,17 @@ export default async function handler(req) {
           (last, m, i) => (m.role === "assistant" ? i : last),
           -1,
         );
+        hashBoundaryIdx = lastAssistantIdx;
       } else {
         // hasInput — native Responses-format array.
-        // Walk backward to find the start of the contiguous assistant turn
-        // at the tail.  The turn may be multiple items in Responses format
-        // (e.g. message{role:assistant} then function_call items).  Using
-        // only the very last assistant-related item for the trim boundary
-        // would leak the preceding message item into the forwarded input.
+        // Walk backward to find the contiguous assistant block at the tail.
+        // The block may be multiple items (e.g. message{role:assistant} then
+        // function_call items).  The lastAssistantIdx from the prior simple
+        // reduce would only capture the last assistant-related item, which
+        // broke the hash lookup because the write key included all items
+        // up to the assistant block start.
         hashItems = parsedBody.input;
-        lastAssistantIdx = -1;
+        let asstBlockEnd = -1;
         let asstBlockStart = hashItems.length;
         for (let i = hashItems.length - 1; i >= 0; i--) {
           const item = hashItems[i];
@@ -240,9 +243,13 @@ export default async function handler(req) {
             item.type === "function_call" ||
             (item.type === "message" && item.role === "assistant");
           if (!isAsst) break;
+          asstBlockEnd = (asstBlockEnd < 0) ? i : asstBlockEnd;
           asstBlockStart = i;
         }
-        lastAssistantIdx = asstBlockStart < hashItems.length ? asstBlockStart - 1 : -1;
+        // hashBoundary: items BEFORE the assistant block (for response ID hash)
+        // lastAssistantIdx: LAST item in the assistant block (for trim)
+        hashBoundaryIdx = asstBlockStart;
+        lastAssistantIdx = asstBlockEnd;
       }
 
       // Compute the reply key now so we can save the response ID after the
@@ -252,12 +259,10 @@ export default async function handler(req) {
       azureReplyKey = await conversationHash(hashItems, hashItems.length, azureScope);
 
       // Look up a cached response ID from the prior turn.
-      // upTo=lastAssistantIdx gives items BEFORE the assistant. That slice
-      // equals the full-message write key from the prior turn (where upTo was
-      // messages.length and the last message was the assistant).
+      // hashBoundaryIdx marks items BEFORE the contiguous assistant block.
       let prevRespId = null;
-      if (lastAssistantIdx >= 0) {
-        const prevRespKey = await conversationHash(hashItems, lastAssistantIdx, azureScope);
+      if (hashBoundaryIdx >= 0) {
+        const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, azureScope);
         const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
         if (readResult) {
           prevRespId = readResult;
@@ -400,6 +405,8 @@ export default async function handler(req) {
       bodyText = JSON.stringify(parsedBody);
     }
   }
+
+  let azureModelName;
 
   {
     const openAiSanitized = sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName);
