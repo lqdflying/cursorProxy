@@ -157,16 +157,6 @@ async function injectStoredReasoning({
       assistantIndices.map(async (i) => {
         const key = await conversationHash(originalMessages, i, scope);
         const result = await waitForStoredReasoning(providerKey, key);
-        log(
-          "INJECT", "idx:",
-          i,
-          "key:",
-          key,
-          "hit:",
-          result.stored != null,
-          "waitedMs:",
-          result.waitedMs
-        );
         return { i, key, ...result };
       })
     );
@@ -197,10 +187,9 @@ async function injectStoredReasoning({
           : "(prior reasoning unavailable)";
         messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
         missedCount++;
-        log("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
-             "content:", contentLogSummary(messages[i].content));
       }
     }
+    log("INJECT_SUMMARY", "turns:", assistantIndices.length, "hits:", injectedCount, "misses:", missedCount, "recovered:", recoveredCount);
     if (recoveredCount > 0) proxyLog("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
     if (missedCount > 0) proxyLog("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
   }
