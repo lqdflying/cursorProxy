@@ -115,6 +115,13 @@ function stripResponseChunk(json) {
   };
 }
 
+function contentLogSummary(content) {
+  if (typeof content === "string") return `string:${content.length}`;
+  if (Array.isArray(content)) return `array:${content.length}`;
+  if (content == null) return "none";
+  return typeof content;
+}
+
 async function injectStoredReasoning({
   providerKey,
   parsedBody,
@@ -190,7 +197,7 @@ async function injectStoredReasoning({
         messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
         missedCount++;
         log("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
-             "msgPreview:", messages[i].content?.slice?.(0, 60) || "(no content)");
+             "content:", contentLogSummary(messages[i].content));
       }
     }
     if (recoveredCount > 0) log("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);

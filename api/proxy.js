@@ -490,9 +490,7 @@ export default async function handler(req) {
   // The existing reasoning bridge (DeepSeek/Kimi/MiniMax) uses reasoning_content
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
   if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type === "adaptive") {
-    const claudeScopeUser = await cacheScopeUserId(req);
-    const claudeScope = providerKey + ":" + claudeScopeUser;
-    const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, claudeScope, conversationHash);
+    const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash);
     if (claudeInjected > 0) {
       bodyText = JSON.stringify(parsedBody);
       diag("CLAUDE_THINKING_INJECTED", "count:", claudeInjected);
@@ -692,10 +690,10 @@ export default async function handler(req) {
         const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
         const thinkingBlocks = extractClaudeThinkingBlocks(json);
         if (thinkingBlocks) {
-          log("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", thinkingBlocks.length);
           await kvSet(claudeThinkKey, JSON.stringify(thinkingBlocks))
-            .catch((err) => log("CLAUDE_THINKING_WRITE_ERROR", err?.message));
-          diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", thinkingBlocks.length);
+            .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
+          const totalChars = thinkingBlocks.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
+          diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", thinkingBlocks.length, "chars:", totalChars);
         }
       }
       json = mapAnthropicResponseToOpenAI(json);
@@ -790,9 +788,10 @@ export default async function handler(req) {
     const claudeThinkBlocks = new Map(); // index -> content_block object
     const claudeThinkActive = providerKey === "azureanthropic" &&
       parsedBody?.thinking?.type === "adaptive";
+    let claudeThinkingCached = false;
 
     async function cacheClaudeThinking() {
-      if (!claudeThinkActive || claudeThinkBlocks.size === 0 || !replyReasoningKey) return;
+      if (claudeThinkingCached || !claudeThinkActive || claudeThinkBlocks.size === 0 || !replyReasoningKey) return;
       const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
       // Serialize blocks in index order.  The objects are the original
       // content_block_start payloads with mutated fields, so the shape matches
@@ -812,6 +811,7 @@ export default async function handler(req) {
       }
       await kvSet(claudeThinkKey, JSON.stringify(sorted))
         .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
+      claudeThinkingCached = true;
       const totalChars = sorted.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
       diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", sorted.length, "chars:", totalChars);
     }
@@ -923,12 +923,13 @@ export default async function handler(req) {
                 }
               }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
-              // Diagnostic: log event type and extracted text to debug silent streams
+              // Diagnostic metadata only. Do not log text/thinking fragments:
+              // production DEBUG exports are otherwise too large and leak prompts.
               log("ANTHROPIC_EVENT", "type:", json.type,
                    "index:", json.index,
                    "delta_type:", json.delta?.type,
-                   "text:", json.delta?.text?.slice(0, 40),
-                   "thinking:", json.delta?.thinking?.slice(0, 40),
+                   "text_len:", typeof json.delta?.text === "string" ? json.delta.text.length : 0,
+                   "thinking_len:", typeof json.delta?.thinking === "string" ? json.delta.thinking.length : 0,
                    "content_block_type:", json.content_block?.type);
               if (mapped === "[DONE]") {
                 doneSeen = true;
