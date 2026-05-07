@@ -178,7 +178,6 @@ export default async function handler(req) {
 
   // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
   // not client-facing proxy model IDs such as "cursorproxy/claude-sonnet-4-6".
-  let azureModelName = upstreamModelName;
   {
     const remapResult = remapAnthropicInput(providerKey, parsedBody);
     parsedBody = remapResult.parsedBody;
@@ -226,14 +225,24 @@ export default async function handler(req) {
           -1,
         );
       } else {
-        // hasInput — native Responses-format array
+        // hasInput — native Responses-format array.
+        // Walk backward to find the start of the contiguous assistant turn
+        // at the tail.  The turn may be multiple items in Responses format
+        // (e.g. message{role:assistant} then function_call items).  Using
+        // only the very last assistant-related item for the trim boundary
+        // would leak the preceding message item into the forwarded input.
         hashItems = parsedBody.input;
-        lastAssistantIdx = hashItems.reduce((last, item, i) => {
-          if (item.role === "assistant") return i;
-          if (item.type === "function_call") return i; // function calls = assistant turn
-          if (item.type === "message" && item.role === "assistant") return i;
-          return last;
-        }, -1);
+        lastAssistantIdx = -1;
+        let asstBlockStart = hashItems.length;
+        for (let i = hashItems.length - 1; i >= 0; i--) {
+          const item = hashItems[i];
+          const isAsst = item.role === "assistant" ||
+            item.type === "function_call" ||
+            (item.type === "message" && item.role === "assistant");
+          if (!isAsst) break;
+          asstBlockStart = i;
+        }
+        lastAssistantIdx = asstBlockStart < hashItems.length ? asstBlockStart - 1 : -1;
       }
 
       // Compute the reply key now so we can save the response ID after the
@@ -302,14 +311,23 @@ export default async function handler(req) {
         };
 
         if (prevRespId) {
-          // Only send input items that appeared AFTER the last assistant.
-          // Azure replays the full prior conversation server-side.
-          parsedBody.input = parsedBody.messages.slice(lastAssistantIdx + 1)
-            .reduce((acc, item) => {
-              acc.push(...normalizeAzureInput(item));
-              return acc;
-            }, []);
-          parsedBody.previous_response_id = prevRespId;
+          // If trimming would produce an empty input, force stateless mode.
+          // Azure rejects previous_response_id with no new items.
+          if (parsedBody.messages.slice(lastAssistantIdx + 1).length === 0) {
+            prevRespId = null;
+            log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
+                 "lastAssistantIdx:", lastAssistantIdx,
+                 "totalItems:", parsedBody.messages.length);
+          } else {
+            // Only send input items that appeared AFTER the last assistant.
+            // Azure replays the full prior conversation server-side.
+            parsedBody.input = parsedBody.messages.slice(lastAssistantIdx + 1)
+              .reduce((acc, item) => {
+                acc.push(...normalizeAzureInput(item));
+                return acc;
+              }, []);
+            parsedBody.previous_response_id = prevRespId;
+          }
         } else {
           // Stateless fallback — full input array (but response is still stored
           // so the NEXT turn can chain from it).
@@ -346,8 +364,17 @@ export default async function handler(req) {
         }
 
         if (prevRespId) {
-          parsedBody.input = parsedBody.input.slice(lastAssistantIdx + 1);
-          parsedBody.previous_response_id = prevRespId;
+          // If trimming would produce an empty input, force stateless mode.
+          // Azure rejects previous_response_id with no new items.
+          if (parsedBody.input.slice(lastAssistantIdx + 1).length === 0) {
+            prevRespId = null;
+            log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
+                 "lastAssistantIdx:", lastAssistantIdx,
+                 "totalItems:", parsedBody.input.length);
+          } else {
+            parsedBody.input = parsedBody.input.slice(lastAssistantIdx + 1);
+            parsedBody.previous_response_id = prevRespId;
+          }
         }
         bodyText = JSON.stringify(parsedBody);
         diag("INPUT_CHAIN", "provider:", providerKey,
@@ -419,6 +446,8 @@ export default async function handler(req) {
     log("MODEL_INJECTED", "model:", parsedBody.model);
   }
 
+  // Normalize the model name after any injection/stripping, then capture
+  // the bare deployment name that Azure Foundry expects in URL paths.
   modelNames = normalizeParsedBodyModel(parsedBody);
   upstreamModelName = modelNames.bare;
   responseModelName = modelNames.publicId;
@@ -426,11 +455,9 @@ export default async function handler(req) {
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_STRIP", "from:", modelNames.input, "to:", upstreamModelName);
   }
-
-  // Keep azureModelName in sync with parsedBody.model — it may have been set or
-  // normalized above (e.g. azureanthropic with no model in the request).
-  // Must happen before buildUrl so the URL path contains the correct deployment name.
-  if ((providerKey === "azureopenai" || providerKey === "azureanthropic") && !azureModelName) {
+  // Set azureModelName unconditionally after model normalization.
+  // Previously this was a lazy-init that could read a stale value.
+  if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
     azureModelName = upstreamModelName;
   }
 
@@ -489,7 +516,7 @@ export default async function handler(req) {
   // doesn't re-reason from scratch on every turn when thinking.type === "adaptive".
   // The existing reasoning bridge (DeepSeek/Kimi/MiniMax) uses reasoning_content
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
-  if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type === "adaptive") {
+  if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled") {
     const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash);
     if (claudeInjected > 0) {
       bodyText = JSON.stringify(parsedBody);
@@ -796,8 +823,9 @@ export default async function handler(req) {
     // thinking) so the cached block round-trips unchanged.
     const claudeThinkBlocks = new Map(); // index -> content_block object
     const claudeThinkActive = providerKey === "azureanthropic" &&
-      parsedBody?.thinking?.type === "adaptive";
+      parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled";
     let claudeThinkingCached = false;
+    let azureRespCached = false;
 
     // Pre-compute the Claude thinking cache key using normalized hash so
     // the write-side key matches the read-side key regardless of content
@@ -860,7 +888,8 @@ export default async function handler(req) {
     }
 
     async function cacheAzResponseId() {
-      if (!azureResponseId || !azureReplyKey) return;
+      if (!azureResponseId || !azureReplyKey || azureRespCached) return;
+      azureRespCached = true;
       log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureResponseId);
       await kvSet("azresp:" + azureReplyKey, azureResponseId)
         .catch((err) => log("CACHE_AZ_WRITE_ERROR", err?.message));

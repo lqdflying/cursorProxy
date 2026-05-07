@@ -235,7 +235,7 @@ function mapAnthropicSSEToOpenAI(json, toolState) {
       if (block?.type === "text" || block?.type === "thinking") {
         return {
           choices: [{
-            index: idx,
+            index: 0,
             delta: { role: "assistant", content: "" },
           }],
         };
@@ -269,7 +269,7 @@ function mapAnthropicSSEToOpenAI(json, toolState) {
         const text = delta.text ?? delta.thinking ?? "";
         return {
           choices: [{
-            index: idx,
+            index: 0,
             delta: { content: text },
           }],
         };

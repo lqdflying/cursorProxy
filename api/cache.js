@@ -129,6 +129,10 @@ export async function normalizedConversationHash(messages, upTo, scope) {
     ...(Array.isArray(m.tool_calls) && m.tool_calls.length > 0
       ? { t: m.tool_calls.map((tc) => (tc.function?.name || "") + "|" + (tc.function?.arguments || "")) }
       : {}),
+    // Chat Completions tool-result messages carry identity in tool_call_id
+    ...(m.role === "tool" && m.tool_call_id
+      ? { tid: m.tool_call_id }
+      : {}),
   }));
   return sha256Prefix(scope + ":" + JSON.stringify(prefix), "asst:");
 }
