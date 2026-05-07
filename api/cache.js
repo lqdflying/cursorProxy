@@ -55,9 +55,11 @@ export async function conversationHash(messages, upTo, scope) {
 // that different conversations (different images, different tool calls)
 // still produce different keys.
 //
-// For array content blocks:
-//   text        -> "T:" + text
-//   image_url   -> "I:" + url
+// Text blocks produce plain text (no prefix) so "hello" and
+// [{type:"text", text:"hello"}] canonicalize identically.
+// Tool/image blocks use prefixes to distinguish them from text content.
+//   text        -> raw text (no prefix, matches string content)
+//   image       -> "I:" + source identifier
 //   tool_use    -> "U:" + name + "|" + JSON.stringify(input)
 //   tool_result -> "R:" + tool_use_id + "|" + normalized content text
 //   thinking / redacted_thinking -> SKIP (these are what we inject)
@@ -68,9 +70,18 @@ export function normalizeContent(content) {
     for (const b of content) {
       if (!b || !b.type) continue;
       if (b.type === "text" && b.text) {
-        parts.push("T:" + b.text);
-      } else if ((b.type === "image_url" || b.type === "image") && b.image_url?.url) {
+        parts.push(b.text);
+      } else if (b.type === "image_url" && b.image_url?.url) {
+        // OpenAI vision format: image_url block with URL
         parts.push("I:" + b.image_url.url);
+      } else if (b.type === "image") {
+        // Anthropic native format: {type:"image", source:{type:"base64",
+        //   media_type:"image/png", data:"..."}}
+        if (b.source?.data) {
+          parts.push("I:src:" + b.source.data.slice(0, 64));
+        } else if (b.source?.url) {
+          parts.push("I:src:" + b.source.url);
+        }
       } else if (b.type === "tool_use") {
         parts.push("U:" + (b.name || "") + "|" + JSON.stringify(b.input || {}));
       } else if (b.type === "tool_result") {
