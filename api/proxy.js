@@ -15,7 +15,7 @@ import {
   sanitizeAzureOpenAIBody,
 } from "./azure-openai.js";
 import { checkProxyAuth, jsonErrorResponse } from "./auth.js";
-import { cacheScopeUserId, conversationHash, normalizedConversationHash, normalizeContent, sha256ImageHash } from "./cache.js";
+import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "./cache.js";
 import {
   isModelDiscoveryRequest,
   modelDiscoveryResponse,
@@ -698,8 +698,7 @@ export default async function handler(req) {
           diag("CLAUDE_THINKING_WRITE_SOURCE",
                "key:", claudeThinkKey,
                "msgCount:", originalMessages?.length,
-               "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","),
-               "normContentLen:", originalMessages?.length ? normalizeContent(originalMessages[originalMessages.length - 1].content).length : 0);
+               "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
           await kvSet(claudeThinkKey, JSON.stringify(thinkingBlocks))
             .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
           const totalChars = thinkingBlocks.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
@@ -839,8 +838,7 @@ export default async function handler(req) {
       diag("CLAUDE_THINKING_WRITE_SOURCE",
            "key:", claudeThinkKey,
            "msgCount:", originalMessages?.length,
-           "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","),
-           "normContentLen:", originalMessages?.length ? normalizeContent(originalMessages[originalMessages.length - 1].content).length : 0);
+           "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
       diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", sorted.length, "chars:", totalChars);
     }
 

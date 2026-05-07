@@ -1,6 +1,5 @@
 import { kvGet, kvSet } from "./kv.js";
 import { createLogger } from "./logger.js";
-import { normalizeContent } from "./cache.js";
 
 const { log, diag } = createLogger("reasoning");
 
@@ -256,8 +255,7 @@ async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, c
       diag("CLAUDE_THINKING_LOOKUP_SOURCE",
            "idx:", i,
            "hashInputCount:", i,
-           "roles:", originalMessages.slice(0, i).map((m, j) => `${j}:${m.role || "?"}`).join(","),
-           "normContentLen:", normalizeContent(messages[i].content).length);
+           "roles:", originalMessages.slice(0, i).map((m, j) => `${j}:${m.role || "?"}`).join(","));
       return { i, key, raw, hit };
     })
   );
