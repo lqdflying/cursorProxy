@@ -913,8 +913,16 @@ export default async function handler(req) {
               // so thinking_delta / signature_delta / content_block_start for
               // thinking / redacted_thinking are included in the aggregated log.
               anthropicEventCounts.total++;
-              const evType = json.type ||
-                (json.delta?.type ? "delta:" + json.delta.type : "unknown");
+              let evType = json.type || "unknown";
+              // For compound event types, append the subtype so
+              // thinking_delta/signature_delta/text_delta are distinguishable
+              // and content_block_start subtypes (thinking, text, tool_use,
+              // redacted_thinking) are tracked separately.
+              if (json.type === "content_block_delta" && json.delta?.type) {
+                evType = "content_block_delta:" + json.delta.type;
+              } else if (json.type === "content_block_start" && json.content_block?.type) {
+                evType = "content_block_start:" + json.content_block.type;
+              }
               anthropicEventCounts[evType] = (anthropicEventCounts[evType] || 0) + 1;
 
               // When adaptive thinking is active, suppress thinking_delta and
