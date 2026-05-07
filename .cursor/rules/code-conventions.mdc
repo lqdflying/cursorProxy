@@ -176,3 +176,29 @@ Implementation lives in `api/reasoning.js` (helpers + `injectStoredReasoning` or
 - Fast follow-up races: retry with configurable delays (`KV_RETRY_DELAYS_MS`, default: `40,120,240,400`ms)
 - If KV miss: inject placeholder `"(prior reasoning unavailable)"` so DeepSeek/Kimi thinking mode doesn't reject the request
 - Provider gating set lives in `injectStoredReasoning()`: only `deepseek`, `kimi`, `minimax` get reasoning re-injected. Anthropic and Azure OpenAI are excluded.
+
+## GitHub Releases
+
+Release notes must **compare against the previous release tag**, not just describe the latest commit. A release accumulates all commits since the prior tag.
+
+### Process
+
+1. Find the previous tag: `git tag --sort=-v:refname | head -5`
+2. Collect all commits since it: `git log --oneline <prev_tag>..<new_tag>`
+3. Categorize commits into sections:
+   - **What's New** — user-facing features, new capabilities
+   - **Fixes** — bug fixes, stability, correctness
+   - **Documentation** — rule updates, wiki changes
+4. Write a short description for each group explaining *what the user gets* from these changes, not a mechanical list of commits.
+5. Include the GitHub comparison link at the bottom:
+   ```
+   **Full Changelog**: https://github.com/lqdflying/cursorProxy/compare/<prev_tag>...<new_tag>
+   ```
+
+### Creating the release via CLI
+
+```bash
+gh release edit <tag> --title "<tag>" --notes "..."
+```
+
+Use `gh release edit` (not `create`) when the tag already exists. Pass the notes body via heredoc to preserve formatting.
