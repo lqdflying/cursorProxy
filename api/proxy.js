@@ -228,24 +228,35 @@ export default async function handler(req) {
         hashBoundaryIdx = lastAssistantIdx;
       } else {
         // hasInput — native Responses-format array.
-        // Walk backward to find the contiguous assistant block at the tail.
-        // The block may be multiple items (e.g. message{role:assistant} then
-        // function_call items).  The lastAssistantIdx from the prior simple
-        // reduce would only capture the last assistant-related item, which
-        // broke the hash lookup because the write key included all items
-        // up to the assistant block start.
+        // Walk backward to find the contiguous assistant block.  Skip
+        // trailing non-assistant items first (the next request ends with
+        // a new user item), then scan through the assistant block to find
+        // both its first and last items.  The block may span multiple
+        // items (e.g. message{role:assistant} then function_call items).
         hashItems = parsedBody.input;
         let asstBlockEnd = -1;
         let asstBlockStart = hashItems.length;
-        for (let i = hashItems.length - 1; i >= 0; i--) {
-          const item = hashItems[i];
-          const isAsst = item.role === "assistant" ||
-            item.type === "function_call" ||
-            (item.type === "message" && item.role === "assistant");
-          if (!isAsst) break;
-          asstBlockEnd = (asstBlockEnd < 0) ? i : asstBlockEnd;
-          asstBlockStart = i;
+
+        // Skip trailing non-assistant items so the scan starts at the
+        // last assistant-related item (if any).
+        let start = hashItems.length - 1;
+        const isAsstItem = (item) =>
+          item.role === "assistant" ||
+          item.type === "function_call" ||
+          (item.type === "message" && item.role === "assistant");
+        while (start >= 0 && !isAsstItem(hashItems[start])) {
+          start--;
         }
+        if (start >= 0) {
+          asstBlockEnd = start;
+          asstBlockStart = start + 1;
+          // Walk backward through the contiguous assistant block.
+          for (let i = start; i >= 0; i--) {
+            if (!isAsstItem(hashItems[i])) break;
+            asstBlockStart = i;
+          }
+        }
+
         // hashBoundary: items BEFORE the assistant block (for response ID hash)
         // lastAssistantIdx: LAST item in the assistant block (for trim)
         hashBoundaryIdx = asstBlockStart;
@@ -406,7 +417,7 @@ export default async function handler(req) {
     }
   }
 
-  let azureModelName;
+  let azureModelName = upstreamModelName;
 
   {
     const openAiSanitized = sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName);
