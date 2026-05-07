@@ -2,6 +2,7 @@ import { kvGet, kvSet } from "./kv.js";
 import { createLogger } from "./logger.js";
 
 const { log, diag } = createLogger("reasoning");
+const { log: proxyLog } = createLogger("proxy");
 
 function reasoningField(providerKey) {
   return providerKey === "minimax" ? "reasoning_details" : "reasoning_content";
@@ -156,8 +157,8 @@ async function injectStoredReasoning({
       assistantIndices.map(async (i) => {
         const key = await conversationHash(originalMessages, i, scope);
         const result = await waitForStoredReasoning(providerKey, key);
-        log(
-          "INJECT idx:",
+        proxyLog(
+          "INJECT", "idx:",
           i,
           "key:",
           key,
@@ -178,7 +179,7 @@ async function injectStoredReasoning({
         injectedCount++;
         if (waitedMs > 0) {
           recoveredCount++;
-          log("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
+          proxyLog("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
         }
       } else {
         // Inject a non-empty placeholder so the reasoning field is present.
@@ -196,12 +197,12 @@ async function injectStoredReasoning({
           : "(prior reasoning unavailable)";
         messages[i] = { ...messages[i], [reasoningField(providerKey)]: placeholder };
         missedCount++;
-        log("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
+        proxyLog("INJECT_PLACEHOLDER", "idx:", i, "key:", key,
              "content:", contentLogSummary(messages[i].content));
       }
     }
-    if (recoveredCount > 0) log("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
-    if (missedCount > 0) log("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
+    if (recoveredCount > 0) proxyLog("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
+    if (missedCount > 0) proxyLog("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
   }
 
   return { parsedBody, injectedCount };
