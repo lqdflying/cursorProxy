@@ -783,29 +783,26 @@ export default async function handler(req) {
     const responsesToolState = new Map(); // call_id -> { id, name, partialJson }
 
     // Track Claude thinking blocks for KV caching (azureanthropic + adaptive thinking).
-    // Claude streams thinking as a content block that may include both thinking_delta
-    // and signature_delta events at the same content_block index.  Both must be
-    // captured and cached together so the re-injected block matches the original.
-    // Index -> { thinking, signature } — built incrementally, flushed on stream end.
-    const claudeThinkBlocks = new Map(); // index -> { thinking, signature }
+    // Store the content_block object from content_block_start directly, then mutate
+    // its fields as thinking_delta / signature_delta arrive.  This preserves the
+    // exact shape including empty-string fields (e.g. thinking: "" for omitted
+    // thinking) so the cached block round-trips unchanged.
+    const claudeThinkBlocks = new Map(); // index -> content_block object
     const claudeThinkActive = providerKey === "azureanthropic" &&
       parsedBody?.thinking?.type === "adaptive";
 
     async function cacheClaudeThinking() {
       if (!claudeThinkActive || claudeThinkBlocks.size === 0 || !replyReasoningKey) return;
       const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
-      // Reconstruct blocks in index order so the cached array matches the original content.
+      // Serialize blocks in index order.  The objects are the original
+      // content_block_start payloads with mutated fields, so the shape matches
+      // the final non-streaming content array exactly.
       const sorted = [...claudeThinkBlocks.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([, v]) => {
-          const block = { type: "thinking" };
-          if (v.thinking) block.thinking = v.thinking;
-          if (v.signature) block.signature = v.signature;
-          return block;
-        });
+        .map(([, block]) => block);
       await kvSet(claudeThinkKey, JSON.stringify(sorted))
         .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
-      const totalChars = sorted.reduce((sum, b) => sum + (b.thinking?.length || 0), 0);
+      const totalChars = sorted.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
       diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", sorted.length, "chars:", totalChars);
     }
 
@@ -888,31 +885,32 @@ export default async function handler(req) {
             // but the proxy and Cursor expect choices[0].delta.content.
             if (providerKey === "azureanthropic") {
               // When adaptive thinking is active, suppress thinking_delta and
-              // signature_delta events: accumulate them into claudeThinkBlocks
-              // keyed by content_block index instead of forwarding to Cursor.
-              // Claude sends signature_delta after thinking_delta for the same
-              // index; both must be preserved so the cached block round-trips
-              // correctly (the signature verifies the thinking block).
+              // signature_delta events: update the cached content_block object
+              // in place instead of forwarding to Cursor.  The content_block
+              // from content_block_start is stored directly so its exact shape
+              // (including empty-string fields like thinking: "" for omitted
+              // thinking) round-trips unchanged.
               if (claudeThinkActive && json?.delta?.type === "thinking_delta") {
                 const idx = json.index ?? 0;
-                const entry = claudeThinkBlocks.get(idx) || { thinking: "", signature: "" };
-                entry.thinking += (json.delta.thinking || "");
-                claudeThinkBlocks.set(idx, entry);
+                const block = claudeThinkBlocks.get(idx);
+                if (block) block.thinking = (block.thinking || "") + (json.delta.thinking || "");
                 continue;
               }
               if (claudeThinkActive && json?.delta?.type === "signature_delta") {
                 const idx = json.index ?? 0;
-                const entry = claudeThinkBlocks.get(idx) || { thinking: "", signature: "" };
-                entry.signature += (json.delta.signature || "");
-                claudeThinkBlocks.set(idx, entry);
+                const block = claudeThinkBlocks.get(idx);
+                if (block) block.signature = (block.signature || "") + (json.delta.signature || "");
                 continue;
               }
-              if (claudeThinkActive && json?.type === "content_block_start" &&
-                  json?.content_block?.type === "thinking") {
-                // Initialize an empty entry for this index (may receive
-                // thinking_delta and/or signature_delta later).
-                claudeThinkBlocks.set(json.index ?? 0, { thinking: "", signature: "" });
-                continue;
+              if (claudeThinkActive && json?.type === "content_block_start") {
+                const ct = json?.content_block?.type;
+                if (ct === "thinking" || ct === "redacted_thinking") {
+                  // Store the block object directly — deltas will mutate its
+                  // fields in place above.  For omitted thinking the block
+                  // already carries thinking: "" which is preserved as-is.
+                  claudeThinkBlocks.set(json.index ?? 0, { ...json.content_block });
+                  continue;
+                }
               }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               // Diagnostic: log event type and extracted text to debug silent streams
