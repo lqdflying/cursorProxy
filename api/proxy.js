@@ -909,6 +909,14 @@ export default async function handler(req) {
             // Anthropic uses events like content_block_delta with delta.text_delta,
             // but the proxy and Cursor expect choices[0].delta.content.
             if (providerKey === "azureanthropic") {
+              // Count ALL events per stream BEFORE any suppression branches,
+              // so thinking_delta / signature_delta / content_block_start for
+              // thinking / redacted_thinking are included in the aggregated log.
+              anthropicEventCounts.total++;
+              const evType = json.type ||
+                (json.delta?.type ? "delta:" + json.delta.type : "unknown");
+              anthropicEventCounts[evType] = (anthropicEventCounts[evType] || 0) + 1;
+
               // When adaptive thinking is active, suppress thinking_delta and
               // signature_delta events: update the cached content_block object
               // in place instead of forwarding to Cursor.  The content_block
@@ -938,11 +946,6 @@ export default async function handler(req) {
                 }
               }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
-              // Count event types per stream; log aggregated at stream end.
-              anthropicEventCounts.total++;
-              const evType = json.type ||
-                (json.delta?.type ? "delta:" + json.delta.type : "unknown");
-              anthropicEventCounts[evType] = (anthropicEventCounts[evType] || 0) + 1;
               if (mapped === "[DONE]") {
                 doneSeen = true;
                 log("STREAM_DONE_VIA_MESSAGE_STOP", "content:", accContent.length);
