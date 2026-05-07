@@ -202,9 +202,15 @@ async function injectStoredReasoning({
 
 // Extract thinking blocks from a non-streaming Azure Claude response.
 // Returns array of {type:"thinking", thinking:"..."} blocks, or null if none found.
+// Includes redacted_thinking blocks and thinking blocks that only carry a signature
+// (empty thinking + signature).  Anthropic docs explicitly warn that filtering only
+// thinking.thinking breaks round-tripping for redacted or signature-only blocks.
 function extractClaudeThinkingBlocks(responseJson) {
   if (!responseJson?.content || !Array.isArray(responseJson.content)) return null;
-  const blocks = responseJson.content.filter((b) => b?.type === "thinking" && b.thinking);
+  const blocks = responseJson.content.filter(
+    (b) => b?.type === "redacted_thinking" ||
+      (b?.type === "thinking" && (b.thinking || b.signature))
+  );
   return blocks.length > 0 ? blocks : null;
 }
 

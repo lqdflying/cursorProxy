@@ -783,19 +783,30 @@ export default async function handler(req) {
     const responsesToolState = new Map(); // call_id -> { id, name, partialJson }
 
     // Track Claude thinking blocks for KV caching (azureanthropic + adaptive thinking).
-    // Thinking deltas are accumulated here instead of being forwarded to Cursor,
-    // then written to KV when the stream completes.
-    let claudeThinkBuffer = "";
+    // Claude streams thinking as a content block that may include both thinking_delta
+    // and signature_delta events at the same content_block index.  Both must be
+    // captured and cached together so the re-injected block matches the original.
+    // Index -> { thinking, signature } — built incrementally, flushed on stream end.
+    const claudeThinkBlocks = new Map(); // index -> { thinking, signature }
     const claudeThinkActive = providerKey === "azureanthropic" &&
       parsedBody?.thinking?.type === "adaptive";
 
     async function cacheClaudeThinking() {
-      if (!claudeThinkActive || !claudeThinkBuffer || !replyReasoningKey) return;
+      if (!claudeThinkActive || claudeThinkBlocks.size === 0 || !replyReasoningKey) return;
       const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
-      const blocks = [{ type: "thinking", thinking: claudeThinkBuffer }];
-      await kvSet(claudeThinkKey, JSON.stringify(blocks))
+      // Reconstruct blocks in index order so the cached array matches the original content.
+      const sorted = [...claudeThinkBlocks.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, v]) => {
+          const block = { type: "thinking" };
+          if (v.thinking) block.thinking = v.thinking;
+          if (v.signature) block.signature = v.signature;
+          return block;
+        });
+      await kvSet(claudeThinkKey, JSON.stringify(sorted))
         .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
-      diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "chars:", claudeThinkBuffer.length);
+      const totalChars = sorted.reduce((sum, b) => sum + (b.thinking?.length || 0), 0);
+      diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", sorted.length, "chars:", totalChars);
     }
 
     async function cacheReasoningSnapshot(force = false) {
@@ -876,16 +887,31 @@ export default async function handler(req) {
             // Anthropic uses events like content_block_delta with delta.text_delta,
             // but the proxy and Cursor expect choices[0].delta.content.
             if (providerKey === "azureanthropic") {
-              // When adaptive thinking is active, suppress thinking_delta events:
-              // accumulate thinking text into claudeThinkBuffer instead of forwarding
-              // to Cursor.  Also suppress content_block_start for thinking blocks
-              // (which would emit an empty role marker).
+              // When adaptive thinking is active, suppress thinking_delta and
+              // signature_delta events: accumulate them into claudeThinkBlocks
+              // keyed by content_block index instead of forwarding to Cursor.
+              // Claude sends signature_delta after thinking_delta for the same
+              // index; both must be preserved so the cached block round-trips
+              // correctly (the signature verifies the thinking block).
               if (claudeThinkActive && json?.delta?.type === "thinking_delta") {
-                claudeThinkBuffer += (json.delta.thinking || "");
+                const idx = json.index ?? 0;
+                const entry = claudeThinkBlocks.get(idx) || { thinking: "", signature: "" };
+                entry.thinking += (json.delta.thinking || "");
+                claudeThinkBlocks.set(idx, entry);
+                continue;
+              }
+              if (claudeThinkActive && json?.delta?.type === "signature_delta") {
+                const idx = json.index ?? 0;
+                const entry = claudeThinkBlocks.get(idx) || { thinking: "", signature: "" };
+                entry.signature += (json.delta.signature || "");
+                claudeThinkBlocks.set(idx, entry);
                 continue;
               }
               if (claudeThinkActive && json?.type === "content_block_start" &&
                   json?.content_block?.type === "thinking") {
+                // Initialize an empty entry for this index (may receive
+                // thinking_delta and/or signature_delta later).
+                claudeThinkBlocks.set(json.index ?? 0, { thinking: "", signature: "" });
                 continue;
               }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
