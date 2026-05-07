@@ -252,6 +252,10 @@ async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, c
       const raw = await kvGet("claude_thinking:" + key);
       const hit = raw != null;
       log("CLAUDE_THINKING_LOOKUP", "idx:", i, "key:", key, "hit:", hit);
+      diag("CLAUDE_THINKING_LOOKUP_SOURCE",
+           "idx:", i,
+           "hashInputCount:", i,
+           "roles:", originalMessages.slice(0, i).map((m, j) => `${j}:${m.role || "?"}`).join(","));
       return { i, key, raw, hit };
     })
   );

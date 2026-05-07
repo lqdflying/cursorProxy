@@ -612,8 +612,11 @@ export default async function handler(req) {
       "url:", upstreamUrl,
       "method:", req.method,
       "headers:", JSON.stringify(hdrObj),
-      "body:", (bodyText || "").slice(0, 500),
-      "msgRoles:", parsedBody?.messages?.map((m, i) => `${i}:${m.role || "(none)"} type:${m.type || "-"}`)
+      "bodyLen:", (bodyText || "").length,
+      "model:", parsedBody?.model,
+      "stream:", parsedBody?.stream,
+      "msgCount:", parsedBody?.messages?.length,
+      "thinkingType:", parsedBody?.thinking?.type,
     );
   }
 
@@ -690,6 +693,10 @@ export default async function handler(req) {
         const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
         const thinkingBlocks = extractClaudeThinkingBlocks(json);
         if (thinkingBlocks) {
+          diag("CLAUDE_THINKING_WRITE_SOURCE",
+               "key:", claudeThinkKey,
+               "msgCount:", originalMessages?.length,
+               "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
           await kvSet(claudeThinkKey, JSON.stringify(thinkingBlocks))
             .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
           const totalChars = thinkingBlocks.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
@@ -790,6 +797,10 @@ export default async function handler(req) {
       parsedBody?.thinking?.type === "adaptive";
     let claudeThinkingCached = false;
 
+    // Aggregate Anthropic SSE event counts per stream to reduce DEBUG log volume.
+    // Per-event logging was ~800 log lines per stream; this collapses to 1.
+    const anthropicEventCounts = { total: 0 };
+
     async function cacheClaudeThinking() {
       if (claudeThinkingCached || !claudeThinkActive || claudeThinkBlocks.size === 0 || !replyReasoningKey) return;
       const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
@@ -813,6 +824,10 @@ export default async function handler(req) {
         .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
       claudeThinkingCached = true;
       const totalChars = sorted.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
+      diag("CLAUDE_THINKING_WRITE_SOURCE",
+           "key:", claudeThinkKey,
+           "msgCount:", originalMessages?.length,
+           "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
       diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", sorted.length, "chars:", totalChars);
     }
 
@@ -923,14 +938,11 @@ export default async function handler(req) {
                 }
               }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
-              // Diagnostic metadata only. Do not log text/thinking fragments:
-              // production DEBUG exports are otherwise too large and leak prompts.
-              log("ANTHROPIC_EVENT", "type:", json.type,
-                   "index:", json.index,
-                   "delta_type:", json.delta?.type,
-                   "text_len:", typeof json.delta?.text === "string" ? json.delta.text.length : 0,
-                   "thinking_len:", typeof json.delta?.thinking === "string" ? json.delta.thinking.length : 0,
-                   "content_block_type:", json.content_block?.type);
+              // Count event types per stream; log aggregated at stream end.
+              anthropicEventCounts.total++;
+              const evType = json.type ||
+                (json.delta?.type ? "delta:" + json.delta.type : "unknown");
+              anthropicEventCounts[evType] = (anthropicEventCounts[evType] || 0) + 1;
               if (mapped === "[DONE]") {
                 doneSeen = true;
                 log("STREAM_DONE_VIA_MESSAGE_STOP", "content:", accContent.length);
@@ -1055,6 +1067,9 @@ export default async function handler(req) {
       if (!timedOut) {
         await cacheAzResponseId();
         await cacheClaudeThinking();
+      }
+      if (providerKey === "azureanthropic" && anthropicEventCounts.total > 0) {
+        log("ANTHROPIC_EVENTS", anthropicEventCounts);
       }
       diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
