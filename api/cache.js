@@ -78,7 +78,7 @@ export function normalizeContent(content) {
         // Anthropic native format: {type:"image", source:{type:"base64",
         //   media_type:"image/png", data:"..."}}
         if (b.source?.data) {
-          parts.push("I:src:" + b.source.data.slice(0, 64));
+          parts.push("I:src:" + b.source.data);
         } else if (b.source?.url) {
           parts.push("I:src:" + b.source.url);
         }
