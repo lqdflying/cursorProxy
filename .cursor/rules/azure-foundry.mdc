@@ -190,6 +190,71 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
 
 4. **Two-format divergence**: The `messages` and `input` branches diverged when the feature was first implemented. Both paths must be tested against real traffic — not just unit tests.
 
+## Claude Thinking KV Caching (azureanthropic only)
+
+Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thinking/signature blocks in its content array. Without caching, Claude re-reasons from scratch on every turn, wasting tokens. The proxy caches these blocks in KV and re-injects them into prior assistant messages on subsequent turns.
+
+### Where the code lives
+
+| Concern | Location |
+|---|---|
+| Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `api/cache.js` |
+| Write — non-streaming | `api/proxy.js` line ~691: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` |
+| Write — streaming | `api/proxy.js` ~807: `cacheClaudeThinking()` in the SSE IIFE |
+| Read — injection | `api/proxy.js` ~493: calls `injectClaudeThinkingBlocks()` from `api/reasoning.js` |
+| SSE suppression | `api/proxy.js` ~926-945: `thinking_delta` / `signature_delta` / `content_block_start(thinking|redacted_thinking)` suppressed from Cursor |
+| Key prefix | `asst:` — distinct from `conv:` (reasoning bridge) and `azresp:conv:` (Azure response ID chaining) |
+
+### Why a separate hash function
+
+The reasoning bridge uses `conversationHash()` which does `JSON.stringify(messages.slice(0, upTo))`. For Claude thinking, this produced 0% hit rate across 3 log exports because Cursor mutates message content format between turns (string content becomes `[{type:"text", text:"..."}]`, image blocks get normalized, etc.).
+
+The fix: `normalizedConversationHash()` reduces each message to `{r: role, c: typedCanonical}` where `c` is an array of typed objects like `{t:"text"}`, `{i:{d:"..."}}`, `{u:"name|args"}`, `{r:{i:"id", t:"text"}}`. This is format-independent and structurally unambiguous — no text content can look like a block marker.
+
+### Why typed objects, not flat strings
+
+Flat-string markers like `"I:src:..."` structurally collide with text content containing those same strings. Typed JSON objects (`{t:...}`, `{i:...}`, `{u:...}`) produce unambiguous JSON — `JSON.stringify` cannot produce a `{t:` key from text block content.
+
+### Lifecycle
+
+```
+Turn 1 (no cache):                         Turn 2 (cache hit):
+  proxy sends full messages[]                proxy reads KV → thinking blocks for idx=1
+  ↓                                          injects blocks into messages[1].content
+  Claude responds with thinking block        ↓
+  ↓                                          proxy forwards to Claude with thinking pre-filled
+  proxy extracts thinking from response      ↓
+  proxy writes kvSet("claude_thinking:       Claude skips re-reasoning, saves tokens
+    asst:<hash>", [thinkingBlock])
+```
+
+### Diagnostics
+
+| Tag | Meaning |
+|---|---|
+| `CLAUDE_THINKING_INJECTED` | Proxy-level summary: cache hits this request (count) |
+| `CLAUDE_THINKING_INJECTED` (reasoning) | Per-message injection: which index, which key, how many blocks |
+| `CLAUDE_THINKING_CACHED` | Write succeeded: key, blocks count, thinking chars total |
+| `CLAUDE_THINKING_MISS` | KV lookup returned null for a given assistant position |
+| `CLAUDE_THINKING_INCOMPLETE` | Streaming write skipped: thinking block lacks signature (broken stream) |
+| `CLAUDE_THINKING_WRITE_ERROR` | KV write failed (error message) |
+| `CLAUDE_THINKING_WRITE_SOURCE` | Write-side hash input metadata (msgCount, roles — no content) |
+| `CLAUDE_THINKING_LOOKUP_SOURCE` | Read-side hash input metadata (idx, hashInputCount, roles — no content) |
+| `CLAUDE_THINKING_LOOKUP` | DEBUG-gated: per-lookup hit/miss detail |
+| `ANTHROPIC_EVENTS` | Aggregated per-stream event type counts (including `thinking_delta` / `signature_delta` counts) |
+
+### Pitfalls (lessons learned)
+
+1. **conversationHash produced unstable keys**: Cursor mutates message format between turns. Raw `JSON.stringify(messages)` was a non-starter — full typed canonicalization was required.
+
+2. **Flat-string markers cause structural collisions**: First attempt used `"I:"`, `"U:"`, `"R:"` prefixes. User text containing those strings produced false hash matches. Typed JSON objects are unambiguous.
+
+3. **Truncated identity data causes collisions**: `source.data.slice(0, 64)` was used for image identity. Two different images with the same 64-char prefix hashed identically. Full values only — SHA-256 reduces them anyway.
+
+4. **SSE counter placement matters**: Per-event counters were initially placed after `continue` branches that suppressed thinking/signature events, undercounting them. Count immediately after `JSON.parse`, before any branching.
+
+5. **Separate hash function, not a fix to conversationHash**: Changing `conversationHash` would have orphaned working reasoning bridge and Azure response ID caches. A separate function with its own key prefix is zero-risk to other features.
+
 ## Response Transformations
 
 ### Non-Streaming (azureopenai)

@@ -140,3 +140,66 @@ diag("CACHE_LOOKUP_SOURCE",
 - On the read side, log the assistant index AND the hash input count (which should equal the write-side msgCount if the conversation is the same)
 - After one deploy, compare write-side msgCount+roles against read-side hashInputCount+roles to pinpoint the mismatch
 - Do NOT change the hash computation until the mismatch is confirmed — otherwise you invalidate all cached keys across the deploy boundary (see KV/cache key stability above)
+
+## Content normalization for hash stability
+
+When `JSON.stringify(rawMessages)` produces different output on write and read paths (because Cursor mutates message format between turns — e.g., `"hello"` string becomes `[{type:"text", text:"hello"}]` array), normalize to a typed canonical form before hashing.
+
+### Three anti-patterns (all burned in this rollout)
+
+**1. Flat strings with marker prefixes cause structural collisions**
+
+```js
+// BAD: text "I:src:abc" collides with image {source: {data: "abc"}}
+parts.push("I:src:" + b.source.data);
+parts.push("hello\n"); // text block — no distinct type marker
+```
+
+String-based markers like `"I:"`, `"U:"`, `"R:"` are not safe — user text can contain them.
+
+**Fix: use typed JSON objects that JSON.stringify produces unambiguous output**
+
+```js
+// GOOD: typed objects — no text can look like an image block
+{ t: "hello" }         // text
+{ i: { d: "...data" } } // image
+{ u: "name|args" }      // tool_use
+{ r: { i: "...", t: "..." } } // tool_result
+```
+
+**2. Never truncate identity-bearing data**
+
+```js
+// BAD: two different base64 images with same first 64 chars → same key
+b.source.data.slice(0, 64)
+```
+
+Full values only. SHA-256 will reduce them to fixed size anyway.
+
+**3. Strings and text-only arrays must canonicalize identically**
+
+```js
+// MUST: "hello" → [{t:"hello"}]
+// MUST: [{type:"text", text:"hello"}] → [{t:"hello"}]
+// Both produce identical JSON.stringify output
+```
+
+This is the core use case — Cursor mutates `content: "hello"` to `content: [{type:"text", text:"hello"}]` between turns.
+
+### When to create a separate hash function vs fix the existing one
+
+If a hash is working for other features (e.g., `conversationHash` for the reasoning bridge), do NOT change it — create a parallel function with a distinct key prefix. This prevents orphaning working caches.
+
+```js
+// conversationHash — untouched, still uses raw JSON.stringify
+// normalizedConversationHash — new, uses typed canonicalization
+export async function normalizedConversationHash(messages, upTo, scope) {
+  const prefix = messages.slice(0, upTo).map((m) => ({
+    r: m.role || "?",
+    c: canonicalizeContent(m.content),
+  }));
+  return sha256Prefix(scope + ":" + JSON.stringify(prefix), "asst:");
+}
+```
+
+Note the distinct key prefix (`"asst:"` vs `"conv:"`) — makes it obvious in logs which scheme produced a given key, and prevents collision with existing cached keys.
