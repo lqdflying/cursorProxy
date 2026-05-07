@@ -800,6 +800,16 @@ export default async function handler(req) {
       const sorted = [...claudeThinkBlocks.entries()]
         .sort(([a], [b]) => a - b)
         .map(([, block]) => block);
+      // Guard against broken streams: if any thinking block lacks a signature,
+      // the block is incomplete (stream died after thinking_delta but before
+      // signature_delta).  Caching and re-injecting an unverified block would
+      // break the next turn.  redacted_thinking blocks don't carry signatures.
+      const incomplete = sorted.some((b) => b.type === "thinking" && !b.signature);
+      if (incomplete) {
+        diag("CLAUDE_THINKING_INCOMPLETE", "key:", claudeThinkKey,
+             "blocks:", sorted.length, "hint: stream ended before signature_delta");
+        return;
+      }
       await kvSet(claudeThinkKey, JSON.stringify(sorted))
         .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
       const totalChars = sorted.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);

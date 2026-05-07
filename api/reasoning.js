@@ -227,9 +227,11 @@ async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, c
     .filter((i) => {
       const msg = messages[i];
       if (msg.role !== "assistant") return false;
-      // Skip messages that already have multi-block content with a thinking block
+      // Skip messages that already have multi-block content with a thinking
+      // or redacted_thinking block (already injected, or preserved from a prior
+      // non-streaming response).  Re-injecting would duplicate the content.
       if (Array.isArray(msg.content)) {
-        const hasThinking = msg.content.some((b) => b?.type === "thinking");
+        const hasThinking = msg.content.some((b) => b?.type === "thinking" || b?.type === "redacted_thinking");
         if (hasThinking) return false;
       }
       return true;
