@@ -292,7 +292,7 @@ data: [DONE]
 ## Security
 
 - **Auth keys never logged**: Redact `api-key`, `x-api-key`, and `authorization` values before any diagnostic output.
-- **Request dumps behind DEBUG**: `UPSTREAM_REQUEST_DUMP` logs request bodies which contain user prompts — must be gated behind `DEBUG=true`.
+- **Request dumps behind DEBUG**: `UPSTREAM_REQUEST_DUMP` logs request metadata (url, method, bodyLen, model, stream, msgCount, thinkingType) — never request body content, even when `DEBUG=true`. Body content contains user prompts and must never appear in logs.
 - **Header isolation**: For Azure providers, wipe all incoming headers and only add back `content-type`, `host`, and auth. This prevents Cursor's `Authorization` header from leaking upstream.
 
 ## Provider Routing

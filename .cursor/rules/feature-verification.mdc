@@ -85,3 +85,58 @@ if (hasMessages) {
 ```
 
 Export diagnostic tags from BOTH branches so a production log export reveals which path is taken. If only one branch's tags appear, the feature is only partially deployed.
+
+## Metrics before control flow in SSE/stream loops
+
+In SSE or stream processing loops with conditional `continue` branches that suppress certain events, place counter increments and diagnostic logging **immediately after parsing**, BEFORE any branching logic.
+
+```js
+// CORRECT: count before any continue
+if (providerKey === "azureanthropic") {
+  // Count ALL events here, before suppression branches
+  eventCounts.total++;
+  eventCounts[json.type] = (eventCounts[json.type] || 0) + 1;
+
+  if (shouldSuppress) {
+    // ... mutate state ...
+    continue; // event still counted above
+  }
+  // ... non-suppressed events fall through ...
+}
+```
+
+Placing counters after `continue` branches silently undercounts the exact events you're suppressing — which are often the ones you most need diagnostics for (e.g., thinking_delta counts for Claude thinking cache debugging).
+
+## Cache key mismatch debugging (WRITE_SOURCE / LOOKUP_SOURCE)
+
+When a new KV cache has 0% hit rate across multiple sessions despite writes succeeding, the root cause is almost always one of:
+
+1. **Hash input asymmetry**: write and read paths hash different data (e.g., write hashes messages up to `resolvedMsgIndex`, read hashes up to `resolvedMsgIndex + 1`)
+2. **Data mutation between turns**: the client normalizes/mutates message objects between requests, so `JSON.stringify(messages)` in one turn doesn't match the next
+3. **Separate conversations**: writes and reads are for genuinely different conversations, not the same one continuing
+
+To diagnose which case it is, add **paired metadata diagnostics** on both sides:
+
+**Write side** (`CLAUDE_THINKING_WRITE_SOURCE`):
+```js
+diag("CACHE_WRITE_SOURCE",
+     "key:", cacheKey,
+     "msgCount:", originalMessages?.length,
+     "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
+```
+
+**Read side** (`CLAUDE_THINKING_LOOKUP_SOURCE`):
+```js
+diag("CACHE_LOOKUP_SOURCE",
+     "idx:", assistantIdx,
+     "hashInputCount:", assistantIdx, // messages hashed = slice(0, idx)
+     "roles:", messages.slice(0, assistantIdx).map((m, j) => `${j}:${m.role || "?"}`).join(","));
+```
+
+**Rules for these diagnostics:**
+- Log **roles and counts only** — no message content, no tool names, no prompt text
+- Use `diag()` (always-on) so they appear without `DEBUG=true`
+- On the write side, log the full message count that was hashed
+- On the read side, log the assistant index AND the hash input count (which should equal the write-side msgCount if the conversation is the same)
+- After one deploy, compare write-side msgCount+roles against read-side hashInputCount+roles to pinpoint the mismatch
+- Do NOT change the hash computation until the mismatch is confirmed — otherwise you invalidate all cached keys across the deploy boundary (see KV/cache key stability above)
