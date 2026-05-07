@@ -60,7 +60,7 @@ Both `diag()` and `log()` emit to all platforms from every `api/*.js` module. Th
 ```
 [cursorProxy:proxy] START POST https://one.example.com/v1/chat/completions?... pathname: /v1/chat/completions provider(query): (infer)
 [cursorProxy:proxy] RESOLVED model: deepseek-chat provider: deepseek stream: true
-[cursorProxy:proxy] INJECT idx: 3 key: conv:abc... hit: true waitedMs: 0
+[cursorProxy:reasoning] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0
 ```
 
 #### Argument format rules
