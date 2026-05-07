@@ -15,7 +15,7 @@ import {
   sanitizeAzureOpenAIBody,
 } from "./azure-openai.js";
 import { checkProxyAuth, jsonErrorResponse } from "./auth.js";
-import { cacheScopeUserId, conversationHash, sha256ImageHash } from "./cache.js";
+import { cacheScopeUserId, conversationHash, normalizedConversationHash, normalizeContent, sha256ImageHash } from "./cache.js";
 import {
   isModelDiscoveryRequest,
   modelDiscoveryResponse,
@@ -490,7 +490,7 @@ export default async function handler(req) {
   // The existing reasoning bridge (DeepSeek/Kimi/MiniMax) uses reasoning_content
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
   if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type === "adaptive") {
-    const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash);
+    const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash);
     if (claudeInjected > 0) {
       bodyText = JSON.stringify(parsedBody);
       diag("CLAUDE_THINKING_INJECTED", "count:", claudeInjected);
@@ -689,14 +689,17 @@ export default async function handler(req) {
     // Extract and cache thinking blocks BEFORE mapping, since the mapper
     // discards them (only text/tool_use blocks survive the conversion).
     if (providerKey === "azureanthropic") {
-      if (parsedBody?.thinking?.type === "adaptive" && replyReasoningKey) {
-        const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
+      if (parsedBody?.thinking?.type === "adaptive" && originalMessages) {
+        const claudeThinkKey = "claude_thinking:" + await normalizedConversationHash(
+          originalMessages, originalMessages.length, scope
+        );
         const thinkingBlocks = extractClaudeThinkingBlocks(json);
         if (thinkingBlocks) {
           diag("CLAUDE_THINKING_WRITE_SOURCE",
                "key:", claudeThinkKey,
                "msgCount:", originalMessages?.length,
-               "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
+               "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","),
+               "normContentLen:", originalMessages?.length ? normalizeContent(originalMessages[originalMessages.length - 1].content).length : 0);
           await kvSet(claudeThinkKey, JSON.stringify(thinkingBlocks))
             .catch((err) => diag("CLAUDE_THINKING_WRITE_ERROR", err?.message));
           const totalChars = thinkingBlocks.reduce((sum, b) => sum + (typeof b.thinking === "string" ? b.thinking.length : 0), 0);
@@ -797,13 +800,22 @@ export default async function handler(req) {
       parsedBody?.thinking?.type === "adaptive";
     let claudeThinkingCached = false;
 
+    // Pre-compute the Claude thinking cache key using normalized hash so
+    // the write-side key matches the read-side key regardless of content
+    // format changes that Cursor may apply between turns.
+    let claudeThinkKey = null;
+    if (claudeThinkActive && originalMessages) {
+      claudeThinkKey = "claude_thinking:" + await normalizedConversationHash(
+        originalMessages, originalMessages.length, scope
+      );
+    }
+
     // Aggregate Anthropic SSE event counts per stream to reduce DEBUG log volume.
     // Per-event logging was ~800 log lines per stream; this collapses to 1.
     const anthropicEventCounts = { total: 0 };
 
     async function cacheClaudeThinking() {
-      if (claudeThinkingCached || !claudeThinkActive || claudeThinkBlocks.size === 0 || !replyReasoningKey) return;
-      const claudeThinkKey = "claude_thinking:" + replyReasoningKey;
+      if (claudeThinkingCached || !claudeThinkKey || claudeThinkBlocks.size === 0) return;
       // Serialize blocks in index order.  The objects are the original
       // content_block_start payloads with mutated fields, so the shape matches
       // the final non-streaming content array exactly.
@@ -827,7 +839,8 @@ export default async function handler(req) {
       diag("CLAUDE_THINKING_WRITE_SOURCE",
            "key:", claudeThinkKey,
            "msgCount:", originalMessages?.length,
-           "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","));
+           "roles:", originalMessages?.map((m, i) => `${i}:${m.role || "?"}`).join(","),
+           "normContentLen:", originalMessages?.length ? normalizeContent(originalMessages[originalMessages.length - 1].content).length : 0);
       diag("CLAUDE_THINKING_CACHED", "key:", claudeThinkKey, "blocks:", sorted.length, "chars:", totalChars);
     }
 

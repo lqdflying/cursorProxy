@@ -1,5 +1,6 @@
 import { kvGet, kvSet } from "./kv.js";
 import { createLogger } from "./logger.js";
+import { normalizeContent } from "./cache.js";
 
 const { log, diag } = createLogger("reasoning");
 
@@ -225,7 +226,7 @@ function extractClaudeThinkingBlocks(responseJson) {
 // that have string content (non-tool turns). Tool-using assistants already
 // have array content; thinking blocks are prepended to the existing array.
 // Returns count of messages injected.
-async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash) {
+async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash) {
   const messages = parsedBody.messages;
   if (!messages) return 0;
 
@@ -248,14 +249,15 @@ async function injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, c
 
   const fetched = await Promise.all(
     assistantIndices.map(async (i) => {
-      const key = await conversationHash(originalMessages, i, scope);
+      const key = await normalizedConversationHash(originalMessages, i, scope);
       const raw = await kvGet("claude_thinking:" + key);
       const hit = raw != null;
       log("CLAUDE_THINKING_LOOKUP", "idx:", i, "key:", key, "hit:", hit);
       diag("CLAUDE_THINKING_LOOKUP_SOURCE",
            "idx:", i,
            "hashInputCount:", i,
-           "roles:", originalMessages.slice(0, i).map((m, j) => `${j}:${m.role || "?"}`).join(","));
+           "roles:", originalMessages.slice(0, i).map((m, j) => `${j}:${m.role || "?"}`).join(","),
+           "normContentLen:", normalizeContent(messages[i].content).length);
       return { i, key, raw, hit };
     })
   );

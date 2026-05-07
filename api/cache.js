@@ -47,3 +47,30 @@ export async function conversationHash(messages, upTo, scope) {
   const prefix = messages.slice(0, upTo);
   return sha256Prefix(scope + ":" + JSON.stringify(prefix), "conv:");
 }
+
+// Normalize message content to a stable string regardless of input format.
+// Cursor may mutate content between turns (string -> array of text blocks),
+// so raw JSON.stringify produces different hashes.  This extracts the
+// semantic content in a format-independent way.
+export function normalizeContent(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b) => b?.type === "text" && b.text)
+      .map((b) => b.text)
+      .join("\n");
+  }
+  return "";
+}
+
+// Hash messages up to index `upTo` after normalizing each message to
+// { role, content }.  Tool calls, system metadata, and format wrappers
+// are stripped so the key is stable across Cursor turns.
+// Key prefix is "asst:" (distinct from "conv:" used by the reasoning bridge).
+export async function normalizedConversationHash(messages, upTo, scope) {
+  const prefix = messages.slice(0, upTo).map((m) => ({
+    role: m.role || "unknown",
+    content: normalizeContent(m.content),
+  }));
+  return sha256Prefix(scope + ":" + JSON.stringify(prefix), "asst:");
+}
