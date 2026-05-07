@@ -243,6 +243,7 @@ export default async function handler(req) {
         const isAsstItem = (item) =>
           item.role === "assistant" ||
           item.type === "function_call" ||
+          item.type === "reasoning" ||
           (item.type === "message" && item.role === "assistant");
         while (start >= 0 && !isAsstItem(hashItems[start])) {
           start--;
