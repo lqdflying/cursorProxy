@@ -70,12 +70,21 @@ function logAzureInputShape(providerKey, parsedBody, stage) {
     "contentTypes:", formatCounts(shape.contentTypes));
 }
 
+function azureTextPartType(role) {
+  const isAssistant = role === "assistant";
+  return isAssistant ? "output_text" : "input_text";
+}
+
+function azureTextPart(text, role) {
+  return { type: azureTextPartType(role), text };
+}
+
 function normalizeAzureContentPart(part, role) {
   if (!part || typeof part !== "object" || Array.isArray(part)) return false;
 
   let changed = false;
+  const inputTextType = azureTextPartType(role);
   const isAssistant = role === "assistant";
-  const inputTextType = isAssistant ? "output_text" : "input_text";
 
   if (!part.type && typeof part.text === "string") {
     part.type = inputTextType;
@@ -111,13 +120,22 @@ function normalizeAzureMessageItem(item) {
     changed = true;
   }
 
-  if (item.content && typeof item.content === "object" && !Array.isArray(item.content)) {
+  if (typeof item.content === "string") {
+    item.content = [azureTextPart(item.content, item.role)];
+    changed = true;
+  } else if (item.content && typeof item.content === "object" && !Array.isArray(item.content)) {
     item.content = [item.content];
     changed = true;
   }
 
   if (Array.isArray(item.content)) {
-    for (const part of item.content) {
+    for (let i = 0; i < item.content.length; i++) {
+      const part = item.content[i];
+      if (typeof part === "string") {
+        item.content[i] = azureTextPart(part, item.role);
+        changed = true;
+        continue;
+      }
       if (normalizeAzureContentPart(part, item.role)) {
         changed = true;
       }

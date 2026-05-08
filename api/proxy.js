@@ -1088,17 +1088,18 @@ export default async function handler(req) {
                 // Cursor expects OpenAI Chat Completions stream semantics, which
                 // always terminate with data: [DONE].  Without this, a stream that
                 // ends via response.completed (no raw [DONE] line) looks hung.
-                if (responsesEvent === "response.completed") {
+                if (responsesEvent === "response.completed" || responsesEvent === "response.incomplete") {
                   doneSeen = true;
                   const completed = json?.response || {};
-                  diag("AZURE_RESPONSE_COMPLETED",
+                  diag(responsesEvent === "response.incomplete" ? "AZURE_RESPONSE_INCOMPLETE" : "AZURE_RESPONSE_COMPLETED",
                        "status:", completed.status || "(none)",
                        "error:", completed.error?.code || completed.error?.message || "(none)",
                        "incomplete:", completed.incomplete_details?.reason || "(none)");
-                  log("STREAM_DONE_VIA_RESPONSE_COMPLETED", "content:", accContent.length);
+                  log(responsesEvent === "response.incomplete" ? "STREAM_DONE_VIA_RESPONSE_INCOMPLETE" : "STREAM_DONE_VIA_RESPONSE_COMPLETED",
+                      "content:", accContent.length);
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
-                  logAzureStreamSummary("response.completed");
+                  logAzureStreamSummary(responsesEvent);
                   await writer.write(encoder.encode("data: [DONE]\n\n"));
                 }
                 continue; // skip events that produce no output
