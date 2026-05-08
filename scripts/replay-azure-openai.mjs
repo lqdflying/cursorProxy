@@ -137,13 +137,19 @@ try {
     tools: [
       { type: "bash_20250124", name: "run_command", description: "Run command", input_schema: { type: "object" } },
       { type: "custom", name: "freeform", description: "Native custom tool", input_schema: { type: "object" } },
+      { type: "custom", name: "freeform_text", description: "Native custom text tool", format: { type: "text" } },
     ],
   }, () => completedResponse("resp_versioned_tool"));
-  assert.deepEqual(captures[0].body.tools.map((tool) => tool.type), ["function", "custom"]);
+  assert.deepEqual(captures[0].body.tools.map((tool) => tool.type), ["function", "function", "function"]);
   assert.equal(captures[0].body.tools[0].name, "run_command");
   assert.deepEqual(captures[0].body.tools[0].parameters, { type: "object" });
   assert.equal(captures[0].body.tools[0].input_schema, undefined);
-  assert.deepEqual(captures[0].body.tools[1].input_schema, { type: "object" });
+  assert.equal(captures[0].body.tools[1].name, "freeform");
+  assert.deepEqual(captures[0].body.tools[1].parameters, { type: "object" });
+  assert.equal(captures[0].body.tools[1].input_schema, undefined);
+  assert.equal(captures[0].body.tools[2].name, "freeform_text");
+  assert.equal(captures[0].body.tools[2].format, undefined);
+  assert.equal(captures[0].body.tools[2].parameters.properties.input.type, "string");
 
   reset();
   const incompleteText = await call({

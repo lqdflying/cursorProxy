@@ -23,7 +23,6 @@ const AZURE_OPENAI_RESPONSE_TOOL_TYPES = new Set([
   "image_generation",
   "local_shell",
   "shell",
-  "custom",
   "apply_patch",
 ]);
 
@@ -33,6 +32,16 @@ function isKnownResponsesToolType(type) {
 
 function isPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function defaultCustomToolParameters() {
+  return {
+    type: "object",
+    properties: {
+      input: { type: "string" },
+    },
+    required: ["input"],
+  };
 }
 
 function isAzureReasoningModel(providerKey, azureModelName) {
@@ -456,21 +465,28 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
       continue;
     }
 
-    // Step 1: Convert Anthropic-format tools (named, no wrapper) to
+    // Step 1: Convert Anthropic/custom tool definitions to
     // Responses {type:"function", ...}. Versioned Anthropic beta tool
-    // types carry input_schema; native Responses tool types are preserved.
+    // types carry input_schema; native custom tools produce custom_tool_call,
+    // which Chat Completions clients cannot answer with custom_tool_call_output.
+    // Convert them to function tools so downstream tool outputs remain compatible.
     const isAnthropicFunctionTool =
       tool.name &&
       !tool.function &&
-      (!tool.type || (tool.input_schema && !isKnownResponsesToolType(tool.type)));
+      (
+        !tool.type ||
+        tool.type === "custom" ||
+        (tool.input_schema && !isKnownResponsesToolType(tool.type))
+      );
     if (isAnthropicFunctionTool) {
       const normalized = {
         ...tool,
         type: "function",
-        parameters: tool.parameters || tool.input_schema || {},
+        parameters: tool.parameters || tool.input_schema || defaultCustomToolParameters(),
       };
       // description is valid in Responses API — preserve it for tool selection
       delete normalized.input_schema;
+      delete normalized.format;
       filtered.push(normalized);
       toolsFixed = true;
       continue;

@@ -40,7 +40,7 @@ import {
 import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
-const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v4";
+const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v5";
 let proxyAuthWarningLogged = false;
 
 const PROVIDERS = {
