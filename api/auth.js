@@ -34,7 +34,7 @@ export function allowedEnvValue(name, allowed) {
 
 /** If CURSORPROXY_API_KEY is set, require Bearer or x-api-key match. */
 export function checkProxyAuth(req) {
-  const required = process.env.CURSORPROXY_API_KEY;
+  const required = cleanEnvValue("CURSORPROXY_API_KEY");
   if (!required) return null;
   const secret = extractProxySecret(req);
   if (!secret || !timingSafeEqualStr(secret, required)) {

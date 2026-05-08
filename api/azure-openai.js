@@ -491,7 +491,7 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
 
     case "response.refusal.delta": {
       const text = data.delta || "";
-      return { choices: [{ index: 0, delta: { content: text } }] };
+      return { choices: [{ index: 0, delta: { refusal: text } }] };
     }
 
     case "response.function_call_arguments.delta": {

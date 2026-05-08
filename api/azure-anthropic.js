@@ -175,7 +175,7 @@ function mapAnthropicResponseToOpenAI(json) {
     id: json.id || "msg_unknown",
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
-    model: json.model || json.id,
+    model: json.model || "",
     choices: [{
       index: 0,
       message: {
@@ -292,13 +292,8 @@ function mapAnthropicSSEToOpenAI(json, toolState) {
             }],
           };
         }
-        // No matching start event — emit partial anyway as text
-        return {
-          choices: [{
-            index: idx,
-            delta: { content: partial },
-          }],
-        };
+        // No matching start event; partial tool JSON is not user-visible text.
+        return null;
       }
       return null;
     }

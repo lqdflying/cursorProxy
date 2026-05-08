@@ -14,6 +14,11 @@ function diag(...args) {
   console.log("[cursorProxy:kv]", ...args);
 }
 
+async function responsePreview(res) {
+  const text = await res.text().catch(() => "");
+  return text ? text.slice(0, 240) : "(empty)";
+}
+
 export function setKvDriver(driver) {
   _driver = driver;
 }
@@ -67,6 +72,10 @@ export async function kvGet(key) {
       const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!res.ok) {
+        diag("GET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
+        return null;
+      }
       const json = await res.json();
       return json.result ?? null;
     } catch (err) {
@@ -116,10 +125,17 @@ export async function kvSet(key, value, ttlSeconds) {
   const token = process.env.KV_TOKEN;
   if (url && token) {
     try {
-      await fetch(
-        `${url}/set/${encodeURIComponent(key)}/${encodeURIComponent(value)}?EX=${ttl}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      const res = await fetch(`${url}/set/${encodeURIComponent(key)}?EX=${ttl}`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "content-type": "text/plain",
+        },
+        body: String(value),
+      });
+      if (!res.ok) {
+        diag("SET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
+      }
     } catch (err) { diag("SET_ERROR", "upstash", err?.message); }
     return;
   }

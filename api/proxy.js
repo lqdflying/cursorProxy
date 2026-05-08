@@ -15,7 +15,7 @@ import {
   normalizeAzureOpenAITools,
   sanitizeAzureOpenAIBody,
 } from "./azure-openai.js";
-import { checkProxyAuth, jsonErrorResponse } from "./auth.js";
+import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "./auth.js";
 import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "./cache.js";
 import {
   isModelDiscoveryRequest,
@@ -39,6 +39,7 @@ import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v4";
+let proxyAuthWarningLogged = false;
 
 const PROVIDERS = {
   deepseek: {
@@ -103,6 +104,38 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
+function decodedPathCandidates(pathParam) {
+  const candidates = [pathParam];
+  let current = pathParam;
+  for (let i = 0; i < 2; i++) {
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) break;
+      candidates.push(decoded);
+      current = decoded;
+    } catch {
+      break;
+    }
+  }
+  return candidates;
+}
+
+function isUnsafeUpstreamPath(pathParam) {
+  if (!pathParam) return false;
+  for (const candidate of decodedPathCandidates(pathParam)) {
+    if (
+      candidate.startsWith("/") ||
+      candidate.startsWith("\\") ||
+      candidate.includes("\\") ||
+      candidate.includes("\0") ||
+      candidate.split("/").includes("..")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function upstreamApiKey(providerKey) {
   const meta = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
   return process.env[meta.apiKeyEnv] || "";
@@ -131,6 +164,10 @@ export default async function handler(req) {
   let azureReplyKey = null; // KV key for saving Azure response ID
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
+  if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
+    proxyAuthWarningLogged = true;
+    diag("AUTH_DISABLED", "CURSORPROXY_API_KEY unset; anonymous clients share cache scope");
+  }
 
   const url = new URL(req.url);
   const pathname = url.pathname;
@@ -146,6 +183,16 @@ export default async function handler(req) {
     const response = modelDiscoveryResponse(req);
     diag("RES", response.status, "path:", pathParam, "provider: models", "ms:", Date.now() - t0);
     return response;
+  }
+
+  if (isUnsafeUpstreamPath(pathParam)) {
+    diag("INVALID_PATH", "path:", pathParam);
+    return jsonErrorResponse(
+      400,
+      "Invalid upstream path.",
+      "invalid_path",
+      "invalid_request_error"
+    );
   }
 
   // Parse body early for model-based routing (unified /v1 without provider query)
@@ -910,6 +957,7 @@ export default async function handler(req) {
       // break the next turn.  redacted_thinking blocks don't carry signatures.
       const incomplete = sorted.some((b) => b.type === "thinking" && !b.signature);
       if (incomplete) {
+        claudeThinkingCached = true;
         diag("CLAUDE_THINKING_INCOMPLETE", "key:", claudeThinkKey,
              "blocks:", sorted.length, "hint: stream ended before signature_delta");
         return;
@@ -1060,6 +1108,7 @@ export default async function handler(req) {
               }
               const mapped = mapAnthropicSSEToOpenAI(json, anthropicToolState);
               if (mapped === "[DONE]") {
+                if (doneSeen) continue;
                 doneSeen = true;
                 log("STREAM_DONE_VIA_MESSAGE_STOP", "content:", accContent.length);
                 await cacheReasoningSnapshot(true);

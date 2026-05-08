@@ -63,13 +63,16 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
 
-    // Best-effort extract model for access log (parse failures are silent)
+    // Best-effort extract model for access log (parse failures are silent).
+    // Gate behind DEBUG so large image payloads are not stringified on every request.
     let modelInfo = "";
-    try {
-      const json = JSON.parse(body.toString());
-      if (json.model) modelInfo += ` model=${json.model}`;
-      modelInfo += ` stream=${json.stream ?? "-"}`;
-    } catch {}
+    if (DEBUG) {
+      try {
+        const json = JSON.parse(body.toString());
+        if (json.model) modelInfo += ` model=${json.model}`;
+        modelInfo += ` stream=${json.stream ?? "-"}`;
+      } catch {}
+    }
 
     // Build Web API Headers (join any multi-value arrays)
     const headersInit = {};
