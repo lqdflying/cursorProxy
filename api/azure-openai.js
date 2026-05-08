@@ -177,13 +177,8 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
 
   const filtered = [];
   for (const tool of parsedBody.tools) {
-    // Drop non-function, non-tool types (files, web_search, etc.)
-    // "tool" is Anthropic-native — convert it to "function" below
-    if (tool.type && tool.type !== "function" && tool.type !== "tool") {
-      toolsFixed = true;
-      continue;
-    }
-    // Convert Anthropic format to Responses API format (internally-tagged)
+    // Step 1: Convert Anthropic-format tools (named, no wrapper) → Responses {type:"function", ...}
+    // Must run BEFORE the type filter so versioned types like bash_20250124 are converted first.
     if (tool.name && !tool.function) {
       tool.type = "function";
       tool.parameters = tool.input_schema || {};
@@ -191,14 +186,18 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
       delete tool.input_schema;
       toolsFixed = true;
     }
-    // Already in Chat Completions format { type:"function", function:{...} }?
-    // Unwrap to Responses API format (internally-tagged).
+    // Step 2: Unwrap Chat Completions format { type:"function", function:{...} } → inline
     else if (tool.type === "function" && tool.function) {
       tool.name = tool.function.name || "";
       tool.description = tool.function.description || "";
       tool.parameters = tool.function.parameters || {};
       delete tool.function;
       toolsFixed = true;
+    }
+    // Step 3: Drop non-function types that could not be converted (files, web_search, etc.)
+    if (tool.type && tool.type !== "function") {
+      toolsFixed = true;
+      continue;
     }
     filtered.push(tool);
   }
