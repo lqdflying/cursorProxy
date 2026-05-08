@@ -145,6 +145,60 @@ function normalizeAzureMessageItem(item) {
   return changed;
 }
 
+function azureContentText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (!part || typeof part !== "object" || Array.isArray(part)) return "";
+        return part.text ?? part.refusal ?? "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    return content.text ?? content.refusal ?? "";
+  }
+  return "";
+}
+
+function promoteInstructionInputItems(parsedBody) {
+  if (!Array.isArray(parsedBody?.input)) return false;
+
+  let changed = false;
+  const instructionTexts = [];
+  const roleCounts = {};
+  const remaining = [];
+
+  for (const item of parsedBody.input) {
+    if (item?.type === "message" && (item.role === "system" || item.role === "developer")) {
+      const text = azureContentText(item.content).trim();
+      if (text) {
+        instructionTexts.push(text);
+        incrementCount(roleCounts, item.role);
+      }
+      changed = true;
+      continue;
+    }
+    remaining.push(item);
+  }
+
+  if (!changed) return false;
+
+  parsedBody.input = remaining;
+  if (instructionTexts.length > 0) {
+    parsedBody.instructions = [parsedBody.instructions, ...instructionTexts]
+      .filter((value) => typeof value === "string" && value.trim())
+      .join("\n\n");
+    diag("AZURE_INSTRUCTIONS_FROM_INPUT",
+      "roles:", formatCounts(roleCounts),
+      "chars:", instructionTexts.reduce((sum, text) => sum + text.length, 0));
+  }
+
+  return true;
+}
+
 function normalizeAzureOpenAIInputContent(providerKey, parsedBody) {
   if (providerKey !== "azureopenai" || !Array.isArray(parsedBody?.input)) {
     return { parsedBody, changed: false };
@@ -157,6 +211,9 @@ function normalizeAzureOpenAIInputContent(providerKey, parsedBody) {
     if (normalizeAzureMessageItem(item)) {
       changed = true;
     }
+  }
+  if (promoteInstructionInputItems(parsedBody)) {
+    changed = true;
   }
 
   if (changed) {
