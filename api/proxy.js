@@ -11,6 +11,7 @@ import {
 import {
   mapResponsesSSEToOpenAI,
   mapResponsesToOpenAI,
+  normalizeAzureOpenAIInputContent,
   normalizeAzureOpenAITools,
   sanitizeAzureOpenAIBody,
 } from "./azure-openai.js";
@@ -399,6 +400,14 @@ export default async function handler(req) {
              "trimmed:", prevRespId ? "yes" : "no (stateless)",
              "prevResp:", prevRespId ? prevRespId.slice(0, 20) + "..." : "(none)");
       }
+    }
+  }
+
+  {
+    const inputResult = normalizeAzureOpenAIInputContent(providerKey, parsedBody);
+    parsedBody = inputResult.parsedBody;
+    if (inputResult.changed) {
+      bodyText = JSON.stringify(parsedBody);
     }
   }
 
@@ -824,9 +833,12 @@ export default async function handler(req) {
     let buffer = "";
     let accReasoning = null;
     let accContent = "";
+    let accRefusal = "";
     let doneSeen = false;
     let lastCachedReasoningSize = 0;
     let azureResponseId = null; // captured from response.created for KV write
+    let azureFunctionDeltaCount = 0;
+    let azureStreamSummaryLogged = false;
     // Track Anthropic tool_use blocks by index for converting input_json_delta
     // to OpenAI-style tool_calls format.
     const anthropicToolState = new Map(); // index -> { id, name, partialJson }
@@ -859,6 +871,27 @@ export default async function handler(req) {
     // Aggregate Anthropic SSE event counts per stream to reduce DEBUG log volume.
     // Per-event logging was ~800 log lines per stream; this collapses to 1.
     const anthropicEventCounts = { total: 0 };
+    const azureEventCounts = { total: 0 };
+
+    function countAzureEvent(eventName) {
+      const key = eventName || "unknown";
+      azureEventCounts.total++;
+      azureEventCounts[key] = (azureEventCounts[key] || 0) + 1;
+    }
+
+    function logAzureStreamSummary(reason) {
+      if (providerKey !== "azureopenai" || azureStreamSummaryLogged || azureEventCounts.total === 0) return;
+      azureStreamSummaryLogged = true;
+      diag("AZURE_STREAM_SUMMARY",
+           "reason:", reason,
+           "content:", accContent.length,
+           "refusal:", accRefusal.length,
+           "functionArgDeltas:", azureFunctionDeltaCount,
+           "events:", JSON.stringify(azureEventCounts));
+      if (accRefusal) {
+        log("AZURE_REFUSAL_PREVIEW", accRefusal.slice(0, 240));
+      }
+    }
 
     async function cacheClaudeThinking() {
       if (claudeThinkingCached || !claudeThinkKey || claudeThinkBlocks.size === 0) return;
@@ -957,6 +990,7 @@ export default async function handler(req) {
             await cacheReasoningSnapshot(true);
             await cacheAzResponseId();
             await cacheClaudeThinking();
+            logAzureStreamSummary("[DONE]");
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
           }
@@ -1028,15 +1062,23 @@ export default async function handler(req) {
             // Transform Azure Responses API SSE events into OpenAI-compatible format.
             // Responses API uses named events (event: response.output_text.delta)
             // with data payloads, unlike Anthropic's data-only content_block_delta.
-            if (providerKey === "azureopenai" && currentResponsesEvent) {
-              const mapped = mapResponsesSSEToOpenAI(currentResponsesEvent, json, responsesToolState);
+            if (providerKey === "azureopenai" && (currentResponsesEvent || json?.type)) {
+              const responsesEvent = json?.type || currentResponsesEvent;
+              countAzureEvent(responsesEvent);
+              if (responsesEvent === "response.refusal.delta") {
+                accRefusal += json?.delta || "";
+              } else if (responsesEvent === "response.function_call_arguments.delta") {
+                azureFunctionDeltaCount++;
+              }
+
+              const mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
               if (mapped) {
                 json = mapped;
               } else {
                 // Capture the response ID from the first SSE event so we can
                 // write it to KV and enable previous_response_id chaining on
                 // the next turn.
-                if (currentResponsesEvent === "response.created" && !azureResponseId) {
+                if (responsesEvent === "response.created" && !azureResponseId) {
                   azureResponseId = json?.response?.id || null;
                   if (azureResponseId) {
                     log("STREAM_AZ_RESP_ID", "id:", azureResponseId);
@@ -1046,11 +1088,17 @@ export default async function handler(req) {
                 // Cursor expects OpenAI Chat Completions stream semantics, which
                 // always terminate with data: [DONE].  Without this, a stream that
                 // ends via response.completed (no raw [DONE] line) looks hung.
-                if (currentResponsesEvent === "response.completed") {
+                if (responsesEvent === "response.completed") {
                   doneSeen = true;
+                  const completed = json?.response || {};
+                  diag("AZURE_RESPONSE_COMPLETED",
+                       "status:", completed.status || "(none)",
+                       "error:", completed.error?.code || completed.error?.message || "(none)",
+                       "incomplete:", completed.incomplete_details?.reason || "(none)");
                   log("STREAM_DONE_VIA_RESPONSE_COMPLETED", "content:", accContent.length);
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
+                  logAzureStreamSummary("response.completed");
                   await writer.write(encoder.encode("data: [DONE]\n\n"));
                 }
                 continue; // skip events that produce no output
@@ -1141,6 +1189,7 @@ export default async function handler(req) {
       if (providerKey === "azureanthropic" && anthropicEventCounts.total > 0) {
         log("ANTHROPIC_EVENTS", anthropicEventCounts);
       }
+      logAzureStreamSummary(timedOut ? "timeout" : "finally");
       diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
     }

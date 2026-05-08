@@ -10,6 +10,145 @@ function isAzureReasoningModel(providerKey, azureModelName) {
     && /^(?:o\d(?:[-.]|$)|gpt-5(?:\.\d+)?(?:[-.]|$))/i.test(azureModelName || "");
 }
 
+function incrementCount(counts, key) {
+  const normalized = key || "(none)";
+  counts[normalized] = (counts[normalized] || 0) + 1;
+}
+
+function formatCounts(counts) {
+  const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length
+    ? entries.map(([key, count]) => `${key}:${count}`).join(",")
+    : "(none)";
+}
+
+function azureInputShape(input) {
+  const shape = {
+    roles: {},
+    itemTypes: {},
+    contentTypes: {},
+    items: Array.isArray(input) ? input.length : 0,
+  };
+
+  if (!Array.isArray(input)) return shape;
+
+  for (const item of input) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      incrementCount(shape.itemTypes, typeof item);
+      continue;
+    }
+    incrementCount(shape.roles, item.role);
+    incrementCount(shape.itemTypes, item.type);
+
+    const content = item.content;
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part && typeof part === "object" && !Array.isArray(part)) {
+          incrementCount(shape.contentTypes, part.type);
+        } else {
+          incrementCount(shape.contentTypes, typeof part);
+        }
+      }
+    } else if (content != null) {
+      incrementCount(shape.contentTypes, typeof content);
+    }
+  }
+
+  return shape;
+}
+
+function logAzureInputShape(providerKey, parsedBody, stage) {
+  if (providerKey !== "azureopenai" || !Array.isArray(parsedBody?.input)) return;
+
+  const shape = azureInputShape(parsedBody.input);
+  diag("AZURE_INPUT_SHAPE",
+    "provider:", providerKey,
+    "stage:", stage,
+    "inputItems:", shape.items,
+    "roles:", formatCounts(shape.roles),
+    "itemTypes:", formatCounts(shape.itemTypes),
+    "contentTypes:", formatCounts(shape.contentTypes));
+}
+
+function normalizeAzureContentPart(part, role) {
+  if (!part || typeof part !== "object" || Array.isArray(part)) return false;
+
+  let changed = false;
+  const isAssistant = role === "assistant";
+  const inputTextType = isAssistant ? "output_text" : "input_text";
+
+  if (!part.type && typeof part.text === "string") {
+    part.type = inputTextType;
+    changed = true;
+  } else if (part.type === "text") {
+    part.type = inputTextType;
+    changed = true;
+  } else if (isAssistant && part.type === "input_text") {
+    part.type = "output_text";
+    changed = true;
+  } else if (!isAssistant && part.type === "output_text") {
+    part.type = "input_text";
+    changed = true;
+  } else if (part.type === "image_url") {
+    const imageUrl = typeof part.image_url === "string"
+      ? part.image_url
+      : part.image_url?.url;
+    part.type = "input_image";
+    if (imageUrl) part.image_url = imageUrl;
+    changed = true;
+  }
+
+  return changed;
+}
+
+function normalizeAzureMessageItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+
+  let changed = false;
+  const hasMessageShape = item.role && Object.prototype.hasOwnProperty.call(item, "content");
+  if (!item.type && hasMessageShape) {
+    item.type = "message";
+    changed = true;
+  }
+
+  if (item.content && typeof item.content === "object" && !Array.isArray(item.content)) {
+    item.content = [item.content];
+    changed = true;
+  }
+
+  if (Array.isArray(item.content)) {
+    for (const part of item.content) {
+      if (normalizeAzureContentPart(part, item.role)) {
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
+
+function normalizeAzureOpenAIInputContent(providerKey, parsedBody) {
+  if (providerKey !== "azureopenai" || !Array.isArray(parsedBody?.input)) {
+    return { parsedBody, changed: false };
+  }
+
+  logAzureInputShape(providerKey, parsedBody, "before");
+
+  let changed = false;
+  for (const item of parsedBody.input) {
+    if (normalizeAzureMessageItem(item)) {
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    logAzureInputShape(providerKey, parsedBody, "after");
+    diag("AZURE_INPUT_NORMALIZED", "provider:", providerKey);
+  }
+
+  return { parsedBody, changed };
+}
+
 function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
   if (providerKey !== "azureopenai" || !parsedBody) {
     return { parsedBody, sanitized: false, isReasoningModel: false };
@@ -90,9 +229,13 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
   if ("system" in parsedBody && typeof parsedBody.system === "string") {
     if (!("instructions" in parsedBody)) {
       diag("SYSTEM_WITHOUT_INSTRUCTIONS", "provider:", providerKey, "systemLen:", parsedBody.system.length);
+      parsedBody.instructions = parsedBody.system;
+      sanitized = true;
     } else {
       diag("SYSTEM_AND_INSTRUCTIONS", "provider:", providerKey);
     }
+    delete parsedBody.system;
+    sanitized = true;
   }
 
   // Known valid OpenAI Responses API params.
@@ -181,7 +324,7 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     // Must run BEFORE the type filter so versioned types like bash_20250124 are converted first.
     if (tool.name && !tool.function) {
       tool.type = "function";
-      tool.parameters = tool.input_schema || {};
+      tool.parameters = tool.parameters || tool.input_schema || {};
       // description is valid in Responses API — preserve it for tool selection
       delete tool.input_schema;
       toolsFixed = true;
@@ -225,8 +368,8 @@ function mapResponsesToOpenAI(json) {
     if (item.type === "message" && item.role === "assistant") {
       if (Array.isArray(item.content)) {
         textContent = item.content
-          .filter((c) => c.type === "output_text")
-          .map((c) => c.text)
+          .filter((c) => c.type === "output_text" || c.type === "refusal")
+          .map((c) => c.text ?? c.refusal ?? "")
           .join("");
       } else if (typeof item.content === "string") {
         textContent = item.content;
@@ -267,6 +410,11 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
 
   switch (eventName) {
     case "response.output_text.delta": {
+      const text = data.delta || "";
+      return { choices: [{ index: 0, delta: { content: text } }] };
+    }
+
+    case "response.refusal.delta": {
       const text = data.delta || "";
       return { choices: [{ index: 0, delta: { content: text } }] };
     }
@@ -322,6 +470,7 @@ export {
   isAzureReasoningModel,
   mapResponsesSSEToOpenAI,
   mapResponsesToOpenAI,
+  normalizeAzureOpenAIInputContent,
   normalizeAzureOpenAITools,
   sanitizeAzureOpenAIBody,
 };
