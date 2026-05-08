@@ -86,17 +86,6 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
     diag("REASONING_EFFORT", "effort:", parsedBody.reasoning.effort, "provider:", providerKey);
   }
 
-  // PROBE: tool shape diagnostics — understand what format Cursor sends tools in
-  if (parsedBody.tools?.length) {
-    const nTools = parsedBody.tools.length;
-    const nAnthropicFmt = parsedBody.tools.filter(t => t.name && !t.function).length;
-    const nChatCmplFmt = parsedBody.tools.filter(t => t.type === "function" && t.function).length;
-    diag("TOOLS_SHAPE", "provider:", providerKey, "total:", nTools, "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt);
-    if (parsedBody.tool_choice) {
-      diag("TOOL_CHOICE_SHAPE", "provider:", providerKey, "value:", JSON.stringify(parsedBody.tool_choice).slice(0, 200));
-    }
-  }
-
   // PROBE: detect system field present without instructions
   if ("system" in parsedBody && typeof parsedBody.system === "string") {
     if (!("instructions" in parsedBody)) {
@@ -147,10 +136,42 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
   }
 
   let toolsFixed = false;
+
+  // PROBE: raw tool shape before conversion — what format did Cursor actually send?
+  {
+    const nTools = parsedBody.tools.length;
+    const nAnthropicFmt = parsedBody.tools.filter(t => t.name && !t.function).length;
+    const nChatCmplFmt = parsedBody.tools.filter(t => t.type === "function" && t.function).length;
+    const nNativeToolType = parsedBody.tools.filter(t => t.type === "tool").length;
+    diag("TOOLS_SHAPE", "provider:", providerKey, "total:", nTools,
+      "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt, "nativeToolType:", nNativeToolType);
+    if (parsedBody.tool_choice) {
+      diag("TOOL_CHOICE_SHAPE", "provider:", providerKey, "value:", JSON.stringify(parsedBody.tool_choice).slice(0, 200));
+    }
+  }
+
+  // Normalize Anthropic tool_choice to OpenAI Responses format.
+  // Anthropic: { type:"any" }, { type:"tool", name:"x" }, { type:"auto" }
+  // Responses: "required", { type:"function", name:"x" }, "auto"/"none"/"required" (strings)
+  if (parsedBody.tool_choice && typeof parsedBody.tool_choice === "object") {
+    const tc = parsedBody.tool_choice;
+    if (tc.type === "any") {
+      parsedBody.tool_choice = "required";
+      toolsFixed = true;
+    } else if (tc.type === "tool" && tc.name) {
+      parsedBody.tool_choice = { type: "function", name: tc.name };
+      toolsFixed = true;
+    } else if (tc.type === "auto") {
+      delete parsedBody.tool_choice;
+      toolsFixed = true;
+    }
+  }
+
   const filtered = [];
   for (const tool of parsedBody.tools) {
-    // Only "function" type tools are valid for OpenAI
-    if (tool.type && tool.type !== "function") {
+    // Drop non-function, non-tool types (files, web_search, etc.)
+    // "tool" is Anthropic-native — convert it to "function" below
+    if (tool.type && tool.type !== "function" && tool.type !== "tool") {
       toolsFixed = true;
       continue;
     }
