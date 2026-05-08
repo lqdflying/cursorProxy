@@ -286,7 +286,7 @@ export default async function handler(req) {
         // items (e.g. message{role:assistant} then function_call items).
         hashItems = [...parsedBody.input];
         let asstBlockEnd = -1;
-        let asstBlockStart = -1;
+        let asstBlockStart = hashItems.length;
 
         // Skip trailing non-assistant items so the scan starts at the
         // last assistant-related item (if any).
@@ -301,6 +301,7 @@ export default async function handler(req) {
         }
         if (start >= 0) {
           asstBlockEnd = start;
+          asstBlockStart = start + 1;
           // Walk backward through the contiguous assistant block.
           for (let i = start; i >= 0; i--) {
             if (!isAsstItem(hashItems[i])) break;
@@ -310,10 +311,8 @@ export default async function handler(req) {
 
         // hashBoundary: items BEFORE the assistant block (for response ID hash)
         // lastAssistantIdx: LAST item in the assistant block (for trim)
-        if (asstBlockEnd >= 0) {
-          hashBoundaryIdx = asstBlockStart;
-          lastAssistantIdx = asstBlockEnd;
-        }
+        hashBoundaryIdx = asstBlockStart;
+        lastAssistantIdx = asstBlockEnd;
       }
 
       // Compute hashes from the original Cursor/request input shape before
@@ -819,22 +818,12 @@ export default async function handler(req) {
     // Convert Responses API output to Chat Completions format
     if (providerKey === "azureopenai") {
       const azureRespId = json.id;
-      const azureRespStatus = json.status || null;
-      const azureRespIncompleteReason = json.incomplete_details?.reason || null;
       json = mapResponsesToOpenAI(json);
       // Save the Azure response ID to KV so the next turn can chain via
       // previous_response_id instead of re-sending the full conversation.
       if (azureRespId && azureReplyKey) {
-        if (azureRespStatus && azureRespStatus !== "completed") {
-          log("SKIP_CACHE_AZ_RESP_ID",
-              "key:", azureReplyKey,
-              "id:", azureRespId,
-              "status:", azureRespStatus,
-              "incomplete:", azureRespIncompleteReason || "(none)");
-        } else {
-          log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId);
-          await kvSet("azresp:" + azureReplyKey, azureRespId);
-        }
+        log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId);
+        await kvSet("azresp:" + azureReplyKey, azureRespId);
       }
     }
 
