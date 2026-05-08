@@ -150,9 +150,10 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     }
   }
 
-  // Normalize Anthropic tool_choice to OpenAI Responses format.
-  // Anthropic: { type:"any" }, { type:"tool", name:"x" }, { type:"auto" }
-  // Responses: "required", { type:"function", name:"x" }, "auto"/"none"/"required" (strings)
+  // Normalize tool_choice to OpenAI Responses format.
+  // Anthropic: { type:"any" }, { type:"tool", name:"x" }, { type:"auto" }, { type:"none" }
+  // Chat Completions: { type:"function", function:{ name:"x" } }
+  // Responses: "required", { type:"function", name:"x" }, "none", or absent (auto default)
   if (parsedBody.tool_choice && typeof parsedBody.tool_choice === "object") {
     const tc = parsedBody.tool_choice;
     if (tc.type === "any") {
@@ -163,6 +164,13 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
       toolsFixed = true;
     } else if (tc.type === "auto") {
       delete parsedBody.tool_choice;
+      toolsFixed = true;
+    } else if (tc.type === "none") {
+      parsedBody.tool_choice = "none";
+      toolsFixed = true;
+    } else if (tc.type === "function" && tc.function?.name) {
+      // Chat Completions forced-tool shape: unwrap to Responses {type:"function", name}
+      parsedBody.tool_choice = { type: "function", name: tc.function.name };
       toolsFixed = true;
     }
   }
