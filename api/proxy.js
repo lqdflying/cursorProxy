@@ -127,6 +127,8 @@ function isUnsafeUpstreamPath(pathParam) {
       candidate.startsWith("/") ||
       candidate.startsWith("\\") ||
       candidate.includes("\\") ||
+      candidate.includes("?") ||
+      candidate.includes("#") ||
       candidate.includes("\0") ||
       candidate.split("/").includes("..")
     ) {
@@ -282,7 +284,7 @@ export default async function handler(req) {
         // a new user item), then scan through the assistant block to find
         // both its first and last items.  The block may span multiple
         // items (e.g. message{role:assistant} then function_call items).
-        hashItems = parsedBody.input;
+        hashItems = [...parsedBody.input];
         let asstBlockEnd = -1;
         let asstBlockStart = hashItems.length;
 
@@ -313,8 +315,10 @@ export default async function handler(req) {
         lastAssistantIdx = asstBlockEnd;
       }
 
-      // Compute the reply key now so we can save the response ID after the
-      // upstream call (messages are deleted below in the messages path).
+      // Compute hashes from the original Cursor/request input shape before
+      // forwarding-only normalizers mutate parsedBody. Do not move any
+      // input/messages/tool/content normalization above this block unless the
+      // read and write hash fixtures are updated together.
       // conversationHash(messages, upTo, scope) hashes messages.slice(0, upTo),
       // so upTo=hashItems.length hashes ALL items.
       azureReplyKey = await conversationHash(hashItems, hashItems.length, azureScope);
@@ -564,7 +568,7 @@ export default async function handler(req) {
     diag("THINKING", "provider: deepseek", "reasoning_effort:", effort, "raw_env:", process.env.DEEPSEEK_REASONING_EFFORT || "(unset)");
   }
 
-  const originalMessages = parsedBody?.messages ? [...parsedBody.messages] : null;
+  const originalMessages = parsedBody?.messages ? structuredClone(parsedBody.messages) : null;
 
   const scopeUser = await cacheScopeUserId(req);
   const scope = providerKey + ":" + scopeUser;
@@ -1150,6 +1154,7 @@ export default async function handler(req) {
                 // always terminate with data: [DONE].  Without this, a stream that
                 // ends via response.completed (no raw [DONE] line) looks hung.
                 if (responsesEvent === "response.completed" || responsesEvent === "response.incomplete") {
+                  if (doneSeen) continue;
                   doneSeen = true;
                   const completed = json?.response || {};
                   azureResponseTerminalStatus = responsesEvent === "response.incomplete"

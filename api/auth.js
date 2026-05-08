@@ -24,7 +24,7 @@ export function jsonErrorResponse(status, message, code, type = "invalid_request
 }
 
 export function cleanEnvValue(name) {
-  return (process.env[name] || "").trim().replace(/^["']|["']$/g, "");
+  return (process.env[name] || "").trim().replace(/^(["'])(.*)\1$/, "$2");
 }
 
 export function allowedEnvValue(name, allowed) {
