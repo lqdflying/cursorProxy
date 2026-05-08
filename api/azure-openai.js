@@ -483,6 +483,47 @@ function mapResponsesToOpenAI(json) {
 function mapResponsesSSEToOpenAI(eventName, data, toolState) {
   if (!data) return null;
 
+  function getToolCallState(callId, name) {
+    if (!toolState.has(callId)) {
+      toolState.set(callId, { id: callId, name: name || "", partialJson: "" });
+    }
+    const state = toolState.get(callId);
+    if (!state.name && name) state.name = name;
+    return state;
+  }
+
+  function mapToolCallArgumentsTail({ callId, idx, name, finalArgs }) {
+    const state = getToolCallState(callId, name);
+    let tail = "";
+
+    if (finalArgs.startsWith(state.partialJson)) {
+      tail = finalArgs.slice(state.partialJson.length);
+      state.partialJson = finalArgs;
+    } else if (finalArgs.length > state.partialJson.length) {
+      // Deltas and final args diverged; emitting a tail would corrupt JSON.
+      diag("TOOL_ARGS_DONE_MISMATCH",
+        "callId:", callId,
+        "partialLen:", state.partialJson.length,
+        "finalLen:", finalArgs.length);
+      state.partialJson = finalArgs;
+    }
+
+    if (!tail) return null;
+    return {
+      choices: [{
+        index: 0,
+        delta: {
+          tool_calls: [{
+            index: idx,
+            id: callId,
+            type: "function",
+            function: { name: state.name, arguments: tail },
+          }],
+        },
+      }],
+    };
+  }
+
   switch (eventName) {
     case "response.output_text.delta": {
       const text = data.delta || "";
@@ -496,12 +537,9 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
 
     case "response.function_call_arguments.delta": {
       const partial = data.delta || "";
-      const callId = data.call_id || "call_0";
+      const callId = data.call_id || data.item_id || "call_0";
       const idx = data.output_index ?? 0;
-      if (!toolState.has(callId)) {
-        toolState.set(callId, { id: callId, name: data.name || "", partialJson: "" });
-      }
-      const state = toolState.get(callId);
+      const state = getToolCallState(callId, data.name);
       state.partialJson += partial;
       return {
         choices: [{
@@ -519,7 +557,7 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
         return { choices: [{ index: 0, delta: { role: "assistant", content: "" } }] };
       }
       if (item?.type === "function_call") {
-        const callId = item.call_id || "call_0";
+        const callId = item.call_id || item.id || "call_0";
         const idx = data.output_index ?? 0;
         toolState.set(callId, { id: callId, name: item.name || "", partialJson: "" });
         return {
@@ -532,6 +570,34 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
         };
       }
       return null;
+    }
+
+    case "response.function_call_arguments.done": {
+      const callId = data.call_id || data.item_id || "call_0";
+      const idx = data.output_index ?? 0;
+      const finalArgs = typeof data.arguments === "string" ? data.arguments : "";
+      return mapToolCallArgumentsTail({
+        callId,
+        idx,
+        name: data.name || "",
+        finalArgs,
+      });
+    }
+
+    case "response.output_item.done": {
+      const item = data.item;
+      if (item?.type !== "function_call") return null;
+      const callId = item.call_id || item.id || "call_0";
+      const idx = data.output_index ?? 0;
+      const finalArgs = typeof item.arguments === "string"
+        ? item.arguments
+        : (item.arguments != null ? JSON.stringify(item.arguments) : "");
+      return mapToolCallArgumentsTail({
+        callId,
+        idx,
+        name: item.name || "",
+        finalArgs,
+      });
     }
 
     default:

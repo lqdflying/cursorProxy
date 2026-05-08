@@ -1170,6 +1170,24 @@ export default async function handler(req) {
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
                   logAzureStreamSummary(responsesEvent);
+                  let finishReason;
+                  if (azureResponseIncompleteReason === "max_output_tokens") {
+                    finishReason = "length";
+                  } else if (azureResponseIncompleteReason === "content_filter") {
+                    finishReason = "content_filter";
+                  } else if (responsesToolState.size > 0) {
+                    finishReason = "tool_calls";
+                  } else {
+                    finishReason = "stop";
+                  }
+                  const finishChunk = withPublicResponseModel({
+                    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+                  }, responseModelName);
+                  await writer.write(
+                    encoder.encode(
+                      "data: " + JSON.stringify(stripResponseChunk(finishChunk)) + "\n\n"
+                    )
+                  );
                   await writer.write(encoder.encode("data: [DONE]\n\n"));
                 }
                 continue; // skip events that produce no output
