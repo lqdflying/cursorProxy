@@ -1,0 +1,32 @@
+---
+description: Pre-commit checklist for request transformation code — docs-first + full-path trace
+alwaysApply: true
+---
+# Review Gating
+
+Before committing any code that touches request body transformations (sanitizers, normalizers, mappers, filters, whitelists):
+
+## 1. Docs-first for API parameter changes
+
+Before adding, removing, or changing how any API parameter is handled, search the official docs to confirm the parameter exists, is accepted, and is used for the purpose claimed.
+
+- `delete tool.description; // optional, not needed by Responses` — wrong. Searching would have shown description is used for tool selection.
+- Use `microsoft_docs_search` (Azure), `WebSearch` (OpenAI/other), or `context7-mcp` (libraries).
+- Do not assume a parameter is optional or unused based on naming convention.
+
+## 2. Full-path trace for every input shape
+
+Before committing a fix, enumerate the distinct input shapes the code can receive and walk each through the full call chain (not just the function being edited).
+
+- `proxy.js` calls `normalizeAzureOpenAITools` BEFORE `sanitizeAzureOpenAIBody` — probes placed in the sanitizer see already-mutated data.
+- Versioned Anthropic types like `{type:"bash_20250124", name:"bash", ...}` hit `type !== "function"` filters before conversion.
+- `{type:"tool", name:"x"}` was dropped because the filter only allowed `type:"function"`.
+- Chat Completions `{type:"function", function:{name}}` tool_choice wasn't handled because the normalizer only covered Anthropic shapes.
+
+To verify: run `node --input-type=module -e "import { fn } from './api/file.js'; ..."` with each input shape before committing.
+
+## 3. Cross-check counts in logs
+
+When production logs show `IN: X, OUT: Y` with X ≠ Y, trace why one item was lost. Do not ship until counts match or the discrepancy is explained.
+
+- `TOOLS_SHAPE total: 19` + `TOOLS_FIXED withDesc: 18` = one tool silently dropped.
