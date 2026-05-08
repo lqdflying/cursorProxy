@@ -9,7 +9,9 @@ import {
   sanitizeAzureAnthropicBody,
 } from "./azure-anthropic.js";
 import {
+  isResponsesTerminalEvent,
   mapResponsesSSEToOpenAI,
+  mapResponsesTerminalToOpenAI,
   mapResponsesToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeAzureOpenAITools,
@@ -291,10 +293,27 @@ export default async function handler(req) {
         // Skip trailing non-assistant items so the scan starts at the
         // last assistant-related item (if any).
         let start = hashItems.length - 1;
+        const assistantOutputItemTypes = new Set([
+          "function_call",
+          "reasoning",
+          "file_search_call",
+          "web_search_call",
+          "computer_call",
+          "computer_use_preview_call",
+          "code_interpreter_call",
+          "image_generation_call",
+          "local_shell_call",
+          "shell_call",
+          "custom_tool_call",
+          "mcp_call",
+          "mcp_list_tools",
+          "mcp_approval_request",
+          "apply_patch_call",
+          "compaction",
+        ]);
         const isAsstItem = (item) =>
           item.role === "assistant" ||
-          item.type === "function_call" ||
-          item.type === "reasoning" ||
+          assistantOutputItemTypes.has(item.type) ||
           (item.type === "message" && item.role === "assistant");
         while (start >= 0 && !isAsstItem(hashItems[start])) {
           start--;
@@ -380,32 +399,38 @@ export default async function handler(req) {
           }
           return [item];
         };
+        const buildAzureInput = (items) => items.reduce((acc, item) => {
+          acc.push(...normalizeAzureInput(item));
+          return acc;
+        }, []);
+        const isInstructionMessage = (item) => item?.role === "system" || item?.role === "developer";
 
         if (prevRespId) {
           // If trimming would produce an empty input, force stateless mode.
           // Azure rejects previous_response_id with no new items.
-          if (parsedBody.messages.slice(lastAssistantIdx + 1).length === 0) {
+          const messagesAfterAssistant = parsedBody.messages.slice(lastAssistantIdx + 1);
+          if (messagesAfterAssistant.length === 0) {
             prevRespId = null;
-            log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
+            delete parsedBody.previous_response_id;
+            parsedBody.input = buildAzureInput(parsedBody.messages);
+            diag("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
                  "lastAssistantIdx:", lastAssistantIdx,
                  "totalItems:", parsedBody.messages.length);
           } else {
             // Only send input items that appeared AFTER the last assistant.
             // Azure replays the full prior conversation server-side.
-            parsedBody.input = parsedBody.messages.slice(lastAssistantIdx + 1)
-              .reduce((acc, item) => {
-                acc.push(...normalizeAzureInput(item));
-                return acc;
-              }, []);
+            // Instructions are not inherited across previous_response_id, so
+            // carry leading system/developer messages into the chained request.
+            const instructionMessages = parsedBody.messages
+              .slice(0, lastAssistantIdx + 1)
+              .filter(isInstructionMessage);
+            parsedBody.input = buildAzureInput([...instructionMessages, ...messagesAfterAssistant]);
             parsedBody.previous_response_id = prevRespId;
           }
         } else {
           // Stateless fallback — full input array (but response is still stored
           // so the NEXT turn can chain from it).
-          parsedBody.input = parsedBody.messages.reduce((acc, item) => {
-            acc.push(...normalizeAzureInput(item));
-            return acc;
-          }, []);
+          parsedBody.input = buildAzureInput(parsedBody.messages);
         }
         delete parsedBody.messages;
         bodyText = JSON.stringify(parsedBody);
@@ -437,13 +462,20 @@ export default async function handler(req) {
         if (prevRespId) {
           // If trimming would produce an empty input, force stateless mode.
           // Azure rejects previous_response_id with no new items.
-          if (parsedBody.input.slice(lastAssistantIdx + 1).length === 0) {
+          const inputAfterAssistant = parsedBody.input.slice(lastAssistantIdx + 1);
+          if (inputAfterAssistant.length === 0) {
             prevRespId = null;
-            log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
+            delete parsedBody.previous_response_id;
+            diag("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
                  "lastAssistantIdx:", lastAssistantIdx,
                  "totalItems:", parsedBody.input.length);
           } else {
-            parsedBody.input = parsedBody.input.slice(lastAssistantIdx + 1);
+            // Instructions are not inherited across previous_response_id, so
+            // carry leading system/developer messages into the chained request.
+            const instructionInput = parsedBody.input
+              .slice(0, lastAssistantIdx + 1)
+              .filter((item) => item?.role === "system" || item?.role === "developer");
+            parsedBody.input = [...instructionInput, ...inputAfterAssistant];
             parsedBody.previous_response_id = prevRespId;
           }
         }
@@ -496,6 +528,23 @@ export default async function handler(req) {
     if (anthropicSanitized.sanitized) {
       bodyText = JSON.stringify(parsedBody);
     }
+  }
+
+  if (
+    providerKey === "azureopenai" &&
+    req.method === "POST" &&
+    (pathParam === "chat/completions" || pathParam === "responses") &&
+    parsedBody &&
+    !Object.prototype.hasOwnProperty.call(parsedBody, "input") &&
+    !Object.prototype.hasOwnProperty.call(parsedBody, "prompt")
+  ) {
+    diag("AZURE_INPUT_MISSING", "path:", pathParam, "provider:", providerKey);
+    return jsonErrorResponse(
+      400,
+      "Azure OpenAI Responses requests require input after proxy normalization.",
+      "azure_input_missing",
+      "invalid_request_error"
+    );
   }
 
   if (!Object.prototype.hasOwnProperty.call(PROVIDERS, providerKey)) {
@@ -1164,23 +1213,44 @@ export default async function handler(req) {
                 // Cursor expects OpenAI Chat Completions stream semantics, which
                 // always terminate with data: [DONE].  Without this, a stream that
                 // ends via response.completed (no raw [DONE] line) looks hung.
-                if (responsesEvent === "response.completed" || responsesEvent === "response.incomplete") {
+                if (isResponsesTerminalEvent(responsesEvent)) {
                   if (doneSeen) continue;
                   doneSeen = true;
                   const completed = json?.response || {};
-                  azureResponseTerminalStatus = responsesEvent === "response.incomplete"
-                    ? "incomplete"
-                    : (completed.status || "completed");
+                  if (!azureResponseId && completed.id) {
+                    azureResponseId = completed.id;
+                  }
+                  azureResponseTerminalStatus = completed.status || (
+                    responsesEvent === "response.incomplete" ? "incomplete"
+                      : responsesEvent === "response.failed" ? "failed"
+                        : responsesEvent === "response.cancelled" ? "cancelled"
+                          : "completed"
+                  );
                   azureResponseIncompleteReason = completed.incomplete_details?.reason || null;
-                  diag(responsesEvent === "response.incomplete" ? "AZURE_RESPONSE_INCOMPLETE" : "AZURE_RESPONSE_COMPLETED",
+                  diag(responsesEvent === "response.incomplete" ? "AZURE_RESPONSE_INCOMPLETE"
+                    : responsesEvent === "response.failed" ? "AZURE_RESPONSE_FAILED"
+                      : responsesEvent === "response.cancelled" ? "AZURE_RESPONSE_CANCELLED"
+                        : "AZURE_RESPONSE_COMPLETED",
                        "status:", completed.status || "(none)",
                        "error:", completed.error?.code || completed.error?.message || "(none)",
                        "incomplete:", completed.incomplete_details?.reason || "(none)");
-                  log(responsesEvent === "response.incomplete" ? "STREAM_DONE_VIA_RESPONSE_INCOMPLETE" : "STREAM_DONE_VIA_RESPONSE_COMPLETED",
+                  log(responsesEvent === "response.incomplete" ? "STREAM_DONE_VIA_RESPONSE_INCOMPLETE"
+                    : responsesEvent === "response.failed" ? "STREAM_DONE_VIA_RESPONSE_FAILED"
+                      : responsesEvent === "response.cancelled" ? "STREAM_DONE_VIA_RESPONSE_CANCELLED"
+                        : "STREAM_DONE_VIA_RESPONSE_COMPLETED",
                       "content:", accContent.length);
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
                   logAzureStreamSummary(responsesEvent);
+                  const terminalChunk = mapResponsesTerminalToOpenAI(responsesEvent, completed, {
+                    hasToolCalls: responsesToolState.size > 0 || azureFunctionDeltaCount > 0,
+                  });
+                  if (terminalChunk) {
+                    const publicTerminalChunk = withPublicResponseModel(terminalChunk, responseModelName);
+                    await writer.write(
+                      encoder.encode("data: " + JSON.stringify(stripResponseChunk(publicTerminalChunk)) + "\n\n")
+                    );
+                  }
                   await writer.write(encoder.encode("data: [DONE]\n\n"));
                 }
                 continue; // skip events that produce no output
