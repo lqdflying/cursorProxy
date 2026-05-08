@@ -53,6 +53,12 @@ See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for V
 
 The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example, `cursorproxy/gpt-5.5`) while forwarding the bare model/deployment name upstream. Configure `CURSORPROXY_MODELS` without prefixes; manually entered bare IDs are also accepted.
 
+### Azure OpenAI Plan Mode limitation
+
+Cursor **Agent Mode** works with Azure OpenAI models through the proxy, but Cursor **Plan Mode** is currently treated as unsupported/limited for Azure OpenAI (`gpt-*` and `o*` deployments). Azure AI Foundry can stop these Plan Mode requests with `response.incomplete` and `incomplete: content_filter` because Cursor sends a large Plan Mode system prompt and tool policy surface. This is an Azure OpenAI content-filter decision, not a proxy routing or JSON-shape error.
+
+Use Azure Anthropic/Claude models for Cursor Plan Mode when possible. The proxy keeps Azure OpenAI content-filtered incomplete responses out of the response-ID cache so later Agent Mode requests are not chained to a blocked response.
+
 ---
 
 ## Essential Environment Variables
