@@ -4,6 +4,14 @@ import { createLogger } from "./logger.js";
 const { diag } = createLogger("azure-openai");
 
 const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const AZURE_PLAN_MODE_CONTEXT = [
+  "Context: this is Cursor Plan Mode for an authorized local software project.",
+  "The user is asking for a high-level implementation plan, not code execution.",
+  "Respond with concise, benign software engineering planning steps.",
+].join(" ");
+const AZURE_PLAN_MODE_TOOL_FILTER_DISABLED = new Set(["0", "false", "off", "disabled", "none"]);
+const AZURE_PLAN_MODE_READONLY_TOOL_RE = /(?:^|_)(?:read|list|ls|cat|view|get|find|grep|search|glob|inspect|scan|file|dir|directory|codebase|semantic|symbol)(?:_|$)/i;
+const AZURE_PLAN_MODE_MUTATING_TOOL_RE = /(?:^|_)(?:apply|bash|cmd|command|commit|create|delete|download|edit|exec|execute|install|mkdir|move|patch|pull|push|remove|rename|rm|run|shell|terminal|touch|update|upload|write)(?:_|$)/i;
 
 function isAzureReasoningModel(providerKey, azureModelName) {
   return providerKey === "azureopenai"
@@ -199,6 +207,85 @@ function promoteInstructionInputItems(parsedBody) {
   return true;
 }
 
+function isCursorPlanModeRequest(parsedBody) {
+  if (!Array.isArray(parsedBody?.tools) || parsedBody.tools.length === 0) return false;
+  const instructions = typeof parsedBody.instructions === "string" ? parsedBody.instructions : "";
+  return /\bplan mode\b|\bplanning mode\b|collaboration mode:\s*plan\b/i.test(instructions);
+}
+
+function applyAzurePlanModeSafetyContext(providerKey, parsedBody) {
+  if (providerKey !== "azureopenai" || !isCursorPlanModeRequest(parsedBody)) {
+    return { parsedBody, changed: false };
+  }
+  if (typeof parsedBody.instructions !== "string") {
+    parsedBody.instructions = "";
+  }
+  if (!parsedBody.instructions.includes(AZURE_PLAN_MODE_CONTEXT)) {
+    parsedBody.instructions = `${AZURE_PLAN_MODE_CONTEXT}\n\n${parsedBody.instructions}`.trim();
+    diag("AZURE_PLAN_CONTEXT_INJECTED", "provider:", providerKey);
+    return { parsedBody, changed: true };
+  }
+  return { parsedBody, changed: false };
+}
+
+function normalizedToolName(tool) {
+  return [
+    tool?.name,
+    tool?.function?.name,
+  ]
+    .filter((value) => typeof value === "string" && value)
+    .join(" ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
+}
+
+function isAzurePlanModeReadOnlyTool(tool) {
+  const toolName = normalizedToolName(tool);
+  if (!toolName) return false;
+  if (AZURE_PLAN_MODE_MUTATING_TOOL_RE.test(toolName)) return false;
+  return AZURE_PLAN_MODE_READONLY_TOOL_RE.test(toolName);
+}
+
+function filterAzurePlanModeTools(providerKey, parsedBody) {
+  if (providerKey !== "azureopenai" || !isCursorPlanModeRequest(parsedBody)) {
+    return { parsedBody, changed: false };
+  }
+
+  const filterMode = String(process.env.AZURE_OPENAI_PLAN_MODE_TOOL_FILTER || "readonly").trim().toLowerCase();
+  if (AZURE_PLAN_MODE_TOOL_FILTER_DISABLED.has(filterMode)) {
+    return { parsedBody, changed: false };
+  }
+
+  const tools = Array.isArray(parsedBody.tools) ? parsedBody.tools : [];
+  const filtered = tools.filter(isAzurePlanModeReadOnlyTool);
+  if (filtered.length === tools.length) {
+    return { parsedBody, changed: false };
+  }
+
+  if (filtered.length > 0) {
+    parsedBody.tools = filtered;
+  } else {
+    delete parsedBody.tools;
+  }
+
+  if (parsedBody.tool_choice && filtered.length === 0) {
+    delete parsedBody.tool_choice;
+  } else if (parsedBody.tool_choice && typeof parsedBody.tool_choice === "object") {
+    const forcedName = parsedBody.tool_choice.name || parsedBody.tool_choice.function?.name;
+    if (forcedName && !filtered.some((tool) => tool.name === forcedName)) {
+      delete parsedBody.tool_choice;
+    }
+  }
+
+  diag("AZURE_PLAN_TOOLS_FILTERED",
+    "provider:", providerKey,
+    "mode:", filterMode,
+    "from:", tools.length,
+    "to:", filtered.length);
+  return { parsedBody, changed: true };
+}
+
 function normalizeAzureOpenAIInputContent(providerKey, parsedBody) {
   if (providerKey !== "azureopenai" || !Array.isArray(parsedBody?.input)) {
     return { parsedBody, changed: false };
@@ -213,6 +300,11 @@ function normalizeAzureOpenAIInputContent(providerKey, parsedBody) {
     }
   }
   if (promoteInstructionInputItems(parsedBody)) {
+    changed = true;
+  }
+  const contextResult = applyAzurePlanModeSafetyContext(providerKey, parsedBody);
+  parsedBody = contextResult.parsedBody;
+  if (contextResult.changed) {
     changed = true;
   }
 
@@ -426,6 +518,12 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     const nWithoutDesc = filtered.filter(t => !t.description).length;
     diag("TOOLS_FIXED", "provider:", providerKey, "from:", "anthropic", "to:", "openai_responses",
       "withDesc:", nWithDesc, "withoutDesc:", nWithoutDesc);
+  }
+
+  const planToolsResult = filterAzurePlanModeTools(providerKey, parsedBody);
+  parsedBody = planToolsResult.parsedBody;
+  if (planToolsResult.changed) {
+    toolsFixed = true;
   }
 
   return { parsedBody, changed: toolsFixed };
