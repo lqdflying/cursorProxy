@@ -73,8 +73,10 @@ Both Azure providers strip unknown parameters to prevent 400 errors from Cursor-
 model, input, instructions, stream,
 max_output_tokens, temperature, top_p,
 tools, tool_choice, reasoning,
-store, parallel_tool_calls, user
+store, parallel_tool_calls, user,
+previous_response_id
 ```
+- `previous_response_id` MUST be in the whitelist — without it the sanitizer drops the chaining ID set by `proxy.js` and every turn becomes stateless (silent token regression).
 - `max_tokens` / `max_completion_tokens` → remapped to `max_output_tokens`
 - `temperature` ≠ 1 → stripped for reasoning models only; standard models preserve user-set temperature
 - `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias` → stripped for reasoning models
@@ -199,11 +201,13 @@ Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thin
 | Concern | Location |
 |---|---|
 | Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `api/cache.js` |
-| Write — non-streaming | `api/proxy.js` line ~691: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` |
-| Write — streaming | `api/proxy.js` ~807: `cacheClaudeThinking()` in the SSE IIFE |
-| Read — injection | `api/proxy.js` ~493: calls `injectClaudeThinkingBlocks()` from `api/reasoning.js` |
-| SSE suppression | `api/proxy.js` ~926-945: `thinking_delta` / `signature_delta` / `content_block_start(thinking|redacted_thinking)` suppressed from Cursor |
+| Write — non-streaming | `api/proxy.js` non-streaming branch: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` BEFORE `mapAnthropicResponseToOpenAI` runs (the mapper discards thinking blocks). |
+| Write — streaming | `api/proxy.js` streaming IIFE: `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
+| Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `api/reasoning.js`) AFTER the reasoning bridge runs, gated on `parsedBody.thinking?.type` being a non-disabled value. |
+| SSE suppression | `api/proxy.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
 | Key prefix | `asst:` — distinct from `conv:` (reasoning bridge) and `azresp:conv:` (Azure response ID chaining) |
+
+Do not pin specific line numbers in this table — the streaming IIFE in `proxy.js` is large and frequently refactored; describe the call site by feature/condition instead.
 
 ### Why a separate hash function
 

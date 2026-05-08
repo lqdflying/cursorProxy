@@ -5,12 +5,15 @@ alwaysApply: true
 
 # cursorProxy Project Overview
 
-A lightweight edge-compatible proxy for **DeepSeek**, **Kimi**, and **MiniMax** APIs. Deployed on Vercel Edge, Docker, or EdgeOne Pages.
+A lightweight edge-compatible proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry** (Azure OpenAI Responses API + Azure Anthropic Messages API). Deployed on Vercel Edge, Docker, or EdgeOne Pages.
 
 ## What it does
 
-- **Reasoning bridge:** caches provider-specific `reasoning_content` (DeepSeek/Kimi) / `reasoning_details` (MiniMax) by conversation position in KV storage, injects it back on the next turn
+- **Reasoning bridge:** caches provider-specific `reasoning_content` (DeepSeek/Kimi) / `reasoning_details` (MiniMax) by conversation position in KV storage, injects it back on the next turn. Skipped for Azure providers — see `azure-foundry.mdc`.
+- **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so the next turn can use `previous_response_id` instead of resending the full conversation. See `azure-foundry.mdc`.
+- **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (key prefix `asst:`) so subsequent turns reuse prior reasoning instead of re-thinking from scratch.
 - **Vision bridge:** auto-converts inline `image_url` blocks to text descriptions via MiniMax VL-01 (or OpenAI Vision) for text-only models (DeepSeek, MiniMax)
+- **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates to/from Azure OpenAI Responses and Azure Anthropic Messages (request body + SSE stream).
 - **Model discovery:** serves `GET /v1/models` from `CURSORPROXY_MODELS` env var
 - **Auth:** `CURSORPROXY_API_KEY` via `Authorization: Bearer` or `x-api-key` header
 
@@ -65,5 +68,5 @@ All `api/*.js` files are edge-safe (no `node:*`, no `ioredis`).
 
 - **Repo:** `github.com/lqdflying/cursorProxy`
 - **CI:** `.github/workflows/docker.yml` — builds multi-arch Docker image on push
-- **Wiki:** `wiki/` is a **separate git repo/submodule** (the GitHub wiki, `git@github.com:lqdflying/cursorProxy.wiki.git`). Do NOT commit wiki changes in the main repo; push them in the wiki submodule. Use `git -C wiki <command>` for all wiki operations — the Shell tool's `working_directory` parameter does not resolve submodule paths correctly
+- **Wiki:** `wiki/` is a **separate git clone** of the GitHub wiki (`git@github.com:lqdflying/cursorProxy.wiki.git`). It is NOT a git submodule — there is no `.gitmodules` file, and `wiki/` is listed in `.gitignore` so the main repo never tracks it. Do NOT commit wiki changes in the main repo; cd into `wiki/` (or use `git -C wiki <command>`) and push from that clone. The Shell tool's `working_directory` parameter does not always resolve nested git directories correctly, so prefer `git -C wiki <command>`.
 - `.github/instructions/` is in `.gitignore` — instructions there are for GitHub UI, not committed

@@ -25,8 +25,12 @@ All files in `api/` run on **Vercel Edge Runtime** and **EdgeOne Pages** — Nod
 3. EdgeOne Pages KV — global namespace binding, TTL simulated with `{v, e}` wrapper
 
 - `kvGet`/`kvSet` must **never throw** — both backends swallow errors silently
-- Cache key format: `conv:<sha256(scope + ":" + JSON.stringify(messages[0..i-1]))>`
-- Scope: `providerKey + ":" + apiKeyHash` (prevents cross-provider and cross-user collisions)
+- Cache key prefixes (all defined in `api/cache.js`):
+  - `conv:<sha…>` — reasoning bridge (`conversationHash`, raw `JSON.stringify(messages.slice(0, upTo))`). Used by DeepSeek/Kimi/MiniMax reasoning re-injection.
+  - `asst:<sha…>` — Claude adaptive-thinking cache (`normalizedConversationHash`, typed-canonical content). Distinct prefix prevents collisions with the reasoning-bridge `conv:` key.
+  - `azresp:conv:<sha…>` — Azure OpenAI `previous_response_id` chaining (set in `proxy.js` as `"azresp:" + conversationHash(...)` before forwarding the response ID).
+  - `img:<sha…>` — vision-bridge image-description cache (`sha256ImageHash`).
+- Scope: `providerKey + ":" + apiKeyHash` (prevents cross-provider and cross-user collisions). For Azure response IDs the scope additionally embeds `AZURE_OPENAI_RESPONSE_CACHE_VERSION` so a deploy can invalidate orphaned IDs without touching reasoning caches.
 - Default TTL: 7200s (2 hours)
 
 ## Hashing
