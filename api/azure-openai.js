@@ -4,36 +4,6 @@ import { createLogger } from "./logger.js";
 const { diag } = createLogger("azure-openai");
 
 const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
-const AZURE_OPENAI_RESPONSE_TERMINAL_EVENTS = new Set([
-  "response.completed",
-  "response.incomplete",
-  "response.failed",
-  "response.cancelled",
-]);
-
-const AZURE_OPENAI_RESPONSE_TOOL_TYPES = new Set([
-  "function",
-  "file_search",
-  "computer_use_preview",
-  "web_search",
-  "web_search_preview",
-  "web_search_preview_2025_03_11",
-  "mcp",
-  "code_interpreter",
-  "image_generation",
-  "local_shell",
-  "shell",
-  "custom",
-  "apply_patch",
-]);
-
-function isKnownResponsesToolType(type) {
-  return AZURE_OPENAI_RESPONSE_TOOL_TYPES.has(type);
-}
-
-function isPlainObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value);
-}
 
 function isAzureReasoningModel(providerKey, azureModelName) {
   return providerKey === "azureopenai"
@@ -347,10 +317,7 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
   // Responses API uses a different parameter set than Chat Completions.
   const allowed = new Set([
     "model", "input", "instructions", "stream",
-    "background", "include",
     "max_output_tokens", "temperature", "top_p",
-    "metadata", "prompt", "prompt_cache_key", "prompt_cache_retention", "safety_identifier",
-    "service_tier", "text", "top_logprobs", "truncation",
     "tools", "tool_choice", "reasoning",
     "store", "parallel_tool_calls", "user",
     "previous_response_id",
@@ -365,13 +332,8 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
   }
 
   // Responses API: set store=false to prevent state leakage across users
-  // and avoid Azure storage costs. Background mode is stateful by definition
-  // and Azure rejects background requests unless store=true.
-  if (parsedBody.background === true && parsedBody.store !== true) {
-    parsedBody.store = true;
-    sanitized = true;
-    diag("AZURE_BACKGROUND_STORE_FORCED", "provider:", providerKey);
-  } else if (!("store" in parsedBody)) {
+  // and avoid Azure storage costs. Only inject when not explicitly set.
+  if (!("store" in parsedBody)) {
     parsedBody.store = false;
     sanitized = true;
   }
@@ -393,29 +355,14 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
 
   let toolsFixed = false;
 
-  if (!Array.isArray(parsedBody.tools)) {
-    diag("TOOLS_INVALID", "provider:", providerKey, "shape:", typeof parsedBody.tools);
-    delete parsedBody.tools;
-    return { parsedBody, changed: true };
-  }
-
   // PROBE: raw tool shape before conversion — what format did Cursor actually send?
   {
     const nTools = parsedBody.tools.length;
-    const nInvalid = parsedBody.tools.filter(t => !isPlainObject(t)).length;
-    const nAnthropicFmt = parsedBody.tools.filter(t =>
-      isPlainObject(t) &&
-      t.name &&
-      !t.function &&
-      (!t.type || (t.input_schema && !isKnownResponsesToolType(t.type)))
-    ).length;
-    const nChatCmplFmt = parsedBody.tools.filter(t => isPlainObject(t) && t.type === "function" && isPlainObject(t.function)).length;
-    const nNativeToolType = parsedBody.tools.filter(t => isPlainObject(t) && typeof t.type === "string" && t.type !== "function").length;
-    const nKnownNativeType = parsedBody.tools.filter(t => isPlainObject(t) && AZURE_OPENAI_RESPONSE_TOOL_TYPES.has(t.type)).length;
+    const nAnthropicFmt = parsedBody.tools.filter(t => t.name && !t.function).length;
+    const nChatCmplFmt = parsedBody.tools.filter(t => t.type === "function" && t.function).length;
+    const nNativeToolType = parsedBody.tools.filter(t => t.type === "tool").length;
     diag("TOOLS_SHAPE", "provider:", providerKey, "total:", nTools,
-      "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt,
-      "nativeToolType:", nNativeToolType, "knownType:", nKnownNativeType,
-      "invalid:", nInvalid);
+      "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt, "nativeToolType:", nNativeToolType);
     if (parsedBody.tool_choice) {
       diag("TOOL_CHOICE_SHAPE", "provider:", providerKey, "value:", JSON.stringify(parsedBody.tool_choice).slice(0, 200));
     }
@@ -447,84 +394,37 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
   }
 
   const filtered = [];
-  let dropped = 0;
-  let keptNonFunction = 0;
   for (const tool of parsedBody.tools) {
-    if (!isPlainObject(tool)) {
-      dropped++;
-      toolsFixed = true;
-      continue;
-    }
-
-    // Step 1: Convert Anthropic-format tools (named, no wrapper) to
-    // Responses {type:"function", ...}. Versioned Anthropic beta tool
-    // types carry input_schema; native Responses tool types are preserved.
-    const isAnthropicFunctionTool =
-      tool.name &&
-      !tool.function &&
-      (!tool.type || (tool.input_schema && !isKnownResponsesToolType(tool.type)));
-    if (isAnthropicFunctionTool) {
-      const normalized = {
-        ...tool,
-        type: "function",
-        parameters: tool.parameters || tool.input_schema || {},
-      };
+    // Step 1: Convert Anthropic-format tools (named, no wrapper) → Responses {type:"function", ...}
+    // Must run BEFORE the type filter so versioned types like bash_20250124 are converted first.
+    if (tool.name && !tool.function) {
+      tool.type = "function";
+      tool.parameters = tool.parameters || tool.input_schema || {};
       // description is valid in Responses API — preserve it for tool selection
-      delete normalized.input_schema;
-      filtered.push(normalized);
+      delete tool.input_schema;
       toolsFixed = true;
-      continue;
     }
     // Step 2: Unwrap Chat Completions format { type:"function", function:{...} } → inline
-    if (tool.type === "function" && isPlainObject(tool.function)) {
-      if (!tool.function.name) {
-        dropped++;
-        toolsFixed = true;
-        continue;
-      }
-      const normalized = {
-        ...tool,
-        name: tool.function.name,
-        description: tool.function.description || "",
-        parameters: tool.function.parameters || {},
-      };
-      delete normalized.function;
-      filtered.push(normalized);
+    else if (tool.type === "function" && tool.function) {
+      tool.name = tool.function.name || "";
+      tool.description = tool.function.description || "";
+      tool.parameters = tool.function.parameters || {};
+      delete tool.function;
+      toolsFixed = true;
+    }
+    // Step 3: Drop non-function types that could not be converted (files, web_search, etc.)
+    if (tool.type && tool.type !== "function") {
       toolsFixed = true;
       continue;
     }
-
-    // Step 3: Keep already-native Responses tools unchanged. Unknown typed
-    // tools are preserved so newer Azure/OpenAI tool types are not stripped.
-    if (typeof tool.type === "string" && tool.type) {
-      if (tool.type === "function") {
-        if (!tool.name) {
-          dropped++;
-          toolsFixed = true;
-          continue;
-        }
-        if (!isPlainObject(tool.parameters)) {
-          filtered.push({ ...tool, parameters: {} });
-          toolsFixed = true;
-          continue;
-        }
-      } else {
-        keptNonFunction++;
-      }
-      filtered.push(tool);
-      continue;
-    }
-
-    dropped++;
-    toolsFixed = true;
+    filtered.push(tool);
   }
 
   if (toolsFixed) {
     parsedBody.tools = filtered;
     const nWithDesc = filtered.filter(t => !!t.description).length;
     const nWithoutDesc = filtered.filter(t => !t.description).length;
-    diag("TOOLS_FIXED", "provider:", providerKey, "to:", "openai_responses",
-      "kept:", filtered.length, "dropped:", dropped, "nonFunction:", keptNonFunction,
+    diag("TOOLS_FIXED", "provider:", providerKey, "from:", "anthropic", "to:", "openai_responses",
       "withDesc:", nWithDesc, "withoutDesc:", nWithoutDesc);
   }
 
@@ -533,104 +433,8 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
 
 // ─── Azure Responses API → OpenAI Chat Completions response mappers ─────────
 
-function responseIncompleteFinishReason(reason) {
-  const normalized = String(reason || "").toLowerCase();
-  if (normalized.includes("content_filter") || normalized.includes("safety")) {
-    return "content_filter";
-  }
-  if (normalized.includes("tool")) {
-    return "tool_calls";
-  }
-  return "length";
-}
-
-function responseErrorFinishReason(response) {
-  const code = String(response?.error?.code || response?.incomplete_details?.reason || "").toLowerCase();
-  if (code.includes("content_filter") || code.includes("safety")) {
-    return "content_filter";
-  }
-  return "error";
-}
-
-function responseFinishReason(response, hasToolCalls = false) {
-  if (hasToolCalls) return "tool_calls";
-
-  const status = response?.status || "";
-  if (status === "incomplete") {
-    return responseIncompleteFinishReason(response?.incomplete_details?.reason);
-  }
-  if (status === "failed" || status === "cancelled") {
-    return responseErrorFinishReason(response);
-  }
-  return "stop";
-}
-
-function responseMetadata(response) {
-  return {
-    ...(response?.status && response.status !== "completed" ? { response_status: response.status } : {}),
-    ...(response?.incomplete_details ? { incomplete_details: response.incomplete_details } : {}),
-    ...(response?.error ? { error: response.error } : {}),
-  };
-}
-
-function isResponsesTerminalEvent(eventName) {
-  return AZURE_OPENAI_RESPONSE_TERMINAL_EVENTS.has(eventName);
-}
-
-function responsesTerminalStatus(eventName, response) {
-  if (response?.status) return response.status;
-  switch (eventName) {
-    case "response.incomplete":
-      return "incomplete";
-    case "response.failed":
-      return "failed";
-    case "response.cancelled":
-      return "cancelled";
-    case "response.completed":
-      return "completed";
-    default:
-      return null;
-  }
-}
-
-function mapResponsesTerminalToOpenAI(eventName, response, options = {}) {
-  if (!isResponsesTerminalEvent(eventName)) return null;
-
-  const completed = isPlainObject(response) ? response : {};
-  const status = responsesTerminalStatus(eventName, completed);
-  const responseForReason = { ...completed, ...(status ? { status } : {}) };
-  const hasToolCalls = options.hasToolCalls || completed.output?.some((item) => item?.type === "function_call");
-
-  return {
-    id: completed.id || "resp_unknown",
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model: completed.model || "",
-    choices: [{
-      index: 0,
-      delta: {},
-      finish_reason: responseFinishReason(responseForReason, hasToolCalls),
-    }],
-    ...responseMetadata(responseForReason),
-  };
-}
-
 function mapResponsesToOpenAI(json) {
-  if (!json || !Array.isArray(json.output)) {
-    if (!json || !["incomplete", "failed", "cancelled"].includes(json.status)) return json;
-    return {
-      id: json.id || "resp_unknown",
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: json.model || "",
-      choices: [{
-        index: 0,
-        message: { role: "assistant", content: null },
-        finish_reason: responseFinishReason(json),
-      }],
-      ...responseMetadata(json),
-    };
-  }
+  if (!json || !json.output || !Array.isArray(json.output)) return json;
 
   let textContent = "";
   const toolCalls = [];
@@ -657,7 +461,7 @@ function mapResponsesToOpenAI(json) {
     }
   }
 
-  const finishReason = responseFinishReason(json, toolCalls.length > 0);
+  const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
 
   return {
     id: json.id || "resp_unknown",
@@ -673,7 +477,6 @@ function mapResponsesToOpenAI(json) {
       },
       finish_reason: finishReason,
     }],
-    ...responseMetadata(json),
   };
 }
 
@@ -740,9 +543,7 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
 
 export {
   isAzureReasoningModel,
-  isResponsesTerminalEvent,
   mapResponsesSSEToOpenAI,
-  mapResponsesTerminalToOpenAI,
   mapResponsesToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeAzureOpenAITools,
