@@ -38,6 +38,7 @@ import {
 import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
+const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v4";
 
 const PROVIDERS = {
   deepseek: {
@@ -207,7 +208,7 @@ export default async function handler(req) {
 
     if (hasMessages || hasInput) {
       const azureScopeUser = await cacheScopeUserId(req);
-      const azureScope = providerKey + ":" + azureScopeUser;
+      const azureScope = [providerKey, AZURE_OPENAI_RESPONSE_CACHE_VERSION, azureScopeUser].join(":");
 
       // Build a normalized array for hashing and finding the last assistant
       // turn.  For messages we use the Chat Completions array directly (role
@@ -837,6 +838,8 @@ export default async function handler(req) {
     let doneSeen = false;
     let lastCachedReasoningSize = 0;
     let azureResponseId = null; // captured from response.created for KV write
+    let azureResponseTerminalStatus = null;
+    let azureResponseIncompleteReason = null;
     let azureFunctionDeltaCount = 0;
     let azureStreamSummaryLogged = false;
     // Track Anthropic tool_use blocks by index for converting input_json_delta
@@ -941,6 +944,15 @@ export default async function handler(req) {
 
     async function cacheAzResponseId() {
       if (!azureResponseId || !azureReplyKey || azureRespCached) return;
+      if (azureResponseTerminalStatus && azureResponseTerminalStatus !== "completed") {
+        azureRespCached = true;
+        log("SKIP_CACHE_AZ_RESP_ID",
+            "key:", azureReplyKey,
+            "id:", azureResponseId,
+            "status:", azureResponseTerminalStatus,
+            "incomplete:", azureResponseIncompleteReason || "(none)");
+        return;
+      }
       azureRespCached = true;
       log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureResponseId);
       await kvSet("azresp:" + azureReplyKey, azureResponseId)
@@ -1091,6 +1103,10 @@ export default async function handler(req) {
                 if (responsesEvent === "response.completed" || responsesEvent === "response.incomplete") {
                   doneSeen = true;
                   const completed = json?.response || {};
+                  azureResponseTerminalStatus = responsesEvent === "response.incomplete"
+                    ? "incomplete"
+                    : (completed.status || "completed");
+                  azureResponseIncompleteReason = completed.incomplete_details?.reason || null;
                   diag(responsesEvent === "response.incomplete" ? "AZURE_RESPONSE_INCOMPLETE" : "AZURE_RESPONSE_COMPLETED",
                        "status:", completed.status || "(none)",
                        "error:", completed.error?.code || completed.error?.message || "(none)",
