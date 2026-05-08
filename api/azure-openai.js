@@ -7,7 +7,7 @@ const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "mediu
 
 function isAzureReasoningModel(providerKey, azureModelName) {
   return providerKey === "azureopenai"
-    && /^(o\d|gpt-5(\.\d+)?$)/i.test(azureModelName || "");
+    && /^(?:o\d(?:[-.]|$)|gpt-5(?:\.\d+)?(?:[-.]|$))/i.test(azureModelName || "");
 }
 
 function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
@@ -86,6 +86,26 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
     diag("REASONING_EFFORT", "effort:", parsedBody.reasoning.effort, "provider:", providerKey);
   }
 
+  // PROBE: tool shape diagnostics — understand what format Cursor sends tools in
+  if (parsedBody.tools?.length) {
+    const nTools = parsedBody.tools.length;
+    const nAnthropicFmt = parsedBody.tools.filter(t => t.name && !t.function).length;
+    const nChatCmplFmt = parsedBody.tools.filter(t => t.type === "function" && t.function).length;
+    diag("TOOLS_SHAPE", "provider:", providerKey, "total:", nTools, "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt);
+    if (parsedBody.tool_choice) {
+      diag("TOOL_CHOICE_SHAPE", "provider:", providerKey, "value:", JSON.stringify(parsedBody.tool_choice).slice(0, 200));
+    }
+  }
+
+  // PROBE: detect system field present without instructions
+  if ("system" in parsedBody && typeof parsedBody.system === "string") {
+    if (!("instructions" in parsedBody)) {
+      diag("SYSTEM_WITHOUT_INSTRUCTIONS", "provider:", providerKey, "systemLen:", parsedBody.system.length);
+    } else {
+      diag("SYSTEM_AND_INSTRUCTIONS", "provider:", providerKey);
+    }
+  }
+
   // Known valid OpenAI Responses API params.
   // Responses API uses a different parameter set than Chat Completions.
   const allowed = new Set([
@@ -138,7 +158,7 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     if (tool.name && !tool.function) {
       tool.type = "function";
       tool.parameters = tool.input_schema || {};
-      delete tool.description; // optional, not needed by Responses
+      // description is valid in Responses API — preserve it for tool selection
       delete tool.input_schema;
       toolsFixed = true;
     }
@@ -156,7 +176,10 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
 
   if (toolsFixed) {
     parsedBody.tools = filtered;
-    diag("TOOLS_FIXED", "provider:", providerKey, "from:", "anthropic", "to:", "openai_responses");
+    const nWithDesc = filtered.filter(t => !!t.description).length;
+    const nWithoutDesc = filtered.filter(t => !t.description).length;
+    diag("TOOLS_FIXED", "provider:", providerKey, "from:", "anthropic", "to:", "openai_responses",
+      "withDesc:", nWithDesc, "withoutDesc:", nWithoutDesc);
   }
 
   return { parsedBody, changed: toolsFixed };
