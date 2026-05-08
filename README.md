@@ -2,8 +2,11 @@
 
 A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
-- **Reasoning bridge:** caches and injects provider-specific reasoning by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
-- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively.
+- **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
+- **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so subsequent turns use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly.
+- **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (typed-canonical hash) so multi-turn conversations reuse prior reasoning instead of re-thinking from scratch.
+- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax).
+- **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates request bodies and SSE streams to/from Azure OpenAI Responses and Azure Anthropic Messages.
 - **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/lqdflying/cursorProxy)
@@ -41,7 +44,8 @@ docker compose up -d
 
 See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for Vercel, EdgeOne Pages, 1Panel, and Nginx reverse proxy.
 
-> **Log control:** `docker-compose.yml` caps container logs at 10 MiB × 3 rotated files per service. Set `DEBUG=true` in `.env` only for troubleshooting — it enables per-request access logs and verbose proxy internals. For `docker run`, add `--log-opt max-size=10m --log-opt max-file=3`.
+> [!NOTE]
+> **Log control.** `docker-compose.yml` caps container logs at 10 MiB × 3 rotated files per service. Set `DEBUG=true` in `.env` only for troubleshooting — it enables per-request access logs and verbose proxy internals. For `docker run`, add `--log-opt max-size=10m --log-opt max-file=3`.
 
 ### 4. Configure Cursor
 
@@ -55,9 +59,12 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 
 ### Azure OpenAI Plan Mode limitation
 
-Cursor **Agent Mode** works with Azure OpenAI models through the proxy, but Cursor **Plan Mode** is currently treated as unsupported/limited for Azure OpenAI (`gpt-*` and `o*` deployments). Azure AI Foundry can stop these Plan Mode requests with `response.incomplete` and `incomplete: content_filter` because Cursor sends a large Plan Mode system prompt and tool policy surface. This is an Azure OpenAI content-filter decision, not a proxy routing or JSON-shape error.
-
-Use Azure Anthropic/Claude models for Cursor Plan Mode when possible. The proxy keeps Azure OpenAI content-filtered incomplete responses out of the response-ID cache so later Agent Mode requests are not chained to a blocked response.
+> [!IMPORTANT]
+> Cursor **Agent Mode** works with Azure OpenAI through the proxy, but Cursor **Plan Mode** is **unsupported / limited** for Azure OpenAI (`gpt-*` and `o*` deployments). Azure AI Foundry stops these Plan Mode requests with `response.incomplete` + `incomplete: content_filter` because Cursor sends a large Plan Mode system prompt and tool policy surface that the Azure content filter rejects. This is an Azure decision, not a proxy bug.
+>
+> **Workaround:** use **Azure Anthropic / Claude** models for Plan Mode, or stay in Agent Mode for Azure OpenAI.
+>
+> The proxy keeps Azure OpenAI content-filtered incomplete responses out of the response-ID cache so a later (working) Agent Mode request is never chained to a blocked response via `previous_response_id`.
 
 ---
 
