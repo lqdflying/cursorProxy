@@ -23,6 +23,93 @@ Example from the `previous_response_id` chaining rollout:
 
 If a tag is zero, the feature is inert regardless of upstream status codes.
 
+## Vercel MCP runtime log checks
+
+Use the Vercel MCP tools to inspect production logs after deploys. Do not rediscover project IDs unless these calls fail.
+
+Project identity:
+
+```text
+teamId:    team_mHFSe4eOFutmBLhI7quKMeyw
+projectId: prj_VpZI7PljTtWlt3FD7yDSxXiJJY05
+project:   cursor-proxy
+domain:    one.lqdflying.info
+branch:    main
+```
+
+Useful MCP calls:
+
+```text
+mcp__vercel__.list_deployments({
+  teamId: "team_mHFSe4eOFutmBLhI7quKMeyw",
+  projectId: "prj_VpZI7PljTtWlt3FD7yDSxXiJJY05"
+})
+
+mcp__vercel__.get_runtime_logs({
+  teamId: "team_mHFSe4eOFutmBLhI7quKMeyw",
+  projectId: "prj_VpZI7PljTtWlt3FD7yDSxXiJJY05",
+  environment: "production",
+  since: "45m",
+  limit: 100
+})
+```
+
+For Azure OpenAI issue triage, run focused queries:
+
+```text
+query: "azureopenai"
+query: "UPSTREAM_ERROR_STATUS"
+query: "UPSTREAM_STATUS 400"
+query: "No tool output found"
+query: "previous_response_not_found"
+query: "AZURE_RESPONSE_INCOMPLETE"
+query: "AZURE_STREAM_SUMMARY"
+query: "custom_tool_call_output"
+```
+
+Example MCP call:
+
+```text
+mcp__vercel__.get_runtime_logs({
+  teamId: "team_mHFSe4eOFutmBLhI7quKMeyw",
+  projectId: "prj_VpZI7PljTtWlt3FD7yDSxXiJJY05",
+  environment: "production",
+  since: "45m",
+  limit: 100,
+  query: "UPSTREAM_ERROR_STATUS"
+})
+```
+
+Deployment-specific logs:
+
+1. Call `list_deployments` first.
+2. Confirm the latest production deployment has `state: "READY"` and the expected `githubCommitSha`.
+3. Pass that deployment ID to `get_runtime_logs` only when you need to prove traffic hit that exact deployment.
+
+```text
+mcp__vercel__.get_runtime_logs({
+  teamId: "team_mHFSe4eOFutmBLhI7quKMeyw",
+  projectId: "prj_VpZI7PljTtWlt3FD7yDSxXiJJY05",
+  deploymentId: "dpl_...",
+  environment: "production",
+  since: "30m",
+  limit: 100,
+  query: "azureopenai"
+})
+```
+
+Important caveat: immediately after an auto-redeploy, the latest deployment may have no runtime logs yet. In that case, state the deployment is live but untested, then ask the user to run the relevant Cursor test case or trigger one request. Do not conclude the latest deployment is healthy from older deployment logs alone.
+
+Do not use `statusCode: "4xx"` or `"5xx"` with Vercel MCP; the tool expects comma-separated integer status codes. Prefer query-based checks such as `UPSTREAM_ERROR_STATUS`, `UPSTREAM_STATUS 400`, or specific error text.
+
+When reporting results, include:
+
+- Latest deployment ID and commit SHA
+- Time window queried
+- Whether logs were from the latest deployment or a previous deployment
+- Error searches performed
+- Any matching log titles and exact error text
+
 ## Probe-first pattern
 
 Before adding normalization, conversion, or compatibility code that handles a specific input shape, first add a **passive detection probe** and let it run in production.
