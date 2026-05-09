@@ -80,7 +80,10 @@ For Azure Responses tool-call evidence, parse the full `AZURE_STREAM_SUMMARY` me
 
 ```bash
 # Custom tool-call streams. For Cursor apply_patch custom-tool flavor, expect
-# response.custom_tool_call_input.delta and response.custom_tool_call_input.done.
+# APPLY_PATCH_TOOL_SHAPE first, then response.custom_tool_call_input.delta and
+# response.custom_tool_call_input.done. If APPLY_PATCH_TOOL_SHAPE is absent,
+# Cursor did not send an apply-patch-shaped tool for the selected model id.
+jq -r '.[] | select(.message | contains("APPLY_PATCH_TOOL_SHAPE")) | [.TimeUTC, .requestId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
 jq -r '.[] | select(.message | contains("AZURE_STREAM_SUMMARY") and contains("response.custom_tool_call_input.delta")) | [.TimeUTC, .requestId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
 
 # Follow-up tool output requests. custom_tool_call_output proves Cursor received

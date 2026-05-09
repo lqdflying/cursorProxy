@@ -403,9 +403,22 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     const nChatCmplFmt = parsedBody.tools.filter(t => t.type === "function" && t.function).length;
     const nNativeToolType = parsedBody.tools.filter(t => t.type === "tool").length;
     const nKnownType = parsedBody.tools.filter(t => isKnownResponsesToolType(t?.type)).length;
+    const nCustomApplyPatch = parsedBody.tools.filter(t => t?.type === "custom" && t?.name === "apply_patch").length;
+    const nNativeApplyPatch = parsedBody.tools.filter(t => t?.type === "apply_patch").length;
+    const nFunctionApplyPatch = parsedBody.tools.filter(t =>
+      (t?.type === "function" && t?.function?.name === "apply_patch") ||
+      (t?.type === "function" && t?.name === "apply_patch") ||
+      (t?.name === "apply_patch" && !t?.function && t?.type !== "custom")
+    ).length;
     diag("TOOLS_SHAPE", "provider:", providerKey, "total:", nTools,
       "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt,
       "nativeToolType:", nNativeToolType, "knownType:", nKnownType);
+    if (nCustomApplyPatch > 0 || nNativeApplyPatch > 0 || nFunctionApplyPatch > 0) {
+      diag("APPLY_PATCH_TOOL_SHAPE", "provider:", providerKey,
+        "custom:", nCustomApplyPatch,
+        "native:", nNativeApplyPatch,
+        "function:", nFunctionApplyPatch);
+    }
     if (parsedBody.tool_choice) {
       diag("TOOL_CHOICE_SHAPE", "provider:", providerKey, "value:", JSON.stringify(parsedBody.tool_choice).slice(0, 200));
     }

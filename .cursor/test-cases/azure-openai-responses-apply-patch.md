@@ -15,6 +15,14 @@ This test covers the bug fixed by commit `6482918`: Azure streamed `response.cus
 
 Do not use this case for Claude, DeepSeek, Kimi, MiniMax, or Cursor native models. They do not exercise the Azure OpenAI Responses bridge.
 
+Use a Cursor-facing model id that Cursor recognizes as apply-patch capable.
+The generic `cursorproxy/gpt-general` alias is not sufficient evidence: the
+proxy may rewrite it to an apply-patch-capable deployment upstream, but Cursor
+chooses its local tool surface before that rewrite. If logs show
+`TOOLS_SHAPE ... knownType: 0` and only `response.output_text.delta` output,
+Cursor did not expose the custom/native `apply_patch` tool for that selected
+model id.
+
 ## Preconditions
 
 - Vercel has deployed the target commit.
@@ -48,6 +56,7 @@ Expected Vercel logs:
 
 ```text
 TOOLS_SHAPE ... knownType: 1
+APPLY_PATCH_TOOL_SHAPE ... custom: 1
 TOOLS_FIXED ... kept: 18 dropped: 0 native: 1
 AZURE_STREAM_SUMMARY ... response.custom_tool_call_input.delta ...
 AZURE_STREAM_SUMMARY ... functionArgDeltas: N
@@ -157,4 +166,4 @@ After the test, remove:
 
 - `response.custom_tool_call_input.delta` is expected for Cursor's current custom-tool flavor.
 - Native OpenAI `tools:[{"type":"apply_patch"}]` is not fully validated by this case; see `.cursor/notes/azure-openai-responses-compatibility.md`.
-- If `TOOLS_SHAPE ... knownType: 1` is absent, Cursor may not have sent the custom tool definition or the request may not have routed through Azure OpenAI.
+- If `TOOLS_SHAPE ... knownType: 1` or `APPLY_PATCH_TOOL_SHAPE` is absent, Cursor may not have sent the custom tool definition, the selected client-facing model id may not expose apply-patch tools, or the request may not have routed through Azure OpenAI.

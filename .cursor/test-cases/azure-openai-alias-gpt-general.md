@@ -95,3 +95,25 @@ None — the test does not create files or persistent state. Restore `AZURE_OPEN
 - If `AZURE_OPENAI_GENERAL_ALIAS_TARGET` points at a non-reasoning deployment (e.g. `gpt-4o`), `AZURE_OPENAI_GENERAL_REASONING_EFFORT` is silently ignored — same gating as the existing global knob.
 - `previous_response_id` chaining is keyed by user, not by model, so switching the alias target mid-conversation can produce `previous_response_not_found` (existing behavior; not unique to aliasing).
 - Implementation entrypoints: `resolveAzureAlias()` in `api/models.js`, alias block in `api/proxy.js` after the initial `normalizeParsedBodyModel(...)`, `aliasInfo` plumbed into `sanitizeAzureOpenAIBody()` in `api/azure-openai.js`, `forceAlias` arg in `withPublicResponseModel()` in `api/models.js`.
+
+## apply_patch Caveat
+
+Do not use this alias test as proof that Cursor exposes its `apply_patch`
+editing tool for `cursorproxy/gpt-general`. Cursor appears to choose its local
+tool surface from the client-facing model id before the proxy can rewrite the
+alias. In the observed failure on 2026-05-09, production logs showed:
+
+```text
+AZURE_ALIAS_RESOLVED alias: gpt-general target: gpt-5.5
+TOOLS_SHAPE ... chatCmplFmt: 20 ... knownType: 0
+AZURE_STREAM_SUMMARY ... functionArgDeltas: 0 ... response.output_text.delta ...
+```
+
+The model then replied that no `apply_patch` editing tool was exposed. That is
+not the historical proxy bug where `response.custom_tool_call_input.delta` was
+dropped; it means Cursor did not send the custom/native `apply_patch` tool for
+the `gpt-general` model id. For apply-patch verification, use
+`.cursor/test-cases/azure-openai-responses-apply-patch.md` with a Cursor-facing
+model id that Cursor recognizes as apply-patch capable, such as the real Azure
+OpenAI proxy model id used for coding (`cursorproxy/gpt-5.4` in the current
+test notes) rather than this generic alias.

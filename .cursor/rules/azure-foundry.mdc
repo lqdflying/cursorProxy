@@ -219,7 +219,7 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
 
 4. **Two-format divergence**: The `messages` and `input` branches diverged when the feature was first implemented. Both paths must be tested against real traffic — not just unit tests.
 
-5. **Custom tool streaming**: Cursor's current `apply_patch` path uses the Responses `custom` tool flavor, producing `response.custom_tool_call_input.delta` and later `custom_tool_call_output`. The proxy must map that stream to Chat-style `tool_calls` or Cursor never runs the patch. Validate with `.cursor/test-cases/azure-openai-responses-apply-patch.md`.
+5. **Custom tool streaming**: Cursor's current `apply_patch` path uses the Responses `custom` tool flavor, producing `response.custom_tool_call_input.delta` and later `custom_tool_call_output`. The proxy must map that stream to Chat-style `tool_calls` or Cursor never runs the patch. Validate with `.cursor/test-cases/azure-openai-responses-apply-patch.md`. If a generic alias such as `cursorproxy/gpt-general` shows `TOOLS_SHAPE ... knownType: 0` and no `APPLY_PATCH_TOOL_SHAPE`, Cursor did not expose the apply-patch tool for that client-facing model id; do not diagnose that as a stream-mapper bug.
 
 ## Claude Thinking KV Caching (azureanthropic only)
 

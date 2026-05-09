@@ -112,6 +112,27 @@ OpenAI documents the native `apply_patch` tool as `tools:[{"type":"apply_patch"}
 
 The current proxy recognizes `apply_patch_call` enough to avoid totally dropping the item, but it maps only `item.input` / `item.patch` to Chat-style function arguments. That is correct for the custom-tool flavor's raw string input, but not faithful for native `apply_patch_call.operation`. Until tested with real Cursor native apply_patch traffic, treat native apply_patch support as a known compatibility gap, not a completed feature.
 
+### Generic aliases may not expose Cursor's local apply_patch tool
+
+The proxy can preserve and map `apply_patch` once Cursor sends it, but it cannot
+make Cursor expose a local editing tool after the client has omitted it. Cursor
+appears to choose its local tool surface from the selected, client-facing model
+id before proxy alias resolution. A failure observed with `cursorproxy/gpt-general`
+on 2026-05-09 resolved upstream to `gpt-5.5`, but the request showed only
+Chat-Completions-shaped tools and no custom/native apply-patch tool:
+
+```text
+AZURE_ALIAS_RESOLVED alias: gpt-general target: gpt-5.5
+TOOLS_SHAPE ... chatCmplFmt: 20 ... knownType: 0
+AZURE_STREAM_SUMMARY ... functionArgDeltas: 0 ... response.output_text.delta ...
+```
+
+The model then replied that no `apply_patch` editing tool was exposed. Diagnose
+this as a Cursor tool-surface/model-id issue, not as the old
+`response.custom_tool_call_input.delta` mapper bug. Use the
+`APPLY_PATCH_TOOL_SHAPE` diagnostic to confirm whether the request actually
+contained a custom, native, or function-shaped `apply_patch` tool.
+
 ### Request sanitizer allowlist gaps
 
 The sanitizer now preserves important Responses params such as `prompt`, `include`, `background`, `metadata`, `prompt_cache_key`, `prompt_cache_retention`, `safety_identifier`, `service_tier`, and `text`. It still strips documented Responses create params that are not in the local allowlist, including at least:
@@ -155,6 +176,7 @@ The tool normalization whitelist (`AZURE_OPENAI_RESPONSES_TOOL_TYPES`) includes 
 | Tag | Source | What it tells you |
 |---|---|---|
 | `TOOLS_SHAPE` | `api/azure-openai.js` | Raw tool format before conversion: total count, format breakdown, knownType count |
+| `APPLY_PATCH_TOOL_SHAPE` | `api/azure-openai.js` | Emits only when the request includes an apply-patch-shaped tool; counts custom, native, and function variants |
 | `TOOLS_FIXED` | `api/azure-openai.js` | Post-normalization: kept, dropped, native count |
 | `AZURE_STREAM_SUMMARY` | `api/proxy.js` | Per-stream event type counts — look for custom_tool_call events |
 | `AZURE_INPUT_SHAPE` | `api/azure-openai.js` | Input item types before/after normalization |
