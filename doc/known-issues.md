@@ -109,11 +109,18 @@ Use `cursorproxy/gpt-5.4` directly instead of `gpt-general`.
 
 ### Summary
 
-When Cursor is configured with a custom OpenAI base URL (BYOK), attaching any
-image to a chat fails with an `Unauthorized` / 401 error. Text-only requests
+When a **GPT-branded model** (`gpt-general`, `gpt-5.x`) is used with an image
+attachment via BYOK + custom base URL, Cursor aborts the request with an
+`Unauthorized` / 401 error before the proxy is ever reached. Text-only requests
 work correctly. Cursor has a separate hardcoded validation path for multimodal
 requests that always calls `api.openai.com` directly, ignoring the custom base
 URL entirely.
+
+Non-GPT models (`kimi-*`, `deepseek-*`, `minimax-*`) and the Anthropic key path
+(`claude-*`) do **not** trigger this validation — empirically confirmed by the
+fact that image requests for those models arrive at the proxy. Cursor's source
+is not public so the exact model-name predicate is inferred from proxy-side
+observation rather than from Cursor's code.
 
 ### What Happens
 
