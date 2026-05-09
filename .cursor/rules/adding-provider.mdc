@@ -1,6 +1,7 @@
 ---
 description: "Checklist for adding a new upstream provider — must update 5+ locations"
-alwaysApply: true
+globs: api/**/*.js,server.js,vercel.json,.env.example,README.md,edge-functions/**/*.js
+alwaysApply: false
 ---
 
 # Adding a New Provider

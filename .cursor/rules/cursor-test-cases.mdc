@@ -1,6 +1,7 @@
 ---
 description: "Cursor manual test cases are required for model/provider bug fixes and features"
-alwaysApply: true
+globs: api/**/*.js,.cursor/test-cases/**/*.md
+alwaysApply: false
 ---
 
 # Cursor Test Case Maintenance

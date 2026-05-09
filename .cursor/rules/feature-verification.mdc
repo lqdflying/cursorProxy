@@ -1,7 +1,7 @@
 ---
 description: "Post-change verification: dry-run log analysis, probe-first pattern, and KV/cache key stability for feature changes"
-globs: **/*.js
-alwaysApply: true
+globs: api/**/*.js
+alwaysApply: false
 ---
 
 # Feature Verification

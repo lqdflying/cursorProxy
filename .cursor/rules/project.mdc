@@ -1,73 +1,17 @@
 ---
-description: "cursorProxy — multi-provider AI proxy: project overview, wiki, GitHub, and deployment"
+description: "Core cursorProxy repo context"
 alwaysApply: true
 ---
 
-# cursorProxy Project Overview
+# cursorProxy Core Context
 
-A lightweight edge-compatible proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry** (Azure OpenAI Responses API + Azure Anthropic Messages API). Deployed on Vercel Edge, Docker, or EdgeOne Pages.
-
-## What it does
-
-- **Reasoning bridge:** caches provider-specific `reasoning_content` (DeepSeek/Kimi) / `reasoning_details` (MiniMax) by conversation position in KV storage, injects it back on the next turn. Skipped for Azure providers — see `azure-foundry.mdc`.
-- **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so the next turn can use `previous_response_id` instead of resending the full conversation. See `azure-foundry.mdc`.
-- **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (key prefix `asst:`) so subsequent turns reuse prior reasoning instead of re-thinking from scratch.
-- **Vision bridge:** auto-converts inline `image_url` blocks to text descriptions via MiniMax VL-01 (or OpenAI Vision) for text-only models (DeepSeek, MiniMax)
-- **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates to/from Azure OpenAI Responses and Azure Anthropic Messages (request body + SSE stream).
-- **Model discovery:** serves `GET /v1/models` from `CURSORPROXY_MODELS` env var
-- **Auth:** `CURSORPROXY_API_KEY` via `Authorization: Bearer` or `x-api-key` header
-
-## Deployments
-
-- **Vercel Edge:** needs Upstash Redis (`KV_URL` + `KV_TOKEN`). Entry: `api/proxy.js` (`runtime: "edge"`)
-- **Docker:** `server.js` wraps the same proxy logic. Uses local Redis via `ioredis` (`REDIS_URL`) or Upstash. Built via GitHub Actions CI — pushes to `lqdflying/cursorproxy:latest` on DockerHub
-- **EdgeOne Pages:** `edge-functions/` dir, file-based routing, built-in KV (no external Redis needed)
-
-## Key files
-
-All `api/*.js` files are edge-safe (no `node:*`, no `ioredis`).
-
-| File | Role | Log tag |
-|------|------|---------|
-| `api/proxy.js` | Main handler — orchestrates auth, model routing, sanitizers, reasoning injection, vision bridge, upstream fetch, non-stream + streaming SSE pipeline. Holds the `PROVIDERS` map. | `[cursorProxy:proxy]` |
-| `api/auth.js` | `checkProxyAuth`, `extractProxySecret`, `jsonErrorResponse`, `cleanEnvValue`, `allowedEnvValue`, `timingSafeEqualStr`. | (no logs) |
-| `api/models.js` | Model ID parsing (`modelIdParts`, `publicModelId`, `withPublicResponseModel`, `normalizeParsedBodyModel`), provider routing (`providerFromModel`), discovery (`isModelDiscoveryRequest`, `modelDiscoveryResponse`, `configuredModelIds`). | (no logs) |
-| `api/cache.js` | Hashing helpers (`sha256ImageHash`, `cacheScopeUserId`, `conversationHash`). | (no logs) |
-| `api/reasoning.js` | Reasoning bridge — `reasoningField`, `readReasoning`, `serializeReasoning`, `updateStreamReasoning`, `stripResponseChunk`, `reasoningSize`, `hasReasoningValue`, `injectStoredReasoning` (orchestrator). | `[cursorProxy:reasoning]` |
-| `api/azure-openai.js` | Azure OpenAI Responses API — `sanitizeAzureOpenAIBody`, `normalizeAzureOpenAITools`, `mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `isAzureReasoningModel`. | `[cursorProxy:azure-openai]` |
-| `api/azure-anthropic.js` | Azure Anthropic Messages API — `remapAnthropicInput`, `normalizeAnthropicContentTypes`, `sanitizeAzureAnthropicBody`, `mapAnthropicResponseToOpenAI`, `mapAnthropicSSEToOpenAI`. | `[cursorProxy:azure-anthropic]` |
-| `api/vision-bridge.js` | `convertImagesToText` — flattens `image_url` parts, calls vision provider with bounded concurrency, caches descriptions in KV. | `[cursorProxy:vision]` |
-| `api/vision.js` | Upstream vision HTTP call (`describeImage`) for MiniMax VL-01 / OpenAI Vision. | `[cursorProxy:vision]` |
-| `api/kv.js` | KV abstraction (Redis/Upstash/EdgeOne KV). | `[cursorProxy:kv]` |
-| `api/logger.js` | `createLogger(tag)` factory returning `{ log, diag }` — single source of truth for `DEBUG` gating in extracted modules. | (n/a) |
-| `server.js` | Node HTTP adapter for Docker. Only place `ioredis` is imported. | `[cursorProxy:server]` |
-| `vercel.json` | URL rewrites for Vercel. | — |
-| `.cursor/test-cases/` | Manual Cursor prompt test cases for deployed model/provider behavior. Update when fixing model/provider bugs or adding features. | — |
-| `edge-functions/` | EdgeOne Pages route handlers. | — |
-| `wiki/` | Git submodule for GitHub wiki docs. | — |
-
-## Module dependency map
-
-```
-                                api/proxy.js (entry: handler + PROVIDERS)
-                                      │
-        ┌────────────┬────────────┬───┴──────────┬─────────────────┬───────────────────┐
-        ▼            ▼            ▼              ▼                 ▼                   ▼
-  api/auth.js  api/models.js  api/cache.js  api/reasoning.js  api/azure-openai.js  api/vision-bridge.js
-                                                  │            api/azure-anthropic.js   │
-                                                  ▼            (both use auth.js)       ▼
-                                             api/kv.js                              api/vision.js
-                                                                                        │
-                                                                                        ▼
-                                                                                    api/kv.js
-
-  api/cache.js → api/auth.js (extractProxySecret)
-  Helper modules use createLogger() from api/logger.js for tagged log output.
-```
-
-## Git & GitHub
-
-- **Repo:** `github.com/lqdflying/cursorProxy`
-- **CI:** `.github/workflows/docker.yml` — builds multi-arch Docker image on push
-- **Wiki:** `wiki/` is a **separate git clone** of the GitHub wiki (`git@github.com:lqdflying/cursorProxy.wiki.git`). It is NOT a git submodule — there is no `.gitmodules` file, and `wiki/` is listed in `.gitignore` so the main repo never tracks it. Do NOT commit wiki changes in the main repo; cd into `wiki/` (or use `git -C wiki <command>`) and push from that clone. The Shell tool's `working_directory` parameter does not always resolve nested git directories correctly, so prefer `git -C wiki <command>`.
-- `.github/instructions/` is in `.gitignore` — instructions there are for GitHub UI, not committed
+- `cursorProxy` is an edge-compatible multi-provider AI proxy for DeepSeek, Kimi, MiniMax, and Azure Foundry.
+- `api/proxy.js` is the main entrypoint and holds the provider orchestration.
+- `api/models.js` handles model parsing, public/private model IDs, and provider routing.
+- Azure adapters live in `api/azure-openai.js` and `api/azure-anthropic.js`.
+- Reasoning and cache helpers live in `api/reasoning.js`, `api/cache.js`, and `api/kv.js`.
+- All `api/*.js` files are shared edge-safe modules. Do not introduce `node:*` imports or `ioredis` there.
+- `server.js` is the Docker-only wrapper around the shared proxy logic.
+- `vercel.json` and `edge-functions/` provide platform routing entrypoints.
+- Manual verification prompts live under `.cursor/test-cases/`.
+- `wiki/` is a separate git clone for the GitHub wiki. Do not commit wiki changes in the main repo.

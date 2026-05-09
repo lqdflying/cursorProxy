@@ -1,6 +1,7 @@
 ---
 description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers azureopenai (gpt-5.5) and azureanthropic (claude-sonnet-4-6).
-alwaysApply: true
+globs: api/proxy.js,api/models.js,api/reasoning.js,api/azure-openai.js,api/azure-anthropic.js
+alwaysApply: false
 ---
 
 # Azure Foundry Integration

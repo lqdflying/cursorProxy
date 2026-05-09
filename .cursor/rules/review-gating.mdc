@@ -1,20 +1,13 @@
 ---
-description: Pre-commit checklist for request transformation code — docs-first + full-path trace
-alwaysApply: true
+description: Request transformation review checklist — full-path trace and count reconciliation
+globs: api/proxy.js,api/azure-openai.js,api/azure-anthropic.js,api/reasoning.js
+alwaysApply: false
 ---
 # Review Gating
 
 Before committing any code that touches request body transformations (sanitizers, normalizers, mappers, filters, whitelists):
 
-## 1. Docs-first for API parameter changes
-
-Before adding, removing, or changing how any API parameter is handled, search the official docs to confirm the parameter exists, is accepted, and is used for the purpose claimed.
-
-- `delete tool.description; // optional, not needed by Responses` — wrong. Searching would have shown description is used for tool selection.
-- Use `microsoft_docs_search` (Azure), `WebSearch` (OpenAI/other), or `context7-mcp` (libraries).
-- Do not assume a parameter is optional or unused based on naming convention.
-
-## 2. Full-path trace for every input shape
+## 1. Full-path trace for every input shape
 
 Before committing a fix, enumerate the distinct input shapes the code can receive and walk each through the full call chain (not just the function being edited).
 
@@ -25,7 +18,7 @@ Before committing a fix, enumerate the distinct input shapes the code can receiv
 
 To verify: run `node --input-type=module -e "import { fn } from './api/file.js'; ..."` with each input shape before committing.
 
-## 3. Cross-check counts in logs
+## 2. Cross-check counts in logs
 
 When production logs show `IN: X, OUT: Y` with X ≠ Y, trace why one item was lost. Do not ship until counts match or the discrepancy is explained.
 
