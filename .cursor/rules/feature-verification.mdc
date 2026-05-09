@@ -27,6 +27,8 @@ If a tag is zero, the feature is inert regardless of upstream status codes.
 
 Use the Vercel MCP tools to inspect production logs after deploys. Do not rediscover project IDs unless these calls fail.
 
+For detailed incident investigation, do not stop at the truncated MCP table title. Use `.cursor/rules/vercel-log-investigation.mdc` to inspect full exported log `message` content and group related lines by `requestId`.
+
 Project identity:
 
 ```text
@@ -108,7 +110,7 @@ When reporting results, include:
 - Time window queried
 - Whether logs were from the latest deployment or a previous deployment
 - Error searches performed
-- Any matching log titles and exact error text
+- Any matching log titles, relevant full `message` fields, and exact error text
 
 ## Probe-first pattern
 

@@ -29,7 +29,7 @@ Every manual Cursor test case must include:
 - Exact prompt text to paste into Cursor
 - Expected Cursor-visible behavior
 - Expected file/content changes when relevant
-- Expected Vercel log event titles and key fields
+- Expected Vercel log event titles, full `message` content fields, and request grouping checks
 - Negative signs that indicate the bug still exists
 - Cleanup steps if the prompt creates files
 
@@ -38,6 +38,8 @@ Keep prompts deterministic and low-risk. Prefer tiny files under `.cursor/tmp/` 
 ## Log title contract
 
 When a test case relies on production logs, use stable event titles such as `REQ`, `RES`, `TOOLS_SHAPE`, `TOOLS_FIXED`, `AZURE_STREAM_SUMMARY`, `INPUT_CHAIN`, `MESSAGES_TO_INPUT`, `PREV_RESP_ID_FOUND`, and `PREV_RESP_ID_MISS`.
+
+Stable titles are search anchors only. The test case must also document the exact fields inside the log `message` that prove the behavior, such as `itemTypes`, `inputItems`, `functionArgDeltas`, `events`, `status`, or exact upstream error text. For Vercel investigations, follow `.cursor/rules/vercel-log-investigation.mdc`.
 
 Do not change existing log event titles casually. If a new diagnostic is required, add a clean uppercase event title and document it in the related test case.
 
