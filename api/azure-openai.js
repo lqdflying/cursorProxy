@@ -4,6 +4,17 @@ import { createLogger } from "./logger.js";
 const { diag } = createLogger("azure-openai");
 
 const AZURE_OPENAI_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const AZURE_OPENAI_RESPONSES_TOOL_TYPES = new Set([
+  "custom",
+  "web_search",
+  "web_search_preview",
+  "file_search",
+  "computer_use_preview",
+  "code_interpreter",
+  "image_generation",
+  "mcp",
+  "apply_patch",
+]);
 
 function isAzureReasoningModel(providerKey, azureModelName) {
   return providerKey === "azureopenai"
@@ -20,6 +31,10 @@ function formatCounts(counts) {
   return entries.length
     ? entries.map(([key, count]) => `${key}:${count}`).join(",")
     : "(none)";
+}
+
+function isKnownResponsesToolType(type) {
+  return typeof type === "string" && AZURE_OPENAI_RESPONSES_TOOL_TYPES.has(type);
 }
 
 function azureInputShape(input) {
@@ -316,11 +331,14 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
   // Known valid OpenAI Responses API params.
   // Responses API uses a different parameter set than Chat Completions.
   const allowed = new Set([
-    "model", "input", "instructions", "stream",
+    "model", "input", "instructions", "prompt", "stream",
     "max_output_tokens", "temperature", "top_p",
     "tools", "tool_choice", "reasoning",
     "store", "parallel_tool_calls", "user",
-    "previous_response_id",
+    "previous_response_id", "include", "background",
+    "truncation", "metadata", "prompt_cache_key",
+    "prompt_cache_retention", "safety_identifier",
+    "service_tier", "text",
   ]);
 
   // Strip any field not in the allowed whitelist
@@ -329,6 +347,12 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
       delete parsedBody[key];
       sanitized = true;
     }
+  }
+
+  // Background Responses require stored state so the response can be resumed.
+  if (parsedBody.background === true && parsedBody.store !== true) {
+    parsedBody.store = true;
+    sanitized = true;
   }
 
   // Responses API: set store=false to prevent state leakage across users
@@ -361,8 +385,10 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     const nAnthropicFmt = parsedBody.tools.filter(t => t.name && !t.function).length;
     const nChatCmplFmt = parsedBody.tools.filter(t => t.type === "function" && t.function).length;
     const nNativeToolType = parsedBody.tools.filter(t => t.type === "tool").length;
+    const nKnownType = parsedBody.tools.filter(t => isKnownResponsesToolType(t?.type)).length;
     diag("TOOLS_SHAPE", "provider:", providerKey, "total:", nTools,
-      "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt, "nativeToolType:", nNativeToolType);
+      "anthropicFmt:", nAnthropicFmt, "chatCmplFmt:", nChatCmplFmt,
+      "nativeToolType:", nNativeToolType, "knownType:", nKnownType);
     if (parsedBody.tool_choice) {
       diag("TOOL_CHOICE_SHAPE", "provider:", providerKey, "value:", JSON.stringify(parsedBody.tool_choice).slice(0, 200));
     }
@@ -394,8 +420,25 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
   }
 
   const filtered = [];
+  let dropped = 0;
+  let keptNative = 0;
   for (const tool of parsedBody.tools) {
-    // Step 1: Convert Anthropic-format tools (named, no wrapper) → Responses {type:"function", ...}
+    if (!tool || typeof tool !== "object" || Array.isArray(tool)) {
+      toolsFixed = true;
+      dropped++;
+      continue;
+    }
+
+    // Step 1: Preserve native Responses tools such as custom/apply_patch/mcp.
+    // Cursor's Codex-style apply_patch arrives as {type:"custom", name, format}
+    // and Azure streams it back as custom_tool_call_input deltas.
+    if (isKnownResponsesToolType(tool.type)) {
+      filtered.push(tool);
+      keptNative++;
+      continue;
+    }
+
+    // Step 2: Convert Anthropic-format tools (named, no wrapper) → Responses {type:"function", ...}
     // Must run BEFORE the type filter so versioned types like bash_20250124 are converted first.
     if (tool.name && !tool.function) {
       tool.type = "function";
@@ -404,7 +447,7 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
       delete tool.input_schema;
       toolsFixed = true;
     }
-    // Step 2: Unwrap Chat Completions format { type:"function", function:{...} } → inline
+    // Step 3: Unwrap Chat Completions format { type:"function", function:{...} } → inline
     else if (tool.type === "function" && tool.function) {
       tool.name = tool.function.name || "";
       tool.description = tool.function.description || "";
@@ -412,9 +455,10 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
       delete tool.function;
       toolsFixed = true;
     }
-    // Step 3: Drop non-function types that could not be converted (files, web_search, etc.)
+    // Step 4: Drop non-function types that could not be converted.
     if (tool.type && tool.type !== "function") {
       toolsFixed = true;
+      dropped++;
       continue;
     }
     filtered.push(tool);
@@ -424,7 +468,8 @@ function normalizeAzureOpenAITools(providerKey, parsedBody) {
     parsedBody.tools = filtered;
     const nWithDesc = filtered.filter(t => !!t.description).length;
     const nWithoutDesc = filtered.filter(t => !t.description).length;
-    diag("TOOLS_FIXED", "provider:", providerKey, "from:", "anthropic", "to:", "openai_responses",
+    diag("TOOLS_FIXED", "provider:", providerKey, "from:", "mixed", "to:", "openai_responses",
+      "kept:", filtered.length, "dropped:", dropped, "native:", keptNative,
       "withDesc:", nWithDesc, "withoutDesc:", nWithoutDesc);
   }
 
@@ -458,6 +503,28 @@ function mapResponsesToOpenAI(json) {
           arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments || {}),
         },
       });
+    } else if (item.type === "custom_tool_call") {
+      toolCalls.push({
+        id: item.call_id || item.id || "",
+        type: "function",
+        function: {
+          name: item.name || "",
+          arguments: typeof item.input === "string" ? item.input : JSON.stringify(item.input || ""),
+        },
+      });
+    } else if (item.type === "apply_patch_call") {
+      toolCalls.push({
+        id: item.call_id || item.id || "",
+        type: "function",
+        function: {
+          name: "apply_patch",
+          arguments: typeof item.input === "string"
+            ? item.input
+            : typeof item.patch === "string"
+              ? item.patch
+              : JSON.stringify(item.input || item.patch || ""),
+        },
+      });
     }
   }
 
@@ -480,6 +547,47 @@ function mapResponsesToOpenAI(json) {
   };
 }
 
+function rememberResponsesToolState(toolState, state) {
+  toolState.set(state.id, state);
+  if (state.itemId) toolState.set(`item:${state.itemId}`, state);
+  if (state.index != null) toolState.set(`index:${state.index}`, state);
+  return state;
+}
+
+function responsesToolStateForDelta(toolState, data, defaultName = "") {
+  const idx = data.output_index ?? 0;
+  const existing =
+    (data.call_id && toolState.get(data.call_id)) ||
+    (data.item_id && toolState.get(`item:${data.item_id}`)) ||
+    toolState.get(`index:${idx}`);
+  if (existing) return existing;
+
+  const id = data.call_id || data.item_id || `call_${idx}`;
+  return rememberResponsesToolState(toolState, {
+    id,
+    name: data.name || defaultName,
+    partialJson: "",
+    index: idx,
+    itemId: data.item_id || "",
+  });
+}
+
+function mapResponsesToolDelta(state, idx, partial) {
+  return {
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: idx,
+          id: state.id,
+          type: "function",
+          function: { name: state.name, arguments: partial },
+        }],
+      },
+    }],
+  };
+}
+
 function mapResponsesSSEToOpenAI(eventName, data, toolState) {
   if (!data) return null;
 
@@ -496,21 +604,27 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
 
     case "response.function_call_arguments.delta": {
       const partial = data.delta || "";
-      const callId = data.call_id || "call_0";
       const idx = data.output_index ?? 0;
-      if (!toolState.has(callId)) {
-        toolState.set(callId, { id: callId, name: data.name || "", partialJson: "" });
-      }
-      const state = toolState.get(callId);
+      const state = responsesToolStateForDelta(toolState, data);
       state.partialJson += partial;
-      return {
-        choices: [{
-          index: 0,
-          delta: {
-            tool_calls: [{ index: idx, id: callId, type: "function", function: { name: state.name, arguments: partial } }],
-          },
-        }],
-      };
+      return mapResponsesToolDelta(state, idx, partial);
+    }
+
+    case "response.custom_tool_call_input.delta": {
+      const partial = data.delta || "";
+      const idx = data.output_index ?? 0;
+      const state = responsesToolStateForDelta(toolState, data);
+      state.partialJson += partial;
+      return mapResponsesToolDelta(state, idx, partial);
+    }
+
+    case "response.apply_patch_call.delta":
+    case "response.apply_patch_call_input.delta": {
+      const partial = data.delta || "";
+      const idx = data.output_index ?? 0;
+      const state = responsesToolStateForDelta(toolState, data, "apply_patch");
+      state.partialJson += partial;
+      return mapResponsesToolDelta(state, idx, partial);
     }
 
     case "response.output_item.added": {
@@ -521,7 +635,13 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
       if (item?.type === "function_call") {
         const callId = item.call_id || "call_0";
         const idx = data.output_index ?? 0;
-        toolState.set(callId, { id: callId, name: item.name || "", partialJson: "" });
+        rememberResponsesToolState(toolState, {
+          id: callId,
+          name: item.name || "",
+          partialJson: "",
+          index: idx,
+          itemId: item.id || data.item_id || "",
+        });
         return {
           choices: [{
             index: 0,
@@ -531,6 +651,26 @@ function mapResponsesSSEToOpenAI(eventName, data, toolState) {
           }],
         };
       }
+      if (item?.type === "custom_tool_call" || item?.type === "apply_patch_call") {
+        const idx = data.output_index ?? 0;
+        const callId = item.call_id || item.id || `call_${idx}`;
+        const name = item.type === "apply_patch_call" ? "apply_patch" : (item.name || "");
+        rememberResponsesToolState(toolState, {
+          id: callId,
+          name,
+          partialJson: "",
+          index: idx,
+          itemId: item.id || data.item_id || "",
+        });
+        return mapResponsesToolDelta({ id: callId, name }, idx, "");
+      }
+      return null;
+    }
+
+    case "response.function_call_arguments.done":
+    case "response.custom_tool_call_input.done":
+    case "response.apply_patch_call.done":
+    case "response.apply_patch_call_input.done": {
       return null;
     }
 

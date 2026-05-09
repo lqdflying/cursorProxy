@@ -38,7 +38,7 @@ import {
 import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
-const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v4";
+const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v6";
 let proxyAuthWarningLogged = false;
 
 const PROVIDERS = {
@@ -294,7 +294,20 @@ export default async function handler(req) {
         const isAsstItem = (item) =>
           item.role === "assistant" ||
           item.type === "function_call" ||
+          item.type === "custom_tool_call" ||
+          item.type === "apply_patch_call" ||
           item.type === "reasoning" ||
+          item.type === "file_search_call" ||
+          item.type === "web_search_call" ||
+          item.type === "computer_call" ||
+          item.type === "computer_use_preview_call" ||
+          item.type === "code_interpreter_call" ||
+          item.type === "image_generation_call" ||
+          item.type === "local_shell_call" ||
+          item.type === "shell_call" ||
+          item.type === "mcp_call" ||
+          item.type === "mcp_list_tools" ||
+          item.type === "mcp_approval_request" ||
           (item.type === "message" && item.role === "assistant");
         while (start >= 0 && !isAsstItem(hashItems[start])) {
           start--;
@@ -398,7 +411,8 @@ export default async function handler(req) {
               }, []);
             parsedBody.previous_response_id = prevRespId;
           }
-        } else {
+        }
+        if (!prevRespId && !parsedBody.input) {
           // Stateless fallback — full input array (but response is still stored
           // so the NEXT turn can chain from it).
           parsedBody.input = parsedBody.messages.reduce((acc, item) => {
@@ -1132,7 +1146,12 @@ export default async function handler(req) {
               countAzureEvent(responsesEvent);
               if (responsesEvent === "response.refusal.delta") {
                 accRefusal += json?.delta || "";
-              } else if (responsesEvent === "response.function_call_arguments.delta") {
+              } else if (
+                responsesEvent === "response.function_call_arguments.delta" ||
+                responsesEvent === "response.custom_tool_call_input.delta" ||
+                responsesEvent === "response.apply_patch_call.delta" ||
+                responsesEvent === "response.apply_patch_call_input.delta"
+              ) {
                 azureFunctionDeltaCount++;
               }
 
