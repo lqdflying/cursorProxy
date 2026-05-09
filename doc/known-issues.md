@@ -109,20 +109,24 @@ Use `cursorproxy/gpt-5.4` directly instead of `gpt-general`.
 
 ### Summary
 
-When a **GPT-branded model** (`gpt-general`, `gpt-5.x`) is used with an image
-attachment via BYOK + custom base URL, Cursor aborts the request with an
-`Unauthorized` / 401 error before the proxy is ever reached. Text-only requests
-work correctly. Cursor has a separate hardcoded validation path for multimodal
-requests that always calls `api.openai.com` directly, ignoring the custom base
-URL entirely.
+When a model with a name that matches Cursor's internal `gpt-5.x` pattern
+(e.g. `gpt-5.4`, `gpt-5.5`) is used with an image attachment via BYOK +
+custom base URL, Cursor aborts the request with an `Unauthorized` / 401 error
+before the proxy is ever reached.
 
-Non-GPT models (`kimi-*`, `deepseek-*`, `minimax-*`) and the Anthropic key path
-(`claude-*`) do **not** trigger this validation — empirically confirmed by the
-fact that image requests for those models arrive at the proxy. Cursor's source
-is not public so the exact model-name predicate is inferred from proxy-side
-observation rather than from Cursor's code.
+The `gpt-general` alias is **not affected** — its name does not match the
+`gpt-5.x` pattern, so Cursor never fires the validation and images reach the
+proxy and Azure OpenAI backend normally.
 
-### What Happens
+This is the same pattern check that controls `apply_patch` tool inclusion
+(Issue 1), creating an inverse trade-off between the two configurations:
+
+| Model | apply_patch tool | Vision / images |
+|---|---|---|
+| `gpt-general` (alias) | ❌ Not sent — alias skips pattern | ✅ Works — alias skips BYOK validation |
+| `gpt-5.4` (named directly) | ✅ Sent — name matches pattern | ❌ Broken — name triggers BYOK validation → 401 |
+
+### What Happens (gpt-5.x named directly)
 
 ```mermaid
 sequenceDiagram
@@ -131,71 +135,77 @@ sequenceDiagram
     participant OAI as api.openai.com (hardcoded)
     participant P as cursorProxy (custom base URL)
 
-    U->>C: Attach image + GPT model (gpt-general / gpt-5.x)
-    Note over C: GPT model + image triggers OpenAI\nvision validation code path
+    U->>C: Attach image + gpt-5.x model (named directly)
+    Note over C: Model name matches gpt-5.x pattern\n→ triggers OpenAI BYOK validation
     C->>OAI: GET /v1/models\nAuthorization: Bearer <CURSORPROXY_API_KEY>
     OAI-->>C: 401 Unauthorized\n(key is not a real OpenAI key)
     Note over C: Request aborted — proxy never reached
     C-->>U: ❌ "Unauthorized User OpenAI API key" error
-    Note over P: Proxy receives nothing for Azure OpenAI models.
+    Note over P: Proxy receives nothing.
 ```
 
 ### Root Cause
 
+Cursor checks the model name against a `gpt-5.x` / o-series pattern before
+sending image requests. Models that match skip the custom base URL and validate
+against the hardcoded `api.openai.com` first.
+
 ```mermaid
 flowchart TD
-    IMG{"Image attachment\n— which model?"}
+    IMG{"Image attachment\n— which model name?"}
 
-    DS_MM["DeepSeek / MiniMax\n(text-only models)"]
-    DS_PATH["Cursor sends to custom base URL ✅\nProxy vision bridge converts\nimage → text description\nForwards text-only to provider ✅"]
+    DS_MM["deepseek-* / minimax-*"]
+    DS_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nProxy vision bridge converts image → text\nForwards text-only ✅"]
 
-    KIMI["Kimi\n(vision-capable, non-OpenAI brand)"]
-    KIMI_PATH["Cursor sends to custom base URL ✅\nProxy forwards image to Kimi natively ✅"]
+    KIMI["kimi-*"]
+    KIMI_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nProxy forwards image natively ✅"]
 
-    AA["Azure Anthropic (Claude)\n(uses Anthropic API key path,\nnot OpenAI BYOK path)"]
-    AA_PATH["Cursor uses Anthropic key,\nnot affected by OpenAI validation ✅"]
+    AA["claude-*"]
+    AA_PATH["Uses separate Anthropic key path ✅\nNot affected by OpenAI BYOK validation\nProxy forwards image natively ✅"]
 
-    AO["Azure OpenAI\n(gpt-general, gpt-5.x)\n(OpenAI-branded GPT model)"]
-    IMG_VAL["Cursor validates via OpenAI BYOK path:\nGET api.openai.com/v1/models\n(hardcoded — ignores custom base URL)"]
+    GG["gpt-general (alias)"]
+    GG_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nProxy forwards image natively to Azure OpenAI ✅"]
+
+    AO["gpt-5.4 / gpt-5.5 (named directly)"]
+    IMG_VAL["Name matches gpt-5.x pattern ⚠\nCursor validates via OpenAI BYOK path:\nGET api.openai.com/v1/models\n(hardcoded — ignores custom base URL)"]
     IMG_FAIL["api.openai.com rejects\nCURSORPROXY_API_KEY → 401"]
     IMG_ABORT["Request aborted — proxy never reached ❌"]
 
     IMG --> DS_MM --> DS_PATH
     IMG --> KIMI --> KIMI_PATH
     IMG --> AA --> AA_PATH
+    IMG --> GG --> GG_PATH
     IMG --> AO --> IMG_VAL --> IMG_FAIL --> IMG_ABORT
+
+    style IMG_VAL fill:#fff3cd,stroke:#ffc107
+    style IMG_FAIL fill:#f8d7da,stroke:#dc3545
+    style IMG_ABORT fill:#f8d7da,stroke:#dc3545
 ```
 
 ### Impact on cursorProxy
 
-The bug is specific to Cursor's **OpenAI BYOK validation path**, which only
-fires for GPT-branded models. Azure Anthropic uses a completely separate
-Anthropic API key path in Cursor. Kimi, DeepSeek, and MiniMax are not
-routed through the OpenAI validation.
-
-| Provider | Vision handling | Affected by bug? |
+| Model | Vision handling | Affected? |
 |---|---|---|
-| DeepSeek | Proxy vision bridge converts images to text | ❌ Not affected |
-| MiniMax | Proxy vision bridge converts images to text | ❌ Not affected |
-| Kimi | Provider supports vision natively | ❌ Not affected — not an OpenAI-branded model |
-| Azure Anthropic (Claude) | Provider supports vision natively | ❌ Not affected — uses Anthropic API key path, not OpenAI BYOK |
-| Azure OpenAI (gpt-general, gpt-5.x) | Provider supports vision natively | ✅ Broken — Cursor validates via hardcoded api.openai.com → 401 |
+| DeepSeek / MiniMax | Proxy vision bridge (not natively vision-capable) | ❌ Not affected |
+| Kimi | Natively vision-capable — forwarded as-is | ❌ Not affected |
+| Azure Anthropic (Claude) | Natively vision-capable — Anthropic key path | ❌ Not affected |
+| `gpt-general` (alias) | Natively vision-capable — alias name bypasses validation | ❌ Not affected |
+| `gpt-5.x` named directly | Natively vision-capable — name triggers BYOK validation | ✅ Broken |
 
-### Workarounds
+### Current Workaround
 
-| Workaround | Works? | Notes |
-|---|---|---|
-| Use text-only (no image attachments) | ✅ | Only reliable option currently |
-| Use Cursor's native models (non-BYOK) | ✅ | Loses proxy benefits |
-| Real OpenAI key for validation | ⚠️ | Cursor may route image requests to OpenAI directly |
+Use `gpt-general` instead of a direct `gpt-5.x` model name for image-bearing
+requests. The alias resolves to the real deployment (e.g. `gpt-5.5`) on the
+Azure side, which handles vision natively. The trade-off is that `gpt-general`
+does not receive the `apply_patch` tool (see Issue 1).
 
 ### Affected Proxy Files
 
 | File | Role | Fixable here? |
 |---|---|---|
-| `api/vision-bridge.js` | Works correctly for DeepSeek/MiniMax; never reached for affected providers | No |
+| `api/vision-bridge.js` | Works correctly for DeepSeek/MiniMax | No |
 | `api/vision.js` | Vision API calls — works for DeepSeek/MiniMax | No |
-| `api/proxy.js` | Request aborted before arrival for Kimi/Azure providers | No |
+| `api/proxy.js` | For gpt-5.x directly: request aborted before arrival | No |
 
 ### Related Links
 
