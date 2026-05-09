@@ -1,5 +1,7 @@
 # Known Issues
 
+> **User-facing version:** https://github.com/lqdflying/cursorProxy/wiki/Known-Issues
+
 Cursor-side bugs that affect cursorProxy users. These cannot be fixed in the
 proxy — they require a fix from the Cursor team.
 
