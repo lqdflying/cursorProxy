@@ -292,20 +292,30 @@ export default async function handler(req) {
 
     if (hasMessages || hasInput) {
       const azureScopeUser = await cacheScopeUserId(req);
-      // Scope includes the resolved Azure deployment name so:
-      //   1. Retargeting an alias (e.g. AZURE_OPENAI_GENERAL_ALIAS_TARGET
-      //      changing from gpt-5.5 to gpt-5.5-mini) yields a fresh cache
-      //      bucket — clients won't replay a previous_response_id created
-      //      under the old deployment, which would 400 on Azure.
-      //   2. The same conversation hitting two different deployments
-      //      (e.g. cursorproxy/gpt-general vs cursorproxy/gpt-5.5
-      //      mid-conversation) doesn't cross-pollinate response ids.
+      // Scope embeds three identifiers in addition to provider + version + user:
+      //   1. The resolved Azure deployment name — retargeting an alias
+      //      (e.g. AZURE_OPENAI_GENERAL_ALIAS_TARGET changing from
+      //      gpt-5.5 to gpt-5.5-mini) yields a fresh cache bucket, so
+      //      clients won't replay a previous_response_id from the old
+      //      deployment and 400 on Azure. Mid-conversation deployment
+      //      switches (gpt-general vs gpt-5.5) also stay isolated.
+      //   2. A normalized Azure resource/endpoint identifier — moving the
+      //      proxy to a different AZURE_OPENAI_ENDPOINT or rotating
+      //      AZURE_FOUNDRY_RESOURCE invalidates response ids that only
+      //      exist on the prior resource, even when the deployment name
+      //      stays the same.
       // The cache version was bumped to v7 alongside this change so any
       // pre-existing v6 keys are orphaned cleanly across the deploy.
       const azureScopeDeployment = parsedBody?.model || "(none)";
+      const azureScopeResource = (
+        process.env.AZURE_OPENAI_ENDPOINT
+        || process.env.AZURE_FOUNDRY_RESOURCE
+        || "(none)"
+      ).trim().toLowerCase().replace(/\/+$/, "");
       const azureScope = [
         providerKey,
         AZURE_OPENAI_RESPONSE_CACHE_VERSION,
+        azureScopeResource,
         azureScopeDeployment,
         azureScopeUser,
       ].join(":");

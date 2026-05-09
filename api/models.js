@@ -61,17 +61,20 @@ export function publicModelId(model) {
 export function withPublicResponseModel(json, fallbackModel, forceAlias = false) {
   if (!json || typeof json !== "object" || Array.isArray(json)) return json;
 
+  // Error envelopes flow through unchanged. Even shapes like
+  // `{ error: {...}, model: "<deployment>" }` must not be normalized:
+  // any rewriting risks confusing client error parsers and leaks the
+  // resolved deployment name when a forced-alias request fails upstream.
+  if (json.error) return json;
+
   const fallbackPublicId = publicModelId(fallbackModel);
 
   // When an alias is in use, the upstream `json.model` is the resolved
   // deployment name (e.g. "gpt-5.5-mini"). Force the response model back
   // to the alias public id so callers see the model they asked for.
   //
-  // Restricted to payloads that look like a chat completion (have `choices`)
-  // and are not an error envelope. Without this guard, an Azure 4xx/5xx
-  // body like {"error":{...}} would have a top-level `model` injected,
-  // confusing clients and potentially breaking error parsers.
-  const looksLikeCompletion = Array.isArray(json.choices) && !json.error;
+  // Restricted to payloads that look like a chat completion (have `choices`).
+  const looksLikeCompletion = Array.isArray(json.choices);
   if (forceAlias && fallbackPublicId && looksLikeCompletion) {
     return { ...json, model: fallbackPublicId };
   }
