@@ -84,17 +84,27 @@ item.type === "apply_patch_call" ||
 
 | Event | Status | Notes |
 |---|---|---|
+| `response.queued` | Dropped | Official lifecycle event; no Chat Completions output today |
 | `response.output_item.done` | Counted only, then dropped | No call-site side effect today; risk if a future/native tool exposes final arguments only on the completed item |
+| `response.refusal.done` | Dropped | Final refusal text is not emitted; refusal deltas are mapped |
+| `response.output_text.annotation.added` | Dropped | Citations/annotations are not bridged to Chat clients |
 | `response.reasoning_summary_part.added` | Dropped | Usually acceptable because this proxy strips/suppresses reasoning for Chat clients; verify if Cursor starts consuming reasoning summaries |
 | `response.reasoning_summary_text.delta` | Dropped | See above |
 | `response.reasoning_summary_text.done` | Dropped | See above |
 | `response.reasoning_summary_part.done` | Dropped | See above |
+| `response.reasoning_text.delta` | Dropped | Official reasoning text stream; proxy strips/suppresses reasoning today |
+| `response.reasoning_text.done` | Dropped | See above |
 | `response.content_part.added` | Dropped | Output text still works via `output_text.delta` |
 | `response.content_part.done` | Dropped | See above |
-| `response.web_search_call.*` | Dropped | Not yet encountered in practice; may be acceptable if only final text/sources are needed |
-| `response.code_interpreter_call.*` | Dropped | Not yet encountered in practice; risky when `include:["code_interpreter_call.outputs"]` is expected downstream |
-| `response.file_search_call.*` | Dropped | Not yet encountered in practice; risky when `include:["file_search_call.results"]` is expected downstream |
-| `response.mcp_call.*` | Dropped | Not yet encountered in practice; risky if Cursor expects MCP call visibility |
+| `response.web_search_call.in_progress/searching/completed` | Dropped | Not yet encountered in practice; may be acceptable if only final text/sources are needed |
+| `response.file_search_call.in_progress/searching/completed` | Dropped | Not yet encountered in practice; risky when `include:["file_search_call.results"]` is expected downstream |
+| `response.code_interpreter_call.in_progress/interpreting/completed` | Dropped | Not yet encountered in practice; risky when `include:["code_interpreter_call.outputs"]` is expected downstream |
+| `response.code_interpreter_call_code.delta/done` | Dropped | Code input/output stream is not Chat-bridged |
+| `response.image_generation_call.in_progress/generating/partial_image/completed` | Dropped | Image output items are not Chat-bridged |
+| `response.mcp_call_arguments.delta/done` | Dropped | MCP argument stream is not Chat-bridged |
+| `response.mcp_call.in_progress/completed/failed` | Dropped | Risky if Cursor expects MCP call visibility |
+| `response.mcp_list_tools.in_progress/completed/failed` | Dropped | Risky if Cursor expects MCP tool-list visibility |
+| `response.audio.*` / `response.audio.transcript.*` | Dropped | Not relevant unless audio output is bridged through this proxy |
 
 ### Native apply_patch support is only provisional
 
@@ -168,9 +178,11 @@ For native apply_patch traffic, these diagnostics are not sufficient. Confirm `a
 
 ## Documentation references checked
 
+- OpenAI Responses API overview/reference: current public docs are under `developers.openai.com`, not the older `platform.openai.com/docs/guides/responses` URL used earlier in this note.
+- OpenAI streaming events reference: `response.custom_tool_call_input.delta` and `response.custom_tool_call_input.done` are official streaming events. No official `response.apply_patch_call.*` streaming event names were found; those mapper cases should remain defensive/provisional unless real Azure traffic proves them.
 - OpenAI Apply Patch guide: native tool uses `tools:[{"type":"apply_patch"}]`, returns `apply_patch_call` items with `operation`, and expects `apply_patch_call_output` results.
 - OpenAI Responses create reference: documents `background`, `include`, `prompt`, `prompt_cache_key`, `prompt_cache_retention`, `max_tool_calls`, `conversation`, terminal `status` / `incomplete_details`, and built-in tools such as web/file/code/computer/image/MCP.
-- Azure OpenAI Responses docs/reference: documents `background` requiring `store=true`, `include` values, `response.custom_tool_call_input.delta`, and Azure-specific tool availability caveats.
+- Azure OpenAI in Microsoft Foundry Models Responses docs/reference: the proxy-relevant inference surface is `/openai/responses` for the dated preview API and `/openai/v1/responses` for the current v1 API. The Microsoft Foundry project/Agents REST API is useful as a schema cross-check, but is not the primary reference for this proxy's Responses inference route.
 
 ---
 
@@ -178,35 +190,49 @@ For native apply_patch traffic, these diagnostics are not sufficient. Confirm `a
 
 ### Azure OpenAI Responses API — streaming events
 
-Events that the proxy currently encounters and their handling status:
+Events that the proxy currently handles, suppresses, or should treat as known official/provisional types:
 
 | SSE Event | Handled by mapper? | Side-effect at call site? | Mapped to OpenAI format? |
 |---|---|---|---|
 | `response.created` | Returns null | Captures `response.id` for KV | No output |
+| `response.queued` | Returns null | None | No output (dropped) |
 | `response.in_progress` | Returns null | None | No output |
 | `response.output_item.added` | Yes (message, function_call, custom_tool_call, apply_patch_call) | — | `delta.role` or `delta.tool_calls` |
 | `response.content_part.added` | Returns null | None | No output (dropped) |
 | `response.output_text.delta` | Yes | — | `delta.content` |
 | `response.output_text.done` | Returns null | None | No output |
+| `response.output_text.annotation.added` | Returns null | None | No output (dropped) |
 | `response.content_part.done` | Returns null | None | No output (dropped) |
 | `response.output_item.done` | Returns null | Counted only | No output |
 | `response.refusal.delta` | Yes | Accumulated for stream summary | `delta.refusal` |
+| `response.refusal.done` | Returns null | None | No output |
 | `response.function_call_arguments.delta` | Yes | Counted as `azureFunctionDeltaCount` | `delta.tool_calls[{function:{arguments}}]` |
 | `response.function_call_arguments.done` | Returns null | None | No output |
 | `response.custom_tool_call_input.delta` | Yes (6482918) | Counted as `azureFunctionDeltaCount` | `delta.tool_calls[{function:{arguments}}]` |
 | `response.custom_tool_call_input.done` | Returns null | None | No output |
-| `response.apply_patch_call.delta` | Partial/provisional | Counted as `azureFunctionDeltaCount` | `delta.tool_calls[{function:{arguments}}]` if Azure emits text deltas |
-| `response.apply_patch_call_input.delta` | Partial/provisional | Counted as `azureFunctionDeltaCount` | `delta.tool_calls[{function:{arguments}}]` if Azure emits text deltas |
-| `response.apply_patch_call.done` | Returns null | None | No output |
-| `response.apply_patch_call_input.done` | Returns null | None | No output |
+| `response.apply_patch_call.delta` | Defensive/provisional | Counted as `azureFunctionDeltaCount` | Not found in official OpenAI streaming events reference; only useful if Azure emits this observed/provisional shape |
+| `response.apply_patch_call_input.delta` | Defensive/provisional | Counted as `azureFunctionDeltaCount` | Not found in official OpenAI streaming events reference; only useful if Azure emits this observed/provisional shape |
+| `response.apply_patch_call.done` | Defensive/provisional | None | Not found in official OpenAI streaming events reference |
+| `response.apply_patch_call_input.done` | Defensive/provisional | None | Not found in official OpenAI streaming events reference |
 | `response.reasoning_summary_part.added` | Returns null | None | No output (dropped) |
 | `response.reasoning_summary_text.delta` | Returns null | None | No output (dropped) |
 | `response.reasoning_summary_text.done` | Returns null | None | No output (dropped) |
 | `response.reasoning_summary_part.done` | Returns null | None | No output (dropped) |
+| `response.reasoning_text.delta` | Returns null | None | No output (dropped) |
+| `response.reasoning_text.done` | Returns null | None | No output (dropped) |
+| `response.file_search_call.in_progress/searching/completed` | Returns null | None | No output (dropped) |
+| `response.web_search_call.in_progress/searching/completed` | Returns null | None | No output (dropped) |
+| `response.code_interpreter_call.in_progress/interpreting/completed` | Returns null | None | No output (dropped) |
+| `response.code_interpreter_call_code.delta/done` | Returns null | None | No output (dropped) |
+| `response.image_generation_call.in_progress/generating/partial_image/completed` | Returns null | None | No output (dropped) |
+| `response.mcp_call_arguments.delta/done` | Returns null | None | No output (dropped) |
+| `response.mcp_call.in_progress/completed/failed` | Returns null | None | No output (dropped) |
+| `response.mcp_list_tools.in_progress/completed/failed` | Returns null | None | No output (dropped) |
+| `response.audio.*` / `response.audio.transcript.*` | Returns null | None | No output (dropped) |
 | `response.completed` | Returns null | Emits `[DONE]`, caches response ID, logs summary | `data: [DONE]` |
 | `response.incomplete` | Returns null | Emits `[DONE]`, logs incomplete reason | `data: [DONE]` |
 | `response.failed` | Returns null | Not handled (6482918 doesn't cover this) | Would be silently dropped |
-| `response.cancelled` | Returns null | Not handled (6482918 doesn't cover this) | Would be silently dropped |
+| `response.cancelled` | Returns null | Not handled (6482918 doesn't cover this) | Azure/defensive; not found in the OpenAI streaming events reference |
 
 ### Azure OpenAI Responses API — non-streaming output item types
 
@@ -225,9 +251,59 @@ Events that the proxy currently encounters and their handling status:
 
 ---
 
+## Official documentation links
+
+Bookmark these for future gap investigations — no need to search again.
+
+### OpenAI Responses API (upstream API surface that Azure Foundry mirrors)
+
+| Resource | URL |
+|---|---|
+| Responses API overview | `https://developers.openai.com/api/reference/responses/overview/` |
+| Migrate to Responses guide | `https://developers.openai.com/api/docs/guides/migrate-to-responses` |
+| Create response reference | `https://developers.openai.com/api/reference/resources/responses/methods/create` |
+| Streaming guide | `https://developers.openai.com/api/docs/guides/streaming-responses` |
+| Responses streaming events (full event type list) | `https://developers.openai.com/api/reference/resources/responses/streaming-events/` |
+| Tools / custom tools | `https://developers.openai.com/api/docs/guides/tools` |
+| Apply Patch tool | `https://developers.openai.com/api/docs/guides/tools-apply-patch` |
+
+### Azure OpenAI in Microsoft Foundry Models (proxy-relevant inference API)
+
+| Resource | URL |
+|---|---|
+| Responses API how-to | `https://learn.microsoft.com/azure/foundry/openai/how-to/responses` |
+| Dated preview REST reference for current proxy path (`/openai/responses?api-version=2025-04-01-preview`) | `https://learn.microsoft.com/azure/foundry/openai/reference-preview#responses` |
+| Current v1 preview REST reference (`/openai/v1/responses?api-version=preview`) | `https://learn.microsoft.com/azure/foundry/openai/reference-preview-latest#create-response` |
+| Latest v1 REST reference | `https://learn.microsoft.com/azure/foundry/openai/latest` |
+| Model availability | `https://learn.microsoft.com/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure` |
+
+### Azure Foundry project/Agents docs (secondary schema cross-checks only)
+
+| Resource | URL |
+|---|---|
+| Microsoft Foundry project/Agents REST API reference | `https://learn.microsoft.com/rest/api/aifoundry/aiproject` |
+| Azure AI Agent Server Python SDK (Responses models) | `https://learn.microsoft.com/python/api/azure-ai-agentserver-responses/azure.ai.agentserver.responses.models?view=azure-python-preview` |
+| Azure AI Agent Server .NET SDK (Responses models) | `https://learn.microsoft.com/dotnet/api/azure.ai.agentserver.responses.models?view=azure-dotnet-preview` |
+
+### Anthropic Messages API (for azureanthropic provider)
+
+| Resource | URL |
+|---|---|
+| Anthropic Messages API reference | `https://docs.anthropic.com/en/api/messages` |
+| Anthropic streaming events | `https://docs.anthropic.com/en/api/messages-streaming` |
+| Anthropic tool use | `https://docs.anthropic.com/en/docs/build-with-claude/tool-use` |
+
+### Endpoint/API-surface note
+
+For this proxy's Azure OpenAI provider, the relevant Microsoft docs are **Azure OpenAI in Microsoft Foundry Models** data-plane inference docs. The current proxy path is the dated preview `/openai/responses?api-version=2025-04-01-preview`; the current v1 docs use `/openai/v1/responses?api-version=preview`. Microsoft examples often use `*.openai.azure.com`; existing resources may also use `*.cognitiveservices.azure.com`, and `AZURE_OPENAI_ENDPOINT` can override the endpoint. Do not use the Microsoft Foundry project/Agents REST API as the primary reference for this proxy's `/openai/responses` route.
+
+---
+
 ## Update log
 
 | Date | What changed |
 |---|---|
 | 2026-05-09 | Created tracker. Documented apply_patch fix (6482918), known gaps, event reference tables. |
 | 2026-05-09 | Tightened tracker wording: custom apply_patch is confirmed fixed; native apply_patch and built-in tool bridging are marked as compatibility gaps, not completed support. |
+| 2026-05-09 | **Production verification:** Deployed 6482918, exported logs (2026-05-09T01:26 UTC). All 13 apply_patch streams show matching `functionArgDeltas` counts (e.g., 71 delta events → 71 counted). `custom_tool_call_output` items appear in subsequent `AZURE_INPUT_SHAPE` entries confirming Cursor's runner executed patches. KV chaining hit rate 90.2% (37/41). Zero errors. |
+| 2026-05-09 | **Documentation correction:** Replaced stale `platform.openai.com` guide links with current `developers.openai.com` docs. Reclassified Microsoft references: Azure OpenAI in Microsoft Foundry Models inference docs are primary for this proxy, while Microsoft Foundry project/Agents docs are schema cross-checks only. Confirmed `response.custom_tool_call_input.delta` and `.done` are official streaming events. Confirmed native `apply_patch_call` / `apply_patch_call_output` item shapes are documented, but no official `response.apply_patch_call.*` streaming events were found; current mapper cases remain defensive/provisional. |
