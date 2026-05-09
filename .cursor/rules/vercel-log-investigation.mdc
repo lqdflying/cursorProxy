@@ -1,0 +1,112 @@
+---
+description: "Use when checking Vercel production runtime logs for cursorProxy incidents, deploy validation, Azure OpenAI errors, or tool-call evidence"
+alwaysApply: false
+---
+
+# Vercel Log Investigation
+
+Use Vercel MCP first for live production log lookup. Do not rely only on the event title or the truncated MCP table message. For bug investigation, inspect the full `message` content and surrounding entries with the same `requestId`.
+
+## Project Identity
+
+```text
+teamId:    team_mHFSe4eOFutmBLhI7quKMeyw
+projectId: prj_VpZI7PljTtWlt3FD7yDSxXiJJY05
+project:   cursor-proxy
+domain:    one.lqdflying.info
+branch:    main
+```
+
+## MCP Lookup
+
+Start with deployment and runtime log MCP calls:
+
+```text
+mcp__vercel__.list_deployments({
+  teamId: "team_mHFSe4eOFutmBLhI7quKMeyw",
+  projectId: "prj_VpZI7PljTtWlt3FD7yDSxXiJJY05"
+})
+
+mcp__vercel__.get_runtime_logs({
+  teamId: "team_mHFSe4eOFutmBLhI7quKMeyw",
+  projectId: "prj_VpZI7PljTtWlt3FD7yDSxXiJJY05",
+  environment: "production",
+  since: "45m",
+  limit: 100,
+  query: "azureopenai"
+})
+```
+
+Use focused queries for Azure OpenAI and Responses bridge triage:
+
+```text
+query: "UPSTREAM_ERROR_STATUS"
+query: "UPSTREAM_STATUS 400"
+query: "No tool output found"
+query: "previous_response_not_found"
+query: "AZURE_RESPONSE_INCOMPLETE"
+query: "AZURE_STREAM_SUMMARY"
+query: "custom_tool_call_output"
+query: "response.custom_tool_call_input.delta"
+```
+
+The MCP result table may show only `[cursorProxy:proxy] START P...` or another truncated message. A query match proves the term exists somewhere in that log record, but it is not enough to answer detailed questions such as "was this batched", "which item type appeared", or "what exact error text occurred".
+
+## Full Content Inspection
+
+When the MCP table truncates log messages, inspect a full Vercel log export JSON if available. The usual local path pattern is:
+
+```text
+~/cursor-proxy-log-export-*.json
+```
+
+Useful `jq` checks:
+
+```bash
+# Find the newest local export.
+ls -t ~/cursor-proxy-log-export-*.json | head -1
+
+# Show full matching messages, including deployment, request, status, and body.
+jq -r '.[] | select(.message | contains("custom_tool_call")) | [.TimeUTC, .requestId, .responseStatusCode, .deploymentId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
+
+# Inspect all log lines for one request. This is required for cause/effect checks.
+jq -r '.[] | select(.requestId=="REQUEST_ID_HERE") | [.TimeUTC, .requestId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
+
+# Count hard error signs by full message content, not by title alone.
+jq '[.[] | select(.responseStatusCode != 200 or (.message | test("UPSTREAM_ERROR_STATUS|STREAM_TIMEOUT|STREAM_READ_ERROR|AZURE_RESPONSE_INCOMPLETE|No tool output found|previous_response_not_found|UPSTREAM_STATUS 400|UPSTREAM_STATUS 429|UPSTREAM_STATUS 500")))] | length' ~/cursor-proxy-log-export-*.json
+```
+
+For Azure Responses tool-call evidence, parse the full `AZURE_STREAM_SUMMARY` message content:
+
+```bash
+# Custom tool-call streams. For Cursor apply_patch custom-tool flavor, expect
+# response.custom_tool_call_input.delta and response.custom_tool_call_input.done.
+jq -r '.[] | select(.message | contains("AZURE_STREAM_SUMMARY") and contains("response.custom_tool_call_input.delta")) | [.TimeUTC, .requestId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
+
+# Follow-up tool output requests. custom_tool_call_output proves Cursor received
+# the custom tool call, ran the local tool, and sent the output back.
+jq -r '.[] | select(.message | contains("AZURE_INPUT_SHAPE") and contains("custom_tool_call_output")) | [.TimeUTC, .requestId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
+
+# Batched custom tool outputs: should show inputItems: 2 or custom_tool_call_output:2.
+jq -r '.[] | select((.message | contains("AZURE_INPUT_SHAPE")) and (.message | contains("custom_tool_call_output")) and ((.message | contains("inputItems: 2")) or (.message | contains("custom_tool_call_output:2")))) | [.TimeUTC, .requestId, .message] | @tsv' ~/cursor-proxy-log-export-*.json
+```
+
+## Interpretation Rules
+
+- A stable event title such as `AZURE_STREAM_SUMMARY` is only the starting point. Inspect fields inside the message: `functionArgDeltas`, `events`, `inputItems`, `itemTypes`, `content`, `refusal`, `status`, and exact error text.
+- Always group related lines by `requestId` before concluding causality. A tool-call stream and its later tool-output request usually have different request IDs, so compare timestamps and `PREV_RESP_ID_FOUND` / `CACHE_AZ_RESP_ID` chain keys too.
+- For apply-patch style Cursor flows, logs intentionally do not print tool names or patch content. The safe evidence is shape-level: `knownType: 1`, `response.custom_tool_call_input.delta`, `response.custom_tool_call_input.done`, then `itemTypes: custom_tool_call_output:1`.
+- Distinguish custom tools from normal function tools. `custom_tool_call_output` is the Cursor custom apply-patch path; `function_call_output` is a normal function tool result.
+- To prove batching, require counts greater than one in the full message, such as `custom_tool_call_output:2`, `function_call_output:2`, `response.function_call_arguments.done:7`, or multiple `output_item.added` entries. Do not infer batching from multiple separate requests.
+- If no local export exists, say the MCP table is truncated and ask for/export a Vercel log JSON before making detailed claims about message internals.
+
+## Reporting
+
+When reporting Vercel log findings, include:
+
+- Latest deployment ID and commit SHA if checked
+- Time window and source: MCP live logs or local export file path
+- Whether logs came from the latest deployment
+- Exact queries and content checks performed
+- Relevant full log lines or summarized field values from `message`, not only event titles
+- Clear negative checks, e.g. `No tool output found: 0`, non-200: `0`, `custom_tool_call_output:2: 0`
