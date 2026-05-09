@@ -1,0 +1,140 @@
+# Vision Bridge
+
+Providers that only accept text (DeepSeek, MiniMax chat endpoint) cannot handle
+`image_url` content parts. The vision bridge intercepts those messages, describes
+every image via a vision-capable API, and replaces the image parts with text
+before the request is forwarded.
+
+## When It Activates
+
+```mermaid
+flowchart LR
+    P{"Provider?"}
+    DS["deepseek"]
+    MM["minimax"]
+    SKIP["Skip — provider\nsupports vision natively\n(Azure OpenAI, Azure Anthropic, Kimi)"]
+    VB["Vision Bridge runs"]
+
+    P -->|deepseek| DS --> VB
+    P -->|minimax| MM --> VB
+    P -->|other| SKIP
+```
+
+## Full Vision Bridge Flow
+
+```mermaid
+sequenceDiagram
+    participant P as cursorProxy
+    participant KV as KV Store<br/>(Redis / Upstash)
+    participant VIS as Vision API<br/>(MiniMax VL-01 or GPT-4o-mini)
+
+    Note over P: Scan all messages for image_url parts<br/>Collect unique images
+
+    loop For each unique image (bounded concurrency, default 2)
+        P->>P: SHA-256 hash of image data URI
+
+        P->>KV: GET img:<sha256>
+        alt Cache hit
+            KV-->>P: Cached text description
+        else Cache miss
+            P->>VIS: Describe image<br/>(timeout: VISION_TIMEOUT_MS, default 15 000 ms)
+
+            alt Vision API responds in time
+                VIS-->>P: Text description
+                P->>KV: SET img:<sha256> = description (TTL 2h)
+            else Timeout or error
+                Note over P: Insert placeholder text:<br/>"[Image could not be processed]"
+            end
+        end
+
+        Note over P: Replace image_url part with text description
+    end
+
+    alt All images failed AND non-streaming request
+        P-->>Client: 502 vision_unavailable error<br/>(don't forward degraded request)
+    else Streaming OR at least one image succeeded
+        Note over P: Forward modified messages upstream
+    end
+```
+
+## Vercel Pre-stream Budget Guard
+
+```mermaid
+flowchart TD
+    START["Vision bridge completes"]
+    VERCEL{"Running on\nVercel Edge?"}
+    ELAPSED["Measure elapsed time\nsince request start"]
+    CHECK{"elapsed > PRESTREAM_BUDGET_MS\n(default 22 000 ms)?"}
+    FAIL["Return 504 prestream_timeout\nto Cursor\n(Vercel would kill the request\nbefore first byte anyway)"]
+    OK["Proceed to upstream call"]
+
+    START --> VERCEL
+    VERCEL -->|no - Docker / EdgeOne| OK
+    VERCEL -->|yes| ELAPSED --> CHECK
+    CHECK -->|exceeded| FAIL
+    CHECK -->|within budget| OK
+```
+
+## Concurrency & Timeout Model
+
+```mermaid
+flowchart LR
+    subgraph "Request with 4 images"
+        I1["Image 1"]
+        I2["Image 2"]
+        I3["Image 3"]
+        I4["Image 4"]
+    end
+
+    subgraph "Concurrency = 2 (default)"
+        subgraph "Batch 1 (parallel)"
+            V1["Vision call → desc1"]
+            V2["Vision call → desc2"]
+        end
+        subgraph "Batch 2 (parallel)"
+            V3["Vision call → desc3"]
+            V4["Timeout → placeholder"]
+        end
+    end
+
+    I1 --> V1
+    I2 --> V2
+    V1 --> B2["Batch 2 starts\nafter Batch 1 done"]
+    V2 --> B2
+    B2 --> V3
+    B2 --> V4
+```
+
+## Vision API Selection
+
+```mermaid
+flowchart LR
+    ENV{"VISION_PROVIDER\nenv var set?"}
+    MM_VIS["MiniMax VL-01\n(default)\nuses MINIMAX_API_KEY"]
+    OAI_VIS["OpenAI GPT-4o-mini\nuses OPENAI_API_KEY"]
+
+    ENV -->|not set or 'minimax'| MM_VIS
+    ENV -->|'openai'| OAI_VIS
+```
+
+## Cache Key Structure
+
+```
+img:<sha256-of-image-data-uri>
+│
+├── Value: plain text description
+└── TTL:   KV_TTL_SECONDS (default 7200 s / 2 h)
+```
+
+The same image sent in different conversations or by different users hits the
+same cache key — image content is provider-agnostic and user-agnostic.
+
+## Key Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `VISION_TIMEOUT_MS` | 15 000 | Per-image call timeout |
+| `VISION_CONCURRENCY` | 2 | Max parallel vision calls |
+| `PRESTREAM_BUDGET_MS` | 22 000 | Vercel pre-stream wall time |
+| `MINIMAX_API_KEY` | — | Used for MiniMax VL-01 vision |
+| `OPENAI_API_KEY` | — | Used when VISION_PROVIDER=openai |

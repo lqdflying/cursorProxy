@@ -1,0 +1,175 @@
+# KV Store & Caching Architecture
+
+The proxy uses a single KV abstraction (`api/kv.js`) that supports three
+backends. All caching is stateless per-request — no shared in-process memory.
+
+## Backend Selection
+
+```mermaid
+flowchart TD
+    START["kvGet / kvSet called"]
+    E1{"EDGEONE_KV_BINDING\nset?"}
+    E2{"KV_URL + KV_TOKEN\nset?"}
+    E3{"REDIS_URL\nset?"}
+    EO["EdgeOne KV\n(global namespace binding)"]
+    UP["Upstash REST\n(Bearer auth over HTTPS)"]
+    RD["ioredis\n(local Redis)"]
+    NOP["No-op\n(KV disabled, caching skipped)"]
+
+    START --> E1
+    E1 -->|yes| EO
+    E1 -->|no| E2
+    E2 -->|yes| UP
+    E2 -->|no| E3
+    E3 -->|yes| RD
+    E3 -->|no| NOP
+```
+
+## Cache Key Types
+
+```mermaid
+flowchart LR
+    subgraph "conv: — Reasoning chains"
+        CK["conv:\n<sha256(provider:user:messages)>"]
+        CV["Value: serialized reasoning\n(reasoning_content string\nor reasoning_details JSON)"]
+    end
+
+    subgraph "azresp: — Azure response IDs"
+        AK["azresp:\n<sha256(azureopenai:v7:resource:deployment:user:messages)>"]
+        AV["Value: response ID string\n(e.g. resp_abc123)"]
+    end
+
+    subgraph "img: — Vision descriptions"
+        IK["img:\n<sha256(image-data-uri)>"]
+        IV["Value: plain text description"]
+    end
+
+    subgraph "claude_thinking: — Claude thinking blocks"
+        TK["claude_thinking:\n<sha256(azureanthropic:user:messages-normalized)>"]
+        TV["Value: JSON array of\ncontent_block objects\n[{type:thinking, thinking:..., signature:...}]"]
+    end
+```
+
+## Who Reads and Writes Each Key
+
+```mermaid
+flowchart TD
+    subgraph Providers["Provider families"]
+        DS["DeepSeek / Kimi / MiniMax"]
+        AO["Azure OpenAI"]
+        AA["Azure Anthropic"]
+    end
+
+    subgraph Keys["KV keys"]
+        CONV["conv:*\n(reasoning)"]
+        AZRESP["azresp:*\n(response IDs)"]
+        IMG["img:*\n(vision)"]
+        THINK["claude_thinking:*\n(thinking blocks)"]
+    end
+
+    DS -->|write mid-stream + at DONE| CONV
+    DS -->|read at request start| CONV
+
+    AO -->|write at DONE / response.completed| AZRESP
+    AO -->|read at request start with retries| AZRESP
+
+    DS -->|write on cache miss| IMG
+    DS -->|read before vision call| IMG
+
+    AA -->|write at DONE / message_stop| THINK
+    AA -->|read at request start| THINK
+```
+
+## Reasoning Snapshot Strategy (conv:)
+
+```mermaid
+sequenceDiagram
+    participant UP as Upstream stream
+    participant P as Proxy
+    participant KV as KV Store
+
+    loop Each chunk with reasoning content
+        UP-->>P: chunk with reasoning_content delta
+        P->>P: accReasoning += delta
+
+        alt size grew by ≥ 256 chars (DeepSeek/Kimi)<br/>or ≥ 1 char (MiniMax)
+            P-->>KV: SET conv:<hash> (fire-and-forget)<br/>does NOT block stream
+        end
+    end
+
+    UP-->>P: [DONE]
+    P->>KV: SET conv:<hash> (await — guaranteed write)
+```
+
+> Mid-stream snapshots ensure that if the stream is interrupted, the next turn
+> still recovers partial reasoning rather than starting from scratch.
+
+## Azure Response ID Retry Logic (azresp:)
+
+```mermaid
+sequenceDiagram
+    participant C as Cursor (Turn N+1)
+    participant P as Proxy
+    participant KV as KV Store
+
+    C->>P: new request (conversation continues)
+    Note over P: Compute hash of messages before\nlast assistant block
+
+    P->>KV: GET azresp:<prev_hash> (attempt 1, 0 ms delay)
+    alt hit
+        KV-->>P: response ID
+    else miss
+        P->>KV: GET azresp:<prev_hash> (attempt 2, 80 ms delay)
+        alt hit
+            KV-->>P: response ID
+        else miss
+            P->>KV: GET azresp:<prev_hash> (attempt 3, 200 ms delay)
+            alt hit
+                KV-->>P: response ID
+            else miss — stateless fallback
+                Note over P: Send full input array\n(no previous_response_id)
+            end
+        end
+    end
+```
+
+> Retries cover the race where Cursor fires a follow-up turn while the prior
+> turn's `finally` block is still flushing the response ID to KV.
+
+## Cache Scope Isolation
+
+```mermaid
+flowchart TD
+    subgraph "conv: scope"
+        CS["provider : user"]
+    end
+
+    subgraph "azresp: scope"
+        AS["azureopenai : v7 : azure-resource : deployment : user"]
+    end
+
+    subgraph "claude_thinking: scope"
+        TS["azureanthropic : user\n(normalized hash — ignores content format changes)"]
+    end
+
+    subgraph "img: scope"
+        IS["(none — global across all users and providers)"]
+    end
+
+    note1["Azure scope includes deployment name:\nchanging AZURE_OPENAI_GENERAL_ALIAS_TARGET\nyields a fresh bucket — prevents 400 errors\nfrom replaying IDs across deployments"]
+
+    AS --- note1
+```
+
+## TTL & Eviction
+
+| Key type | Default TTL | Controlled by |
+|---|---|---|
+| `conv:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
+| `azresp:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
+| `img:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
+| `claude_thinking:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
+
+All keys share the same TTL. The cache version tag (`v7` in `azresp:`) acts as a
+logical namespace bump — old keys are orphaned and expire naturally when the
+cache version is incremented after a breaking schema change.
