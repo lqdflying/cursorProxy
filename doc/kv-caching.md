@@ -104,7 +104,9 @@ sequenceDiagram
 > Mid-stream snapshots ensure that if the stream is interrupted, the next turn
 > still recovers partial reasoning rather than starting from scratch.
 
-## Azure Response ID Retry Logic (azresp:)
+## Retry Logic
+
+### Azure Response ID (azresp:) — hardcoded delays
 
 ```mermaid
 sequenceDiagram
@@ -135,6 +137,45 @@ sequenceDiagram
 
 > Retries cover the race where Cursor fires a follow-up turn while the prior
 > turn's `finally` block is still flushing the response ID to KV.
+> Delays are hardcoded: `[0, 80, 200]` ms (total max wait ~280 ms).
+
+### Reasoning (conv:) — configurable delays
+
+```mermaid
+sequenceDiagram
+    participant P as Proxy
+    participant KV as KV Store
+
+    P->>KV: GET conv:<hash> (attempt 1, immediate)
+    alt hit
+        KV-->>P: reasoning value
+    else miss
+        P->>KV: GET conv:<hash> (attempt 2, +40 ms)
+        alt hit
+            KV-->>P: reasoning value
+        else miss
+            P->>KV: GET conv:<hash> (attempt 3, +120 ms)
+            alt hit
+                KV-->>P: reasoning value
+            else miss
+                P->>KV: GET conv:<hash> (attempt 4, +240 ms)
+                alt hit
+                    KV-->>P: reasoning value
+                else miss
+                    P->>KV: GET conv:<hash> (attempt 5, +400 ms)
+                    alt hit
+                        KV-->>P: reasoning value
+                    else miss — inject placeholder
+                        Note over P: reasoning_content = "(prior reasoning unavailable)"
+                    end
+                end
+            end
+        end
+    end
+```
+
+> Configurable via `KV_RETRY_DELAYS_MS` (comma-separated ms, default `40,120,240,400`).
+> Total max wait ~800 ms across 4 retries.
 
 ## Cache Scope Isolation
 
@@ -173,3 +214,14 @@ flowchart TD
 All keys share the same TTL. The cache version tag (`v7` in `azresp:`) acts as a
 logical namespace bump — old keys are orphaned and expire naturally when the
 cache version is incremented after a breaking schema change.
+
+## Key Environment Variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `KV_TTL_SECONDS` | 7 200 | TTL for all cache keys (seconds) |
+| `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |
+| `REDIS_URL` | — | Local Redis connection string (Docker) |
+| `KV_URL` | — | Upstash Redis REST endpoint (Vercel) |
+| `KV_TOKEN` | — | Upstash Redis Bearer token (Vercel) |
+| `EDGEONE_KV_BINDING` | — | EdgeOne KV namespace binding name |

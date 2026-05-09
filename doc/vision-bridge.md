@@ -109,11 +109,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    ENV{"VISION_PROVIDER\nenv var set?"}
-    MM_VIS["MiniMax VL-01\n(default)\nuses MINIMAX_API_KEY"]
-    OAI_VIS["OpenAI GPT-4o-mini\nuses OPENAI_API_KEY"]
+    ENV{"VISION_API_PROVIDER\nenv var set?"}
+    MM_VIS["MiniMax VL-01\n(default)\nPOST /v1/coding_plan/vlm\nuses MINIMAX_API_KEY"]
+    OAI_VIS["OpenAI-compatible\n(default model: gpt-4o-mini)\nPOST /v1/chat/completions\nuses VISION_API_KEY"]
 
-    ENV -->|not set or 'minimax'| MM_VIS
+    ENV -->|not set or 'minimax_vl'| MM_VIS
     ENV -->|'openai'| OAI_VIS
 ```
 
@@ -133,8 +133,11 @@ same cache key — image content is provider-agnostic and user-agnostic.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `VISION_TIMEOUT_MS` | 15 000 | Per-image call timeout |
+| `VISION_API_PROVIDER` | `minimax_vl` | Backend: `minimax_vl` or `openai` |
+| `VISION_API_URL` | (provider default) | Override vision endpoint URL |
+| `VISION_MODEL` | `MiniMax-VL-01` / `gpt-4o-mini` | Override vision model name |
+| `VISION_TIMEOUT_MS` | 15 000 | Per-image call timeout (0 = disabled) |
 | `VISION_CONCURRENCY` | 2 | Max parallel vision calls |
 | `PRESTREAM_BUDGET_MS` | 22 000 | Vercel pre-stream wall time |
-| `MINIMAX_API_KEY` | — | Used for MiniMax VL-01 vision |
-| `OPENAI_API_KEY` | — | Used when VISION_PROVIDER=openai |
+| `MINIMAX_API_KEY` | — | Used when `VISION_API_PROVIDER=minimax_vl` |
+| `VISION_API_KEY` | — | Used when `VISION_API_PROVIDER=openai` |
