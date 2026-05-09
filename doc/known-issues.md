@@ -130,7 +130,7 @@ sequenceDiagram
     OAI-->>C: 401 Unauthorized\n(key is not a real OpenAI key)
     Note over C: Request aborted — proxy never reached
     C-->>U: ❌ "Unauthorized User OpenAI API key" error
-    Note over P: Proxy receives nothing.\nVision bridge never runs.
+    Note over P: Proxy receives nothing for vision-capable models.\nVision bridge never runs for Kimi / Azure providers.
 ```
 
 ### Root Cause
@@ -140,34 +140,39 @@ flowchart TD
     MSG{"Request type"}
     TEXT["Text-only message"]
     TEXT_PATH["Route to custom base URL ✅\n→ cursorProxy receives request"]
-    IMG["Message with image attachment"]
+
+    IMG{"Image attachment\n— which model?"}
+
+    DS_MM["DeepSeek / MiniMax\n(text-only models)"]
+    DS_PATH["Cursor sends to custom base URL ✅\nProxy vision bridge converts\nimage → text description\nForwards text-only to provider ✅"]
+
+    VIS_MODEL["Kimi / Azure OpenAI\n/ Azure Anthropic\n(vision-capable models)"]
     IMG_VAL["Validate vision capability:\nGET api.openai.com/v1/models\n(hardcoded — ignores custom base URL)"]
     IMG_FAIL["api.openai.com rejects\nCURSORPROXY_API_KEY → 401"]
     IMG_ABORT["Request aborted\nProxy never reached ❌"]
 
     MSG -->|text only| TEXT --> TEXT_PATH
-    MSG -->|has image| IMG --> IMG_VAL --> IMG_FAIL --> IMG_ABORT
+    MSG -->|has image| IMG
+    IMG -->|text-only model| DS_MM --> DS_PATH
+    IMG -->|vision-capable model| VIS_MODEL --> IMG_VAL --> IMG_FAIL --> IMG_ABORT
 ```
 
 ### Impact on cursorProxy
 
-All providers are affected — the failure occurs before the request reaches the proxy.
+Cursor's vision validation only fires for models it considers vision-capable.
+For DeepSeek and MiniMax, Cursor knows these are text-only models and sends
+the request (with images) directly to the custom base URL without validation —
+so the proxy's vision bridge receives and converts the images normally.
+The bug only affects providers where Cursor validates vision support against
+`api.openai.com` first.
 
-| Provider | Normal vision handling | Affected? |
+| Provider | Vision handling | Affected by bug? |
 |---|---|---|
-| DeepSeek | Proxy vision bridge converts images to text | ✅ Yes |
-| MiniMax | Proxy vision bridge converts images to text | ✅ Yes |
-| Kimi | Provider supports vision natively | ✅ Yes |
-| Azure OpenAI | Provider supports vision natively | ✅ Yes |
-| Azure Anthropic | Provider supports vision natively | ✅ Yes |
-
-### Partial Mitigation (DeepSeek / MiniMax)
-
-The proxy's vision bridge (`api/vision-bridge.js`) is already built to handle
-providers that don't support inline images — it converts images to text
-descriptions before forwarding. **It is only blocked by Cursor's client-side
-validation bug.** Once Cursor fixes this, DeepSeek and MiniMax vision will
-work without any proxy changes.
+| DeepSeek | Proxy vision bridge converts images to text server-side | ❌ Not affected — Cursor skips validation for text-only models |
+| MiniMax | Proxy vision bridge converts images to text server-side | ❌ Not affected — same |
+| Kimi | Provider supports vision natively | ✅ Yes — Cursor validates → 401 → request aborted |
+| Azure OpenAI | Provider supports vision natively | ✅ Yes — same |
+| Azure Anthropic | Provider supports vision natively | ✅ Yes — same |
 
 ### Workarounds
 
@@ -181,9 +186,9 @@ work without any proxy changes.
 
 | File | Role | Fixable here? |
 |---|---|---|
-| `api/vision-bridge.js` | Proxy vision bridge (ready and correct) | N/A — never reached |
-| `api/vision.js` | Vision API calls | N/A — never reached |
-| `api/proxy.js` | Main request handler | N/A — request aborted before arrival |
+| `api/vision-bridge.js` | Works correctly for DeepSeek/MiniMax; never reached for affected providers | No |
+| `api/vision.js` | Vision API calls — works for DeepSeek/MiniMax | No |
+| `api/proxy.js` | Request aborted before arrival for Kimi/Azure providers | No |
 
 ### Related Links
 
