@@ -40,7 +40,7 @@ import {
 import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
-const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v6";
+const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
 let proxyAuthWarningLogged = false;
 
 const PROVIDERS = {
@@ -292,7 +292,23 @@ export default async function handler(req) {
 
     if (hasMessages || hasInput) {
       const azureScopeUser = await cacheScopeUserId(req);
-      const azureScope = [providerKey, AZURE_OPENAI_RESPONSE_CACHE_VERSION, azureScopeUser].join(":");
+      // Scope includes the resolved Azure deployment name so:
+      //   1. Retargeting an alias (e.g. AZURE_OPENAI_GENERAL_ALIAS_TARGET
+      //      changing from gpt-5.5 to gpt-5.5-mini) yields a fresh cache
+      //      bucket — clients won't replay a previous_response_id created
+      //      under the old deployment, which would 400 on Azure.
+      //   2. The same conversation hitting two different deployments
+      //      (e.g. cursorproxy/gpt-general vs cursorproxy/gpt-5.5
+      //      mid-conversation) doesn't cross-pollinate response ids.
+      // The cache version was bumped to v7 alongside this change so any
+      // pre-existing v6 keys are orphaned cleanly across the deploy.
+      const azureScopeDeployment = parsedBody?.model || "(none)";
+      const azureScope = [
+        providerKey,
+        AZURE_OPENAI_RESPONSE_CACHE_VERSION,
+        azureScopeDeployment,
+        azureScopeUser,
+      ].join(":");
 
       // Build a normalized array for hashing and finding the last assistant
       // turn.  For messages we use the Chat Completions array directly (role

@@ -66,7 +66,13 @@ export function withPublicResponseModel(json, fallbackModel, forceAlias = false)
   // When an alias is in use, the upstream `json.model` is the resolved
   // deployment name (e.g. "gpt-5.5-mini"). Force the response model back
   // to the alias public id so callers see the model they asked for.
-  if (forceAlias && fallbackPublicId) {
+  //
+  // Restricted to payloads that look like a chat completion (have `choices`)
+  // and are not an error envelope. Without this guard, an Azure 4xx/5xx
+  // body like {"error":{...}} would have a top-level `model` injected,
+  // confusing clients and potentially breaking error parsers.
+  const looksLikeCompletion = Array.isArray(json.choices) && !json.error;
+  if (forceAlias && fallbackPublicId && looksLikeCompletion) {
     return { ...json, model: fallbackPublicId };
   }
 

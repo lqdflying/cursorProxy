@@ -30,7 +30,7 @@ All files in `api/` run on **Vercel Edge Runtime** and **EdgeOne Pages** — Nod
   - `asst:<sha…>` — Claude adaptive-thinking cache (`normalizedConversationHash`, typed-canonical content). Distinct prefix prevents collisions with the reasoning-bridge `conv:` key.
   - `azresp:conv:<sha…>` — Azure OpenAI `previous_response_id` chaining (set in `proxy.js` as `"azresp:" + conversationHash(...)` before forwarding the response ID).
   - `img:<sha…>` — vision-bridge image-description cache (`sha256ImageHash`).
-- Scope: `providerKey + ":" + apiKeyHash` (prevents cross-provider and cross-user collisions). For Azure response IDs the scope additionally embeds `AZURE_OPENAI_RESPONSE_CACHE_VERSION` so a deploy can invalidate orphaned IDs without touching reasoning caches.
+- Scope: `providerKey + ":" + apiKeyHash` (prevents cross-provider and cross-user collisions). For Azure response IDs the scope additionally embeds `AZURE_OPENAI_RESPONSE_CACHE_VERSION` and the resolved Azure deployment name (so retargeting an alias like `gpt-general` or switching deployments mid-conversation does not replay a stale `previous_response_id`). A deploy can invalidate orphaned IDs without touching reasoning caches by bumping `AZURE_OPENAI_RESPONSE_CACHE_VERSION`.
 - Default TTL: 7200s (2 hours)
 
 ## Hashing
