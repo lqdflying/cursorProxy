@@ -1,0 +1,45 @@
+---
+description: "Cursor manual test cases are required for model/provider bug fixes and features"
+alwaysApply: true
+---
+
+# Cursor Test Case Maintenance
+
+For any bug fix, hardening change, or new feature that affects model behavior, provider routing, request/response mapping, tool calls, streaming, reasoning, vision, caching, or log diagnostics, update the manual Cursor test cases under `.cursor/test-cases/` before committing.
+
+## When to add or update a test case
+
+Update `.cursor/test-cases/` when a change touches any of these areas:
+
+- Model/provider behavior for Azure OpenAI, Azure Anthropic, DeepSeek, Kimi, MiniMax, or any future provider
+- Tool calls, tool outputs, tool definitions, `tool_choice`, or built-in Responses tools
+- Streaming SSE mapping, terminal events, `[DONE]` behavior, or finish reasons
+- Request body sanitizers, parameter allowlists, normalizers, or format adapters
+- KV/cache behavior such as `previous_response_id`, reasoning cache, Claude thinking cache, or image cache
+- Model ID routing, model discovery, public/bare model name mapping, or provider inference
+- Vercel log diagnostics used to validate production behavior
+
+## Required test case contents
+
+Every manual Cursor test case must include:
+
+- Provider and model route to select in Cursor
+- Preconditions, including deployment/env assumptions
+- Exact prompt text to paste into Cursor
+- Expected Cursor-visible behavior
+- Expected file/content changes when relevant
+- Expected Vercel log event titles and key fields
+- Negative signs that indicate the bug still exists
+- Cleanup steps if the prompt creates files
+
+Keep prompts deterministic and low-risk. Prefer tiny files under `.cursor/tmp/` for apply/edit tests.
+
+## Log title contract
+
+When a test case relies on production logs, use stable event titles such as `REQ`, `RES`, `TOOLS_SHAPE`, `TOOLS_FIXED`, `AZURE_STREAM_SUMMARY`, `INPUT_CHAIN`, `MESSAGES_TO_INPUT`, `PREV_RESP_ID_FOUND`, and `PREV_RESP_ID_MISS`.
+
+Do not change existing log event titles casually. If a new diagnostic is required, add a clean uppercase event title and document it in the related test case.
+
+## If Cursor cannot exercise the path
+
+If the path cannot be triggered from Cursor UI, still add a test case entry that says so and include the closest local replay command or production-log verification method. Do not leave the test-case folder stale just because the verification is not fully manual.

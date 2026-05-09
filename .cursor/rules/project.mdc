@@ -42,6 +42,7 @@ All `api/*.js` files are edge-safe (no `node:*`, no `ioredis`).
 | `api/logger.js` | `createLogger(tag)` factory returning `{ log, diag }` — single source of truth for `DEBUG` gating in extracted modules. | (n/a) |
 | `server.js` | Node HTTP adapter for Docker. Only place `ioredis` is imported. | `[cursorProxy:server]` |
 | `vercel.json` | URL rewrites for Vercel. | — |
+| `.cursor/test-cases/` | Manual Cursor prompt test cases for deployed model/provider behavior. Update when fixing model/provider bugs or adding features. | — |
 | `edge-functions/` | EdgeOne Pages route handlers. | — |
 | `wiki/` | Git submodule for GitHub wiki docs. | — |
 
