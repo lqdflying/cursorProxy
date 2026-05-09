@@ -2,71 +2,79 @@
 
 ## Cursor ↔ cursorProxy Vision Collaboration
 
-The four provider families take completely different paths when an image is
-attached. Cursor's routing decision happens **before** the request reaches the
-proxy, based solely on the model name.
+Three of the four provider families work with images. The proxy applies its
+vision bridge only for DeepSeek and MiniMax (text-only providers). Kimi, Claude,
+and Azure OpenAI are all natively vision-capable — the proxy passes images
+straight through for all three. The Azure OpenAI path is broken not by the
+proxy but by a Cursor-side BYOK routing bug that aborts the request before it
+arrives.
 
 ```mermaid
 flowchart TD
     U["User attaches image in Cursor"]
     M{"Which model family?"}
 
-    %% ── Path A: DeepSeek / MiniMax ──────────────────────────────
-    A_MODEL["deepseek-* / minimax-*\n(text-only models)"]
-    A_CURSOR["Cursor routes to custom base URL ✅\n(no OpenAI validation — not a GPT brand)"]
-    A_GATE["cursorProxy: provider in\nprovidersWithoutVision ✅"]
-    A_BRIDGE["Vision Bridge runs\n(see detail below)"]
-    A_VIS["Vision API\n(MiniMax VL-01 or gpt-4o-mini)"]
-    A_TEXT["image_url → '[Image content: ...]' text"]
+    %% ── Path A: DeepSeek / MiniMax ──────────────────────────────────────────
+    A_MODEL["deepseek-* / minimax-*\n(no native vision support)"]
+    A_CURSOR["Cursor routes directly to custom base URL ✅\n(non-GPT brand — no OpenAI validation)"]
+    A_GATE["cursorProxy:\nprovider in providersWithoutVision\n→ Vision Bridge runs"]
+    A_VIS["Vision API\n(MiniMax VL-01 or OpenAI-compatible)"]
+    A_KV["KV cache check\n(img:<sha256>)"]
+    A_TEXT["image_url parts replaced with\n'[Image content: ...]' text"]
     A_DS["DeepSeek / MiniMax API\n(text-only request ✅)"]
-    A_RESP_DS["Response → Cursor ✅"]
+    A_OK["Response → Cursor ✅"]
 
-    %% ── Path B: Kimi ────────────────────────────────────────────
-    B_MODEL["kimi-*\n(vision-capable, non-OpenAI brand)"]
-    B_CURSOR["Cursor routes to custom base URL ✅\n(no OpenAI validation — not a GPT brand)"]
-    B_GATE["cursorProxy: Kimi not in\nprovidersWithoutVision — bridge skipped"]
+    %% ── Path B: Kimi ─────────────────────────────────────────────────────────
+    B_MODEL["kimi-*\n(natively vision-capable)"]
+    B_CURSOR["Cursor routes directly to custom base URL ✅\n(non-GPT brand — no OpenAI validation)"]
+    B_GATE["cursorProxy:\nnot in providersWithoutVision\n→ bridge skipped, images forwarded as-is"]
     B_KIMI["Kimi API\n(native image_url ✅)"]
-    B_RESP_KIMI["Response → Cursor ✅"]
+    B_OK["Response → Cursor ✅"]
 
-    %% ── Path C: Azure Anthropic ─────────────────────────────────
-    C_MODEL["claude-*\n(Azure Anthropic)"]
-    C_CURSOR["Cursor uses Anthropic key path ✅\n(separate from OpenAI BYOK — not affected)"]
-    C_GATE["cursorProxy: forwards natively\n(Azure Anthropic supports vision)"]
+    %% ── Path C: Azure Anthropic ──────────────────────────────────────────────
+    C_MODEL["claude-*\n(natively vision-capable)"]
+    C_CURSOR["Cursor uses Anthropic key path ✅\n(not the OpenAI BYOK path — unaffected)"]
+    C_GATE["cursorProxy:\nnot in providersWithoutVision\n→ bridge skipped, images forwarded as-is"]
     C_AA["Azure Anthropic API\n(native image format ✅)"]
-    C_RESP_AA["Response → Cursor ✅"]
+    C_OK["Response → Cursor ✅"]
 
-    %% ── Path D: Azure OpenAI — BROKEN ───────────────────────────
-    D_MODEL["gpt-general / gpt-5.x\n(Azure OpenAI)"]
-    D_VAL["Cursor triggers OpenAI BYOK validation:\nGET api.openai.com/v1/models\nAuthorization: Bearer CURSORPROXY_API_KEY\n⚠ hardcoded — ignores custom base URL"]
-    D_FAIL["api.openai.com → 401 Unauthorized\n(key is not a real OpenAI key)"]
+    %% ── Path D: Azure OpenAI — blocked by Cursor BYOK bug ────────────────────
+    D_MODEL["gpt-general / gpt-5.x\n(natively vision-capable — no bridge needed)"]
+    D_NOTE["cursorProxy would forward images natively\n(not in providersWithoutVision)\nbut proxy is never reached ↓"]
+    D_VAL["Cursor triggers OpenAI BYOK validation first:\nGET api.openai.com/v1/models ⚠\n(hardcoded — ignores custom base URL)"]
+    D_FAIL["api.openai.com → 401 Unauthorized\n(CURSORPROXY_API_KEY is not a real OpenAI key)"]
     D_ABORT["Request aborted ❌\ncursorProxy never reached"]
 
     U --> M
-    M -->|text-only model| A_MODEL --> A_CURSOR --> A_GATE --> A_BRIDGE
-    A_BRIDGE -->|per image, bounded concurrency| A_VIS --> A_TEXT --> A_DS --> A_RESP_DS
+    M -->|"deepseek / minimax"| A_MODEL --> A_CURSOR --> A_GATE --> A_KV
+    A_KV -->|cache hit| A_TEXT
+    A_KV -->|cache miss| A_VIS --> A_TEXT
+    A_TEXT --> A_DS --> A_OK
 
-    M -->|kimi| B_MODEL --> B_CURSOR --> B_GATE --> B_KIMI --> B_RESP_KIMI
+    M -->|kimi| B_MODEL --> B_CURSOR --> B_GATE --> B_KIMI --> B_OK
 
-    M -->|claude| C_MODEL --> C_CURSOR --> C_GATE --> C_AA --> C_RESP_AA
+    M -->|claude| C_MODEL --> C_CURSOR --> C_GATE --> C_AA --> C_OK
 
-    M -->|gpt model + image| D_MODEL --> D_VAL --> D_FAIL --> D_ABORT
+    M -->|"gpt-general / gpt-5.x + image"| D_MODEL --> D_VAL --> D_FAIL --> D_ABORT
+    D_MODEL -.->|"proxy behaviour\n(if request arrived)"| D_NOTE
 
     style D_VAL fill:#fff3cd,stroke:#ffc107
     style D_FAIL fill:#f8d7da,stroke:#dc3545
     style D_ABORT fill:#f8d7da,stroke:#dc3545
-    style A_RESP_DS fill:#d4edda,stroke:#28a745
-    style B_RESP_KIMI fill:#d4edda,stroke:#28a745
-    style C_RESP_AA fill:#d4edda,stroke:#28a745
+    style A_OK fill:#d4edda,stroke:#28a745
+    style B_OK fill:#d4edda,stroke:#28a745
+    style C_OK fill:#d4edda,stroke:#28a745
+    style D_NOTE fill:#e2e3e5,stroke:#6c757d
 ```
 
-| Provider | Cursor routing | Proxy action | Works with images? |
-|---|---|---|---|
-| DeepSeek / MiniMax | Custom base URL (no OpenAI validation) | Vision bridge: image → text description | ✅ Yes — via bridge |
-| Kimi | Custom base URL (no OpenAI validation) | Pass through natively | ✅ Yes — native |
-| Azure Anthropic (Claude) | Anthropic key path (separate from OpenAI BYOK) | Pass through natively | ✅ Yes — native |
-| Azure OpenAI (gpt-general, gpt-5.x) | OpenAI BYOK validation fires first → hardcoded `api.openai.com` → **401** | Never reached | ❌ Broken (Cursor bug) |
+| Provider | Native vision? | Proxy vision bridge? | Cursor routing | End-to-end result |
+|---|---|---|---|---|
+| DeepSeek / MiniMax | ❌ No | ✅ Yes — image → text via vision API | Custom base URL (direct) | ✅ Works via bridge |
+| Kimi | ✅ Yes | ❌ No — images forwarded as-is | Custom base URL (direct) | ✅ Works natively |
+| Azure Anthropic (Claude) | ✅ Yes | ❌ No — images forwarded as-is | Anthropic key path (separate) | ✅ Works natively |
+| Azure OpenAI (gpt-general, gpt-5.x) | ✅ Yes | ❌ No — proxy never reached | OpenAI BYOK validation → `api.openai.com` → **401** | ❌ Broken — Cursor bug |
 
-> The Azure OpenAI image failure is a Cursor-side bug — see `known-issues.md` Issue 2 for details and workarounds.
+> Azure OpenAI natively supports vision and the proxy would forward images without any bridge — the failure is entirely in Cursor's routing layer. See `known-issues.md` Issue 2 for details and workarounds.
 
 ---
 
