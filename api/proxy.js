@@ -22,6 +22,8 @@ import {
   modelDiscoveryResponse,
   normalizeParsedBodyModel,
   providerFromModel,
+  publicModelId,
+  resolveAzureAlias,
   withPublicResponseModel,
 } from "./models.js";
 import {
@@ -223,6 +225,39 @@ export default async function handler(req) {
   if (modelNames.changed) {
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_STRIP", "from:", modelNames.input, "to:", upstreamModelName);
+  }
+
+  // Azure OpenAI alias resolution. Public model ids like `gpt-general` are
+  // routed to a real deployment chosen by the operator via env vars. The
+  // alias is invisible to upstream Azure (parsedBody.model is rewritten
+  // to the resolved deployment) but is preserved in the response.model
+  // field via `azureAliasPublicId` so clients see the model they asked for.
+  let azureAliasInfo = null;
+  let azureAliasPublicId = "";
+  if (providerKey === "azureopenai") {
+    const aliasResult = resolveAzureAlias(upstreamModelName);
+    if (aliasResult && !aliasResult.configured) {
+      diag("AZURE_ALIAS_UNCONFIGURED",
+        "alias:", aliasResult.aliasName,
+        "targetEnv:", aliasResult.targetEnv);
+      return jsonErrorResponse(
+        503,
+        `Azure OpenAI alias "${aliasResult.aliasName}" is registered but ${aliasResult.targetEnv} is not set. Set ${aliasResult.targetEnv} to the real Azure deployment name.`,
+        "azure_alias_unconfigured",
+        "api_error"
+      );
+    }
+    if (aliasResult && aliasResult.configured) {
+      azureAliasInfo = aliasResult;
+      azureAliasPublicId = publicModelId(aliasResult.aliasName);
+      parsedBody.model = aliasResult.target;
+      upstreamModelName = aliasResult.target;
+      responseModelName = azureAliasPublicId;
+      bodyText = JSON.stringify(parsedBody);
+      diag("AZURE_ALIAS_RESOLVED",
+        "alias:", aliasResult.aliasName,
+        "target:", aliasResult.target);
+    }
   }
 
   log("RESOLVED", "model:", responseModelName || parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
@@ -496,7 +531,7 @@ export default async function handler(req) {
   let azureModelName = upstreamModelName;
 
   {
-    const openAiSanitized = sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName);
+    const openAiSanitized = sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName, azureAliasInfo);
     parsedBody = openAiSanitized.parsedBody;
     if (openAiSanitized.sanitized) {
       bodyText = JSON.stringify(parsedBody);
@@ -548,6 +583,12 @@ export default async function handler(req) {
   if (modelNames.changed) {
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_STRIP", "from:", modelNames.input, "to:", upstreamModelName);
+  }
+  // Preserve the alias-facing public id. The normalize call above derives
+  // responseModelName from the resolved deployment name (e.g. gpt-5.5-mini),
+  // which would leak the underlying deployment back to clients.
+  if (azureAliasPublicId) {
+    responseModelName = azureAliasPublicId;
   }
   // Set azureModelName unconditionally after model normalization.
   // Previously this was a lazy-init that could read a stale value.
@@ -841,7 +882,7 @@ export default async function handler(req) {
       }
     }
 
-    json = withPublicResponseModel(json, responseModelName);
+    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo));
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {
@@ -1202,7 +1243,7 @@ export default async function handler(req) {
               await cacheReasoningSnapshot();
             }
             if (delta?.content != null) accContent += delta.content;
-            json = withPublicResponseModel(json, responseModelName);
+            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo));
             await writer.write(
               encoder.encode(
                 "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"

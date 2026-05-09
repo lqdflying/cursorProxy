@@ -75,11 +75,24 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `AZURE_OPENAI_ENDPOINT` | Optional | Override Azure OpenAI base URL (Responses API: `/openai/responses`) |
 | `AZURE_ANTHROPIC_ENDPOINT` | Optional | Override Azure Anthropic base URL |
 | `AZURE_OPENAI_REASONING_EFFORT` | Optional | Force `reasoning.effort` for Azure OpenAI reasoning models, overriding client values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` (model support varies) |
+| `AZURE_OPENAI_GENERAL_ALIAS_TARGET` | Optional | Real Azure OpenAI deployment that the public alias `cursorproxy/gpt-general` resolves to (e.g. `gpt-5.5-mini`). Required when clients use the alias |
+| `AZURE_OPENAI_GENERAL_REASONING_EFFORT` | Optional | Alias-only override of `reasoning.effort` when clients route through `cursorproxy/gpt-general`. Precedence: alias env > `AZURE_OPENAI_REASONING_EFFORT` > client value |
 | `AZURE_ANTHROPIC_THINKING` | Optional | Default Claude thinking mode when request omits it: `adaptive` or `disabled` |
 | `AZURE_ANTHROPIC_EFFORT` | Optional | Default Claude effort when request omits it: `low`, `medium`, `high`, or `max` |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
+
+### Azure OpenAI alias: `cursorproxy/gpt-general`
+
+`cursorproxy/gpt-general` is a fixed public alias that routes to a real Azure
+OpenAI deployment chosen via `AZURE_OPENAI_GENERAL_ALIAS_TARGET`. The proxy
+rewrites `parsedBody.model` to the resolved deployment before forwarding, but
+the response `model` field stays as `cursorproxy/gpt-general` so clients see
+the alias they asked for. `AZURE_OPENAI_GENERAL_REASONING_EFFORT`, when set,
+overrides the global `AZURE_OPENAI_REASONING_EFFORT` for requests that route
+through this alias only. To advertise the alias via `GET /v1/models`, also
+add `gpt-general` (or `cursorproxy/gpt-general`) to `CURSORPROXY_MODELS`.
 
 Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration).
 

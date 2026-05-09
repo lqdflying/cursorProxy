@@ -239,7 +239,7 @@ function normalizeAzureOpenAIInputContent(providerKey, parsedBody) {
   return { parsedBody, changed };
 }
 
-function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
+function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName, aliasInfo = null) {
   if (providerKey !== "azureopenai" || !parsedBody) {
     return { parsedBody, sanitized: false, isReasoningModel: false };
   }
@@ -300,7 +300,19 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
 
   // Env wins over Cursor/client effort so deployments can centrally force
   // the reasoning budget for Azure OpenAI reasoning models.
-  const defaultReasoningEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
+  //
+  // Precedence (highest to lowest):
+  //   1. Alias-specific effort env (e.g. AZURE_OPENAI_GENERAL_REASONING_EFFORT)
+  //      — only when the request routes through that alias.
+  //   2. Global AZURE_OPENAI_REASONING_EFFORT.
+  //   3. Whatever the client/Cursor sent (kept as-is from the flat→nested
+  //      remap above).
+  const aliasEffort = aliasInfo?.effortEnv
+    ? allowedEnvValue(aliasInfo.effortEnv, AZURE_OPENAI_REASONING_EFFORTS)
+    : null;
+  const globalEffort = allowedEnvValue("AZURE_OPENAI_REASONING_EFFORT", AZURE_OPENAI_REASONING_EFFORTS);
+  const defaultReasoningEffort = aliasEffort || globalEffort;
+  let reasoningEffortSource = "client";
   if (isReasoningModel && defaultReasoningEffort) {
     if (!parsedBody.reasoning || typeof parsedBody.reasoning !== "object" || Array.isArray(parsedBody.reasoning)) {
       parsedBody.reasoning = {};
@@ -309,10 +321,15 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName) {
       parsedBody.reasoning.effort = defaultReasoningEffort;
       sanitized = true;
     }
+    reasoningEffortSource = aliasEffort ? "alias" : "global";
   }
 
   if (parsedBody.reasoning?.effort) {
-    diag("REASONING_EFFORT", "effort:", parsedBody.reasoning.effort, "provider:", providerKey);
+    diag("REASONING_EFFORT",
+      "effort:", parsedBody.reasoning.effort,
+      "provider:", providerKey,
+      "source:", reasoningEffortSource,
+      "alias:", aliasInfo?.aliasName || "(none)");
   }
 
   // PROBE: detect system field present without instructions

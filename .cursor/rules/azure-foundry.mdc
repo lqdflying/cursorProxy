@@ -48,6 +48,27 @@ Default URL construction (when no endpoint override set):
 ### Path Remapping (azureanthropic)
 The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor sends `chat/completions` but Anthropic expects `messages`.
 
+### Azure OpenAI Aliases
+
+Public alias model ids (currently just `gpt-general`) resolve to a real Azure OpenAI deployment chosen via env. The alias registry lives in `AZURE_OPENAI_ALIASES` inside `api/models.js`; each entry names a `targetEnv` (the deployment to forward to) and an `effortEnv` (an alias-specific reasoning-effort override).
+
+| Env var | Purpose |
+|---|---|
+| `AZURE_OPENAI_GENERAL_ALIAS_TARGET` | Real Azure deployment for `cursorproxy/gpt-general` (e.g. `gpt-5.5-mini`). Required for the alias to work — when unset, the proxy returns 503 `azure_alias_unconfigured`. |
+| `AZURE_OPENAI_GENERAL_REASONING_EFFORT` | Optional alias-only override of `reasoning.effort`. Same value set as `AZURE_OPENAI_REASONING_EFFORT`. |
+
+Reasoning-effort precedence (highest first), gated on `isAzureReasoningModel(resolvedDeployment)`:
+
+1. Alias-specific env (`AZURE_OPENAI_GENERAL_REASONING_EFFORT`) — only when alias is in use.
+2. Global env (`AZURE_OPENAI_REASONING_EFFORT`).
+3. Client-sent `reasoning_effort` / `reasoning.effort`.
+
+Resolution is performed in `api/proxy.js` immediately after the initial `normalizeParsedBodyModel(...)` call, so the resolved deployment name flows through `sanitizeAzureOpenAIBody`, `buildUrl`, and the SSE/non-streaming response paths exactly as if the client had asked for the deployment directly. `responseModelName` is preserved as the alias public id (`cursorproxy/gpt-general`) and `withPublicResponseModel(json, fallback, forceAlias=true)` forces it back into the response so Azure's resolved deployment name does not leak to clients.
+
+Diagnostic tags: `AZURE_ALIAS_RESOLVED` (alias name + target), `AZURE_ALIAS_UNCONFIGURED` (alias name + targetEnv), and `REASONING_EFFORT` now carries `source: alias|global|client` and `alias: <name>|(none)`.
+
+Discovery (`GET /v1/models`) is independent — list `gpt-general` (or `cursorproxy/gpt-general`) in `CURSORPROXY_MODELS` to advertise the alias. `CURSORPROXY_MODELS` is **not** an allowlist for routing; the alias works as long as `AZURE_OPENAI_GENERAL_ALIAS_TARGET` is set.
+
 ## Request Body Transformations
 
 ### azureopenai ONLY
