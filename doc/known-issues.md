@@ -124,55 +124,55 @@ sequenceDiagram
     participant OAI as api.openai.com (hardcoded)
     participant P as cursorProxy (custom base URL)
 
-    U->>C: Attach image + send message
-    Note over C: Vision request triggers separate\nvalidation code path
+    U->>C: Attach image + GPT model (gpt-general / gpt-5.x)
+    Note over C: GPT model + image triggers OpenAI\nvision validation code path
     C->>OAI: GET /v1/models\nAuthorization: Bearer <CURSORPROXY_API_KEY>
     OAI-->>C: 401 Unauthorized\n(key is not a real OpenAI key)
     Note over C: Request aborted — proxy never reached
     C-->>U: ❌ "Unauthorized User OpenAI API key" error
-    Note over P: Proxy receives nothing for vision-capable models.\nVision bridge never runs for Kimi / Azure providers.
+    Note over P: Proxy receives nothing for Azure OpenAI models.
 ```
 
 ### Root Cause
 
 ```mermaid
 flowchart TD
-    MSG{"Request type"}
-    TEXT["Text-only message"]
-    TEXT_PATH["Route to custom base URL ✅\n→ cursorProxy receives request"]
-
     IMG{"Image attachment\n— which model?"}
 
     DS_MM["DeepSeek / MiniMax\n(text-only models)"]
     DS_PATH["Cursor sends to custom base URL ✅\nProxy vision bridge converts\nimage → text description\nForwards text-only to provider ✅"]
 
-    VIS_MODEL["Kimi / Azure OpenAI\n/ Azure Anthropic\n(vision-capable models)"]
-    IMG_VAL["Validate vision capability:\nGET api.openai.com/v1/models\n(hardcoded — ignores custom base URL)"]
-    IMG_FAIL["api.openai.com rejects\nCURSORPROXY_API_KEY → 401"]
-    IMG_ABORT["Request aborted\nProxy never reached ❌"]
+    KIMI["Kimi\n(vision-capable, non-OpenAI brand)"]
+    KIMI_PATH["Cursor sends to custom base URL ✅\nProxy forwards image to Kimi natively ✅"]
 
-    MSG -->|text only| TEXT --> TEXT_PATH
-    MSG -->|has image| IMG
-    IMG -->|text-only model| DS_MM --> DS_PATH
-    IMG -->|vision-capable model| VIS_MODEL --> IMG_VAL --> IMG_FAIL --> IMG_ABORT
+    AA["Azure Anthropic (Claude)\n(uses Anthropic API key path,\nnot OpenAI BYOK path)"]
+    AA_PATH["Cursor uses Anthropic key,\nnot affected by OpenAI validation ✅"]
+
+    AO["Azure OpenAI\n(gpt-general, gpt-5.x)\n(OpenAI-branded GPT model)"]
+    IMG_VAL["Cursor validates via OpenAI BYOK path:\nGET api.openai.com/v1/models\n(hardcoded — ignores custom base URL)"]
+    IMG_FAIL["api.openai.com rejects\nCURSORPROXY_API_KEY → 401"]
+    IMG_ABORT["Request aborted — proxy never reached ❌"]
+
+    IMG --> DS_MM --> DS_PATH
+    IMG --> KIMI --> KIMI_PATH
+    IMG --> AA --> AA_PATH
+    IMG --> AO --> IMG_VAL --> IMG_FAIL --> IMG_ABORT
 ```
 
 ### Impact on cursorProxy
 
-Cursor's vision validation only fires for models it considers vision-capable.
-For DeepSeek and MiniMax, Cursor knows these are text-only models and sends
-the request (with images) directly to the custom base URL without validation —
-so the proxy's vision bridge receives and converts the images normally.
-The bug only affects providers where Cursor validates vision support against
-`api.openai.com` first.
+The bug is specific to Cursor's **OpenAI BYOK validation path**, which only
+fires for GPT-branded models. Azure Anthropic uses a completely separate
+Anthropic API key path in Cursor. Kimi, DeepSeek, and MiniMax are not
+routed through the OpenAI validation.
 
 | Provider | Vision handling | Affected by bug? |
 |---|---|---|
-| DeepSeek | Proxy vision bridge converts images to text server-side | ❌ Not affected — Cursor skips validation for text-only models |
-| MiniMax | Proxy vision bridge converts images to text server-side | ❌ Not affected — same |
-| Kimi | Provider supports vision natively | ✅ Yes — Cursor validates → 401 → request aborted |
-| Azure OpenAI | Provider supports vision natively | ✅ Yes — same |
-| Azure Anthropic | Provider supports vision natively | ✅ Yes — same |
+| DeepSeek | Proxy vision bridge converts images to text | ❌ Not affected |
+| MiniMax | Proxy vision bridge converts images to text | ❌ Not affected |
+| Kimi | Provider supports vision natively | ❌ Not affected — not an OpenAI-branded model |
+| Azure Anthropic (Claude) | Provider supports vision natively | ❌ Not affected — uses Anthropic API key path, not OpenAI BYOK |
+| Azure OpenAI (gpt-general, gpt-5.x) | Provider supports vision natively | ✅ Broken — Cursor validates via hardcoded api.openai.com → 401 |
 
 ### Workarounds
 
