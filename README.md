@@ -17,7 +17,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry
 
 ### 1. Get API keys
 - [DeepSeek](https://platform.deepseek.com) → `DEEPSEEK_API_KEY`
-- [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY`
+- [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY` (for Azure Foundry Kimi, see the `UPSTREAM_KIMI` reminder below)
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
 - [Azure Foundry](https://ai.azure.com) → `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_RESOURCE`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
@@ -69,7 +69,8 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `CURSORPROXY_MODELS` | Optional | Comma- or newline-separated bare model IDs. `GET /v1/models` returns them as `cursorproxy/<model>` |
 | `DEEPSEEK_REASONING_EFFORT` | Optional | DeepSeek thinking effort: `high` (default) or `max` |
 | `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
-| `KIMI_API_KEY` | For Kimi | Upstream API key |
+| `KIMI_API_KEY` | For Kimi | Upstream Kimi API key. For Azure Foundry Kimi routed through the `kimi` provider, set this to the Azure Foundry key |
+| `UPSTREAM_KIMI` | Optional | Kimi upstream base URL. Defaults to Moonshot (`https://api.moonshot.ai`). **Current-code Azure Foundry Kimi workaround:** set this to `https://<resource>.services.ai.azure.com/openai` (without trailing `/v1/`) because the proxy appends `/v1/<path>` itself |
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
 | `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key (used as `api-key` for OpenAI, `x-api-key` for Anthropic) |
 | `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
@@ -84,6 +85,30 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
+
+### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`
+
+Azure Foundry's official Kimi sample shows the OpenAI-compatible base URL as
+`https://<resource>.services.ai.azure.com/openai/v1/`. With the current generic
+Kimi provider code, `UPSTREAM_KIMI` is treated as the base before the proxy adds
+`/v1/chat/completions`, so configure it without the final `/v1/`:
+
+```env
+UPSTREAM_KIMI=https://<resource>.services.ai.azure.com/openai
+KIMI_API_KEY=<your-azure-foundry-key>
+CURSORPROXY_MODELS=Kimi-K2.6
+```
+
+Do **not** set `UPSTREAM_KIMI` to the full official `/openai/v1/` base unless the
+proxy URL builder is changed; otherwise the upstream URL becomes
+`/openai/v1/v1/chat/completions` (or `/openai/v1//v1/chat/completions`) and Azure
+returns `404 Resource not found`. Use the exact Azure deployment name/case, such
+as `Kimi-K2.6`.
+
+This is a no-code workaround for the duplicated `/v1` path. If Azure still rejects
+the request after the URL is correct, check whether your runtime forwards the
+hardcoded Kimi `Host: api.moonshot.ai` header; that part requires a code change to
+fully fix.
 
 ### Azure OpenAI alias: `cursorproxy/gpt-general`
 
