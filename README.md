@@ -105,10 +105,11 @@ proxy URL builder is changed; otherwise the upstream URL becomes
 returns `404 Resource not found`. Use the exact Azure deployment name/case, such
 as `Kimi-K2.6`.
 
-This is a no-code workaround for the duplicated `/v1` path. If Azure still rejects
-the request after the URL is correct, check whether your runtime forwards the
-hardcoded Kimi `Host: api.moonshot.ai` header; that part requires a code change to
-fully fix.
+This URL setting avoids the duplicated `/v1` path. The proxy also isolates
+outgoing headers for Azure Foundry Kimi, so EdgeOne/CDN/Cookie headers are not
+forwarded upstream and the `Host` header is the Azure hostname. If you still see
+HTTP `431`, redeploy the header-isolation fix and verify `UPSTREAM_REQUEST_DUMP`
+shows only the minimal upstream headers.
 
 ### Azure OpenAI alias: `cursorproxy/gpt-general`
 

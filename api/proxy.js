@@ -106,6 +106,16 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
+function isAzureFoundryKimiEndpoint(base) {
+  try {
+    const url = new URL(base || "");
+    const host = url.hostname.toLowerCase();
+    return host.endsWith(".services.ai.azure.com") || host.endsWith(".openai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
 function decodedPathCandidates(pathParam) {
   const candidates = [pathParam];
   let current = pathParam;
@@ -752,17 +762,24 @@ export default async function handler(req) {
 
   // Azure endpoints reject requests carrying unknown headers or dual auth,
   // so start from an empty set instead of mutating while iterating Headers.
+  // Azure Foundry Kimi uses the generic OpenAI-compatible Kimi route, but it
+  // has the same header sensitivity: EdgeOne may add large platform headers,
+  // and Azure rejects those with HTTP 431 if we forward them upstream.
   const isAzureProvider = providerKey === "azureopenai" || providerKey === "azureanthropic";
-  const headers = isAzureProvider ? new Headers() : new Headers(req.headers);
+  const isAzureFoundryKimi = providerKey === "kimi" && isAzureFoundryKimiEndpoint(provider.url);
+  const usesAzureHeaderIsolation = isAzureProvider || isAzureFoundryKimi;
+  const headers = usesAzureHeaderIsolation ? new Headers() : new Headers(req.headers);
 
-  // Build dynamic host header: use provider.host when available,
-  // otherwise extract hostname from the constructed upstream URL.
-  if (provider.host) {
+  // Build dynamic host header. Azure Foundry Kimi must use the configured
+  // upstream hostname, not Kimi's default api.moonshot.ai host.
+  if (provider.host && !isAzureFoundryKimi) {
     headers.set("host", provider.host);
   } else {
     try {
       headers.set("host", new URL(upstreamUrl).hostname);
-    } catch { /* fall through */ }
+    } catch {
+      if (provider.host) headers.set("host", provider.host);
+    }
   }
 
   // Clean up headers that shouldn't leak upstream
@@ -788,7 +805,7 @@ export default async function handler(req) {
 
   // Dump the exact request being sent to Azure for debugging.
   // Gate behind DEBUG to avoid logging user prompts in production.
-  if (DEBUG && (providerKey === "azureopenai" || providerKey === "azureanthropic")) {
+  if (DEBUG && usesAzureHeaderIsolation) {
     const hdrObj = {};
     headers.forEach((v, k) => (hdrObj[k] = v));
     // Redact auth keys from logs
