@@ -927,7 +927,9 @@ export default async function handler(req) {
   // 110s on EdgeOne Cloud Functions (under the 120s limit), or 0 (disabled).
   // Also clamps to remaining platform budget so pre-stream work doesn't eat
   // into the wall-clock limit.
-  const streamTimeoutSec = parseInt(process.env.STREAM_TIMEOUT_SECONDS || "", 10);
+  const streamTimeoutRaw = process.env.STREAM_TIMEOUT_SECONDS;
+  const streamTimeoutConfigured = streamTimeoutRaw != null && String(streamTimeoutRaw).trim() !== "";
+  const streamTimeoutSec = parseInt(streamTimeoutRaw || "", 10);
   const elapsedSec = (Date.now() - t0) / 1000;
   const isVercel = Boolean(process.env.VERCEL);
   const isEdgeOneCloud = process.env.EDGEONE_CLOUD_FUNCTION === "true";
@@ -939,7 +941,9 @@ export default async function handler(req) {
     : seconds;
   const effectiveTimeoutSec = streamTimeoutSec > 0
     ? capToPlatform(streamTimeoutSec)
-    : (defaultStreamSec > 0 ? capToPlatform(defaultStreamSec) : 0);
+    : (streamTimeoutConfigured && streamTimeoutSec === 0
+      ? 0
+      : (defaultStreamSec > 0 ? capToPlatform(defaultStreamSec) : 0));
 
   log("STREAM_START", "timeout:", effectiveTimeoutSec > 0 ? effectiveTimeoutSec + "s" : "none",
       "provider:", providerKey);
