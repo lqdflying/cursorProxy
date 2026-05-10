@@ -15,4 +15,4 @@ alwaysApply: true
 - `vercel.json` and `edge-functions/` provide platform routing entrypoints.
 - Manual verification prompts live under `.cursor/test-cases/`.
 - `wiki/` is a separate git clone for the GitHub wiki. Do not commit wiki changes in the main repo.
-- **Release process**: "tag and release" means TWO steps — (1) `git tag -a vX.Y.Z -m "vX.Y.Z"` to create an annotated tag with NO description body (just the version as message), then (2) `gh release create vX.Y.Z --notes "..."` with the full changelog/description. Tags must never carry descriptions; descriptions belong only on GitHub Releases. Push the tag and create the release in the same turn.
+- **Release process**: "tag and release" means TWO steps — (1) `GIT_COMMITTER_DATE="<commit-date>" git tag -a vX.Y.Z <commit> -m "vX.Y.Z"` to create an annotated tag with NO description body, using the commit's date as tagger date so tags sort chronologically on GitHub, then (2) `gh release create vX.Y.Z --notes "..."` with the full changelog/description. Tags must never carry descriptions; descriptions belong only on GitHub Releases. Push the tag and create the release in the same turn.
