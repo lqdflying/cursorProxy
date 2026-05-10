@@ -2,10 +2,11 @@
 
 ## Cursor ↔ cursorProxy Vision Collaboration
 
-All five provider paths work with images except one: directly-named `gpt-5.x`
-models (e.g. `gpt-5.4`, `gpt-5.5`). The `gpt-general` alias is vision-capable
-and works end-to-end because Cursor never matches the alias name against the
-GPT-5.x pattern that triggers its BYOK validation.
+All five provider paths work with images except one: directly named GPT-5 / o-series
+models on affected Cursor builds (for example `gpt-5.4` or `gpt-5.5`). The
+`gpt-general` alias is vision-capable and works end-to-end because Cursor never
+matches the alias name against the GPT-5.x pattern that triggers its BYOK
+validation.
 
 The proxy vision bridge only applies to DeepSeek and MiniMax (text-only
 providers). All other providers — including `gpt-general` — receive images
@@ -47,8 +48,8 @@ flowchart TD
     D_AO["Azure OpenAI — real deployment\n(e.g. gpt-5.5 backend, native vision ✅)"]
     D_OK["Response → Cursor ✅"]
 
-    %% ── Path E: gpt-5.x named directly — BROKEN ─────────────────────────────
-    E_MODEL["gpt-5.4 / gpt-5.5 (named directly)\n(natively vision-capable)"]
+    %% ── Path E: direct GPT-5 / o-series name — BROKEN ───────────────────────
+    E_MODEL["Direct gpt-5.x / o-series name\n(natively vision-capable)"]
     E_VAL["Cursor matches gpt-5.x pattern\n→ triggers OpenAI BYOK validation:\nGET api.openai.com/v1/models ⚠\n(hardcoded — ignores custom base URL)"]
     E_FAIL["api.openai.com → 401 Unauthorized\n(CURSORPROXY_API_KEY is not a real OpenAI key)"]
     E_ABORT["Request aborted ❌\ncursorProxy never reached"]
@@ -63,14 +64,6 @@ flowchart TD
     M -->|claude| C_MODEL --> C_CURSOR --> C_GATE --> C_AA --> C_OK
     M -->|gpt-general| D_MODEL --> D_CURSOR --> D_GATE --> D_AO --> D_OK
     M -->|"gpt-5.x directly"| E_MODEL --> E_VAL --> E_FAIL --> E_ABORT
-
-    style E_VAL fill:#fff3cd,stroke:#ffc107
-    style E_FAIL fill:#f8d7da,stroke:#dc3545
-    style E_ABORT fill:#f8d7da,stroke:#dc3545
-    style A_OK fill:#d4edda,stroke:#28a745
-    style B_OK fill:#d4edda,stroke:#28a745
-    style C_OK fill:#d4edda,stroke:#28a745
-    style D_OK fill:#d4edda,stroke:#28a745
 ```
 
 | Model | Native vision? | Proxy vision bridge? | Cursor routing | End-to-end result |
@@ -79,7 +72,7 @@ flowchart TD
 | Kimi | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
 | Azure Anthropic (Claude) | ✅ Yes | ❌ No | Anthropic key path | ✅ Works natively |
 | `gpt-general` (alias) | ✅ Yes | ❌ No | Custom base URL — alias name skips BYOK validation | ✅ Works natively |
-| `gpt-5.x` named directly | ✅ Yes | ❌ No — proxy never reached | BYOK validation → `api.openai.com` → **401** | ❌ Broken — Cursor bug |
+| Direct `gpt-5.x` / o-series name | ✅ Yes | ❌ No — proxy never reached | BYOK validation → `api.openai.com` → **401** | ❌ Broken — Cursor bug |
 
 > The BYOK validation fires because Cursor matches the literal model name against a `gpt-5.x`
 > pattern. Using the `gpt-general` alias avoids the match, so images work. The same pattern

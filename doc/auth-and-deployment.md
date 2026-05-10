@@ -57,14 +57,14 @@ flowchart TD
     end
 
     subgraph "Vercel Edge"
-        V_ENTRY["edge-functions/v1/[[default]].js\nEdge Runtime (V8 isolate)\nGlobal CDN distribution"]
+        V_ENTRY["api/proxy.js\nEdge Runtime (V8 isolate)\nvercel.json rewrites /v0/* and /v1/*"]
         V_KV["Upstash Redis\nREST API over HTTPS\nKV_URL + KV_TOKEN"]
         V_TIMEOUT["Stream timeout: 280 s\n(under 300 s platform limit)\nPre-stream budget: 22 s"]
         V_ENTRY <-->|fetch Bearer| V_KV
     end
 
     subgraph "EdgeOne Pages"
-        E_ENTRY["edge-functions/v1/[[default]].js\nEdgeOne Edge Runtime\nTencent CDN"]
+        E_ENTRY["edge-functions/v1/[[default]].js\nEdgeOne Edge Runtime"]
         E_KV["EdgeOne KV\nGlobal namespace binding\nEDGEONE_KV_BINDING"]
         E_ENTRY <-->|binding| E_KV
     end
@@ -74,7 +74,7 @@ flowchart TD
 
 | Feature | Docker | Vercel Edge | EdgeOne Pages |
 |---|---|---|---|
-| Entry point | `server.js` | `edge-functions/v1/[[default]].js` | `edge-functions/v1/[[default]].js` |
+| Entry point | `server.js` | `api/proxy.js` via `vercel.json` rewrites | `edge-functions/v1/[[default]].js` |
 | KV backend | Local Redis (ioredis) | Upstash REST | EdgeOne KV binding |
 | Stream timeout | Disabled | 280 s | Configurable |
 | Pre-stream budget guard | No | Yes (22 s default) | No |
@@ -102,6 +102,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph "Incoming paths"
+        P0["/v0/:path*"]
         P1["/v1/:path*"]
         P2["/deepseek/v1/:path*"]
         P3["/kimi/v1/:path*"]
@@ -114,6 +115,7 @@ flowchart LR
         H["/api/proxy"]
     end
 
+    P0 -->|"?path=:path*\n(legacy unified route)"| H
     P1 -->|"?path=:path*\n(model-based routing)"| H
     P2 -->|"?provider=deepseek&path=:path*"| H
     P3 -->|"?provider=kimi&path=:path*"| H
@@ -146,6 +148,6 @@ flowchart LR
 | Variable | Default | Notes |
 |---|---|---|
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | 15 000 | Connect-phase only; set 0 to disable |
-| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 0 (Docker) | 0 = disabled |
+| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 0 (Docker default) | 0 = disabled |
 | `PRESTREAM_BUDGET_MS` | 22 000 | Vercel only |
 | `SHUTDOWN_GRACE_MS` | 25 000 | Docker only |

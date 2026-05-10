@@ -8,20 +8,20 @@ backends. All caching is stateless per-request — no shared in-process memory.
 ```mermaid
 flowchart TD
     START["kvGet / kvSet called"]
-    E1{"EDGEONE_KV_BINDING\nset?"}
-    E2{"KV_URL + KV_TOKEN\nset?"}
-    E3{"REDIS_URL\nset?"}
-    EO["EdgeOne KV\n(global namespace binding)"]
-    UP["Upstash REST\n(Bearer auth over HTTPS)"]
     RD["ioredis\n(local Redis)"]
+    E1{"REDIS_URL\nset?"}
+    UP["Upstash REST\n(Bearer auth over HTTPS)"]
+    E2{"KV_URL + KV_TOKEN\nset?"}
+    EO["EdgeOne KV\n(global namespace binding)"]
+    E3{"EDGEONE_KV_BINDING\nor registered binding available?"}
     NOP["No-op\n(KV disabled, caching skipped)"]
 
     START --> E1
-    E1 -->|yes| EO
+    E1 -->|yes| RD
     E1 -->|no| E2
     E2 -->|yes| UP
     E2 -->|no| E3
-    E3 -->|yes| RD
+    E3 -->|yes| EO
     E3 -->|no| NOP
 ```
 
@@ -35,7 +35,7 @@ flowchart LR
     end
 
     subgraph "azresp: — Azure response IDs"
-        AK["azresp:\n<sha256(azureopenai:v7:resource:deployment:user:messages)>"]
+        AK["azresp:conv:\n<sha256(azureopenai:v7:resource:deployment:user:messages)>"]
         AV["Value: response ID string\n(e.g. resp_abc123)"]
     end
 
@@ -45,7 +45,7 @@ flowchart LR
     end
 
     subgraph "claude_thinking: — Claude thinking blocks"
-        TK["claude_thinking:\n<sha256(azureanthropic:user:messages-normalized)>"]
+        TK["claude_thinking:asst:\n<sha256(azureanthropic:user:messages-normalized)>"]
         TV["Value: JSON array of\ncontent_block objects\n[{type:thinking, thinking:..., signature:...}]"]
     end
 ```
@@ -117,15 +117,15 @@ sequenceDiagram
     C->>P: new request (conversation continues)
     Note over P: Compute hash of messages before\nlast assistant block
 
-    P->>KV: GET azresp:<prev_hash> (attempt 1, 0 ms delay)
+    P->>KV: GET azresp:conv:<prev_hash> (attempt 1, 0 ms delay)
     alt hit
         KV-->>P: response ID
     else miss
-        P->>KV: GET azresp:<prev_hash> (attempt 2, 80 ms delay)
+        P->>KV: GET azresp:conv:<prev_hash> (attempt 2, 80 ms delay)
         alt hit
             KV-->>P: response ID
         else miss
-            P->>KV: GET azresp:<prev_hash> (attempt 3, 200 ms delay)
+            P->>KV: GET azresp:conv:<prev_hash> (attempt 3, 200 ms delay)
             alt hit
                 KV-->>P: response ID
             else miss — stateless fallback
@@ -186,11 +186,11 @@ flowchart TD
     end
 
     subgraph "azresp: scope"
-        AS["azureopenai : v7 : azure-resource : deployment : user"]
+        AS["azresp:conv:\nazureopenai : v7 : azure-resource : deployment : user"]
     end
 
     subgraph "claude_thinking: scope"
-        TS["azureanthropic : user\n(normalized hash — ignores content format changes)"]
+        TS["claude_thinking:asst:\nazureanthropic : user\n(normalized hash — ignores content format changes)"]
     end
 
     subgraph "img: scope"

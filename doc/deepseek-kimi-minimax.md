@@ -32,6 +32,13 @@ sequenceDiagram
 
     Note over P: Strip cursorproxy/ prefix<br/>Infer provider from model name
 
+    %% Reasoning injection
+    P->>KV: GET conv:<hash> (prior reasoning)
+    alt reasoning cached
+        KV-->>P: reasoning_content / reasoning_details
+        Note over P: Inject reasoning into<br/>prior assistant messages
+    end
+
     %% Vision bridge (DeepSeek & MiniMax only)
     alt messages contain image_url (DeepSeek or MiniMax)
         P->>KV: GET img:<sha256> (cache check)
@@ -43,13 +50,6 @@ sequenceDiagram
             KV-->>P: Cached description
         end
         Note over P: Replace image_url parts<br/>with text descriptions
-    end
-
-    %% Reasoning injection
-    P->>KV: GET conv:<hash> (prior reasoning)
-    alt reasoning cached
-        KV-->>P: reasoning_content / reasoning_details
-        Note over P: Inject reasoning into<br/>prior assistant messages
     end
 
     %% DeepSeek-specific
@@ -94,8 +94,6 @@ flowchart TD
     C2["Answer streamed to Cursor"]
 
     T1 --> R1 --> C1 --> T2 --> L1 --> R2 --> C2
-
-    style L1 fill:#f0f4ff,stroke:#4a6cf7
 ```
 
 ## Vision Bridge Detail (DeepSeek & MiniMax)

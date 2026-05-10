@@ -16,7 +16,7 @@ flowchart TD
         TOOLS["Tool normalization\n(apply_patch, function, custom)"]
         FMT["Format conversion\n(Chat Completions ↔ provider API)"]
         VB["Vision bridge\n(image → text for DeepSeek/MiniMax)"]
-        RSN["Reasoning injection\n(prior turns)"]
+        RSN["Reasoning injection\n(prior turns for DeepSeek/Kimi/MiniMax)"]
     end
 
     subgraph "KV Store (shared)"
@@ -34,7 +34,7 @@ flowchart TD
     CUR -->|"POST /v1/chat/completions\nBearer <CURSORPROXY_API_KEY>"| EP
     EP --> AUTH --> ROUTE --> ALIAS
     ALIAS --> TOOLS --> FMT
-    FMT --> VB --> RSN
+    FMT --> RSN --> VB
     RSN <-->|read/write| KV
     FMT <-->|read/write| KV
 
@@ -64,7 +64,7 @@ flowchart LR
     end
 
     subgraph "Vercel Edge"
-        VEF["edge-functions/v1/[[default]].js\nVercel Edge Runtime"]
+        VEF["api/proxy.js\nVercel Edge Runtime\nvia vercel.json rewrites"]
         UP_KV["Upstash Redis\n(REST API over HTTPS)\nKV_URL + KV_TOKEN"]
         VEF <-->|fetch + Bearer| UP_KV
     end
@@ -93,9 +93,9 @@ flowchart TD
     E{"Provider\nresolved?"}
     F{"API key\nconfigured?"}
 
-    VISION["Vision bridge\n(DeepSeek / MiniMax only)"]
-    INJECT["Reasoning injection\n(all providers)"]
+    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax only)"]
     THINK["Claude thinking injection\n(azureanthropic only)"]
+    VISION["Vision bridge\n(DeepSeek / MiniMax only)"]
     UPSTREAM["Forward to upstream\n(with connect timeout)"]
     STREAM{"Streaming?"}
     NONSTR["Buffer response\nconvert format\ncache reasoning/ID/thinking\nreturn JSON"]
@@ -113,7 +113,7 @@ flowchart TD
     E -->|unknown| ERR400
     E -->|known| F
     F -->|missing| ERR503["503 provider_key_missing"]
-    F -->|ok| VISION --> INJECT --> THINK --> UPSTREAM
+    F -->|ok| INJECT --> THINK --> VISION --> UPSTREAM
     UPSTREAM -->|error| ERR504["504 upstream_timeout"]
     UPSTREAM -->|ok| STREAM
     STREAM -->|no| NONSTR
@@ -140,8 +140,9 @@ flowchart LR
 | File | Role |
 |---|---|
 | `server.js` | HTTP server entry point (Docker) |
-| `edge-functions/v1/[[default]].js` | Edge entry point (Vercel / EdgeOne) |
-| `api/proxy.js` | Core handler: routing, conversion, streaming |
+| `api/proxy.js` | Shared edge-safe proxy handler and Vercel entry target |
+| `edge-functions/v1/[[default]].js` | EdgeOne unified `/v1/*` entry point |
+| `edge-functions/v0/[[default]].js` | EdgeOne legacy unified `/v0/*` entry point |
 | `api/models.js` | Model ID parsing, alias resolution, `/v1/models` |
 | `api/auth.js` | Proxy auth, timing-safe key comparison |
 | `api/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
@@ -193,6 +194,6 @@ flowchart LR
 | `EDGEONE_KV_BINDING` | EdgeOne KV namespace binding |
 | **Timeouts** | |
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | Connect-phase timeout ms (default 15 000, 0 = disabled) |
-| `STREAM_TIMEOUT_SECONDS` | Stream timeout (default 280 on Vercel, 0 = disabled on Docker) |
+| `STREAM_TIMEOUT_SECONDS` | Stream timeout (default 280 on Vercel, 0 disabled on Docker) |
 | `PRESTREAM_BUDGET_MS` | Vercel pre-stream wall time ms (default 22 000) |
 | `SHUTDOWN_GRACE_MS` | Docker graceful drain ms (default 25 000) |

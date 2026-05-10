@@ -30,7 +30,7 @@ sequenceDiagram
 
     %% Claude thinking injection
     alt thinking.type = adaptive
-        P->>KV: GET claude_thinking:<normalized_hash>
+        P->>KV: GET claude_thinking:asst:<normalized_hash>
         alt thinking blocks cached
             KV-->>P: Prior thinking blocks (JSON)
             Note over P: Inject thinking blocks into<br/>prior assistant messages
@@ -56,13 +56,13 @@ sequenceDiagram
 
         AA-->>P: event: message_stop
         Note over P: Serialize thinking blocks (if complete + signed)
-        P->>KV: SET claude_thinking:<hash> = blocks (forced)
+        P->>KV: SET claude_thinking:asst:<hash> = blocks (forced)
         P-->>C: data: [DONE]
 
     else non-streaming response
         AA-->>P: {type:"message", content:[...blocks]}
         Note over P: Extract thinking blocks → save to KV<br/>Map text + tool_use blocks → OpenAI format
-        P->>KV: SET claude_thinking:<hash> = blocks
+        P->>KV: SET claude_thinking:asst:<hash> = blocks
         P-->>C: {choices:[{message:{content, tool_calls}}]}<br/>model: cursorproxy/claude-sonnet-4-6
     end
 ```
@@ -83,18 +83,18 @@ sequenceDiagram
     AA-->>P: <thinking>...</thinking> + <signature/> + text
     Note over P: Suppress thinking events from Cursor<br/>Accumulate blocks in memory
     P-->>C: text only (no thinking shown)
-    P->>KV: SET claude_thinking:<hash1> = [{type:"thinking", thinking:"...", signature:"..."}]
+    P->>KV: SET claude_thinking:asst:<hash1> = [{type:"thinking", thinking:"...", signature:"..."}]
 
     Note over C,AA: Turn 2 — thinking reused
 
     C->>P: thinking: {type:"adaptive"}, messages:[user1, asst1, user2]
-    P->>KV: GET claude_thinking:<hash1>
+    P->>KV: GET claude_thinking:asst:<hash1>
     KV-->>P: prior thinking blocks
     Note over P: Inject thinking blocks into asst1 message<br/>Claude skips re-reasoning → faster + cheaper
     P->>AA: messages with injected thinking blocks
     AA-->>P: text (minimal or no new thinking)
     P-->>C: text
-    P->>KV: SET claude_thinking:<hash2> = updated blocks
+    P->>KV: SET claude_thinking:asst:<hash2> = updated blocks
 ```
 
 ## Format Conversion Reference
@@ -129,6 +129,8 @@ flowchart LR
 | `AZURE_FOUNDRY_API_KEY` | Shared key for Azure Foundry (Anthropic + OpenAI) |
 | `AZURE_ANTHROPIC_ENDPOINT` | Full endpoint URL (overrides AZURE_FOUNDRY_RESOURCE) |
 | `AZURE_FOUNDRY_RESOURCE` | Azure resource name (used to build default endpoint) |
+| `AZURE_ANTHROPIC_THINKING` | Default thinking mode when request omits `thinking` (`adaptive` or `disabled`) |
+| `AZURE_ANTHROPIC_EFFORT` | Default Claude effort when request omits `output_config.effort` (`low`, `medium`, `high`, `max`) |
 | `KV_URL` / `KV_TOKEN` | Upstash Redis (Vercel) |
 | `REDIS_URL` | Local Redis (Docker) |
 | `KV_TTL_SECONDS` | Cache TTL (default 7200 s / 2 h) |

@@ -46,16 +46,16 @@ never activates the apply_patch tool surface.
 **Step 3 — The naive fix breaks proxy routing**
 
 Returning `cursorproxy/gpt-5.5` in responses would cause Cursor to route
-subsequent requests directly to OpenAI, bypassing the proxy entirely. As of
-~May 4 2025, Cursor stopped routing `gpt-5.5` named models through custom base
-URLs.
+subsequent requests directly to OpenAI, bypassing the proxy entirely. In
+affected Cursor builds, directly named GPT-5 models are not kept on the custom
+base URL path.
 
 ### Flow Comparison
 
 ```mermaid
 flowchart TD
-    subgraph "gpt-5.4 — works end-to-end"
-        A1["Cursor sees model:\ncursorproxy/gpt-5.4"]
+    subgraph "Direct GPT-5 / o-series name"
+        A1["Cursor sees model:\ncursorproxy/gpt-5.x or o-series"]
         A2["Pattern match ✅\n→ include apply_patch in tools"]
         A3["Request arrives at proxy\nwith apply_patch tool"]
         A4["Proxy passes apply_patch\nto Azure Responses API"]
@@ -70,9 +70,6 @@ flowchart TD
         B4["Proxy has nothing to forward ❌"]
         B1 --> B2 --> B3 --> B4
     end
-
-    style A5 fill:#d4edda,stroke:#28a745
-    style B4 fill:#f8d7da,stroke:#dc3545
 ```
 
 ### Why the Proxy Cannot Fix This
@@ -85,14 +82,20 @@ flowchart TD
 
 ### Current Workaround
 
-Use `cursorproxy/gpt-5.4` directly instead of `gpt-general`.
+Use a directly named GPT-5 / o-series deployment only if your current Cursor
+build still sends that model through the custom base URL. For some users this
+has been `cursorproxy/gpt-5.4`, but the exact working name is Cursor-version
+dependent.
 
-- `gpt-5.4` still routes through the custom base URL (not yet intercepted by Cursor)
-- Cursor recognises it as a gpt-5.x model and includes apply_patch
-- Add `gpt-5.4` to `CURSORPROXY_MODELS` alongside `gpt-general`
+- Cursor recognises direct GPT-5 / o-series names and includes `apply_patch`
+- Some direct names may still route through the proxy, while others may be
+  intercepted by Cursor before they reach the custom base URL
+- If you find one that still routes correctly in your setup, add it to
+  `CURSORPROXY_MODELS` alongside `gpt-general`
 
-**Risk:** Cursor may intercept `gpt-5.4` in a future update as it did with
-`gpt-5.5`. This is a temporary mitigation, not a permanent fix.
+**Risk:** This is a temporary mitigation, not a permanent fix. A direct model
+name that works in one Cursor release may stop routing through the proxy in a
+later release.
 
 ### Affected Proxy Files
 
@@ -112,7 +115,7 @@ Use `cursorproxy/gpt-5.4` directly instead of `gpt-general`.
 ### Summary
 
 When a model with a name that matches Cursor's internal `gpt-5.x` pattern
-(e.g. `gpt-5.4`, `gpt-5.5`) is used with an image attachment via BYOK +
+(for example `gpt-5.4` or `gpt-5.5` on affected builds) is used with an image attachment via BYOK +
 custom base URL, Cursor aborts the request with an `Unauthorized` / 401 error
 before the proxy is ever reached.
 
@@ -126,7 +129,7 @@ This is the same pattern check that controls `apply_patch` tool inclusion
 | Model | apply_patch tool | Vision / images |
 |---|---|---|
 | `gpt-general` (alias) | ❌ Not sent — alias skips pattern | ✅ Works — alias skips BYOK validation |
-| `gpt-5.4` (named directly) | ✅ Sent — name matches pattern | ❌ Broken — name triggers BYOK validation → 401 |
+| Direct `gpt-5.x` / o-series name | ✅ Sent — name matches pattern | ❌ Broken — name triggers BYOK validation → 401 |
 
 ### What Happens (gpt-5.x named directly)
 
@@ -168,7 +171,7 @@ flowchart TD
     GG["gpt-general (alias)"]
     GG_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nProxy forwards image natively to Azure OpenAI ✅"]
 
-    AO["gpt-5.4 / gpt-5.5 (named directly)"]
+    AO["Direct gpt-5.x / o-series name"]
     IMG_VAL["Name matches gpt-5.x pattern ⚠\nCursor validates via OpenAI BYOK path:\nGET api.openai.com/v1/models\n(hardcoded — ignores custom base URL)"]
     IMG_FAIL["api.openai.com rejects\nCURSORPROXY_API_KEY → 401"]
     IMG_ABORT["Request aborted — proxy never reached ❌"]
@@ -178,10 +181,6 @@ flowchart TD
     IMG --> AA --> AA_PATH
     IMG --> GG --> GG_PATH
     IMG --> AO --> IMG_VAL --> IMG_FAIL --> IMG_ABORT
-
-    style IMG_VAL fill:#fff3cd,stroke:#ffc107
-    style IMG_FAIL fill:#f8d7da,stroke:#dc3545
-    style IMG_ABORT fill:#f8d7da,stroke:#dc3545
 ```
 
 ### Impact on cursorProxy
@@ -199,7 +198,10 @@ flowchart TD
 Use `gpt-general` instead of a direct `gpt-5.x` model name for image-bearing
 requests. The alias resolves to the real deployment (e.g. `gpt-5.5`) on the
 Azure side, which handles vision natively. The trade-off is that `gpt-general`
-does not receive the `apply_patch` tool (see Issue 1).
+does not receive the `apply_patch` tool (see Issue 1). If you need
+`apply_patch`, switch to a directly named GPT-5 / o-series deployment only for
+non-image turns, and verify in your current Cursor build that the direct name
+still routes through the proxy.
 
 ### Affected Proxy Files
 

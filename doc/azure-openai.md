@@ -33,7 +33,7 @@ sequenceDiagram
     Note over P: Strip cursorproxy/ prefix → gpt-5.4<br/>Provider = azureopenai<br/>Resolve alias (gpt-general → real deployment)
 
     %% Response ID chaining
-    P->>KV: GET azresp:<conv_hash_before_last_asst>
+    P->>KV: GET azresp:conv:<conv_hash_before_last_asst>
     alt response ID cached (prior turn)
         KV-->>P: prev_response_id = "resp_abc..."
         Note over P: Trim input to items AFTER last assistant<br/>Set previous_response_id<br/>Azure replays prior context server-side
@@ -67,18 +67,18 @@ sequenceDiagram
             AZ-->>P: event: response.output_item.added (function_call)
             P-->>C: data: {choices:[{delta:{tool_calls:[{index,id,name,arguments:""}]}}]}
 
-            AZ-->>P: event: response.apply_patch_call.delta
+            AZ-->>P: event: response.custom_tool_call_input.delta<br/>or response.apply_patch_call.delta / response.apply_patch_call_input.delta
             P-->>C: data: {choices:[{delta:{tool_calls:[{index,function:{arguments:"..."}}]}}]}
         end
 
         AZ-->>P: event: response.completed
-        P->>KV: SET azresp:<conv_hash> = resp_xyz (forced)
+        P->>KV: SET azresp:conv:<conv_hash> = resp_xyz (forced)
         P-->>C: data: [DONE]
 
     else non-streaming response
-        AZ-->>P: {id:"resp_xyz", output:[{type:"message",...},{type:"apply_patch_call",...}]}
-        Note over P: mapResponsesToOpenAI()<br/>output[].type:message → choices[0].message.content<br/>output[].type:apply_patch_call → tool_calls
-        P->>KV: SET azresp:<conv_hash> = resp_xyz
+        AZ-->>P: {id:"resp_xyz", output:[{type:"message",...},{type:"custom_tool_call" or "apply_patch_call",...}]}
+        Note over P: mapResponsesToOpenAI()<br/>output[].type:message → choices[0].message.content<br/>output[].type:custom_tool_call / apply_patch_call → tool_calls
+        P->>KV: SET azresp:conv:<conv_hash> = resp_xyz
         P-->>C: {choices:[{message:{content, tool_calls}}]}<br/>model: cursorproxy/gpt-5.4
     end
 ```
@@ -94,11 +94,15 @@ sequenceDiagram
     C->>P: tools: [{type:"custom", name:"apply_patch", format:{...}}]
     Note over P: isKnownResponsesToolType("custom") = true<br/>→ pass through untouched
     P->>AZ: tools: [{type:"custom", name:"apply_patch", format:{...}}]
-    AZ-->>P: event: response.apply_patch_call.delta<br/>data: {delta: "*** Begin Patch..."}
+    AZ-->>P: event: response.custom_tool_call_input.delta<br/>data: {delta: "*** Begin Patch..."}
     Note over P: Map to OpenAI tool_calls delta<br/>name = "apply_patch"
     P-->>C: data: {choices:[{delta:{tool_calls:[{function:{name:"apply_patch", arguments:"..."}}]}}]}
     Note over C: Cursor applies patch to files
 ```
+
+Current Cursor traffic usually takes the `custom` tool path, so the proxy now
+maps `response.custom_tool_call_input.*` as well as the older
+`response.apply_patch_call.*` event family.
 
 ## gpt-general Alias — Why apply_patch Is Missing
 
@@ -117,9 +121,6 @@ flowchart TD
     REQ --> CHECK
     CHECK -->|"cursorproxy/gpt-5.4\nmatches gpt-5.*"| YES --> SEND54 --> PROXY --> WORKS
     CHECK -->|"cursorproxy/gpt-general\nunrecognized alias"| NO --> SENDGG --> PROXY --> STUCK
-
-    style WORKS fill:#d4edda,stroke:#28a745
-    style STUCK fill:#f8d7da,stroke:#dc3545
 ```
 
 ## Why the Simple Fix Does Not Work
@@ -134,9 +135,6 @@ flowchart TD
 
     FIX --> C1 --> ROUTE --> BROKEN
     FIX -.->|"constraint"| ALT
-
-    style BROKEN fill:#f8d7da,stroke:#dc3545
-    style ALT fill:#fff3cd,stroke:#ffc107
 ```
 
 ## Response ID Chaining (Multi-turn Efficiency)
@@ -151,21 +149,21 @@ sequenceDiagram
     Note over C,AZ: Turn 1
 
     C->>P: input: [user1]
-    P->>KV: GET azresp:<hash([user1])> → miss
+    P->>KV: GET azresp:conv:<hash([user1])> → miss
     P->>AZ: input: [user1] (full, stateless)
     AZ-->>P: response.id = "resp_001", output: [asst1]
-    P->>KV: SET azresp:<hash([user1,asst1])> = "resp_001"
+    P->>KV: SET azresp:conv:<hash([user1,asst1])> = "resp_001"
     P-->>C: {choices:[{message:asst1}]}
 
     Note over C,AZ: Turn 2 — only new input sent
 
     C->>P: input: [user1, asst1, user2]
-    P->>KV: GET azresp:<hash([user1,asst1])> → "resp_001"
+    P->>KV: GET azresp:conv:<hash([user1,asst1])> → "resp_001"
     Note over P: Trim to items after asst1 block\n→ input: [user2] only
     P->>AZ: previous_response_id:"resp_001"\ninput: [user2]
     Note over AZ: Azure replays [user1,asst1]\nserver-side — no re-sending
     AZ-->>P: response.id = "resp_002", output: [asst2]
-    P->>KV: SET azresp:<hash([user1,asst1,user2,asst2])> = "resp_002"
+    P->>KV: SET azresp:conv:<hash([user1,asst1,user2,asst2])> = "resp_002"
     P-->>C: {choices:[{message:asst2}]}
 ```
 
