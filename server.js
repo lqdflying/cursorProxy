@@ -51,6 +51,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.url === "/") {
+      res.writeHead(302, { location: "https://github.com/lqdflying/cursorProxy" });
+      res.end();
+      return;
+    }
+
     const protocol =
       req.headers["x-forwarded-proto"]?.split(",")[0].trim() || "http";
     const host =
