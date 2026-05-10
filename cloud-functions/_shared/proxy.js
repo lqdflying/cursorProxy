@@ -24,21 +24,20 @@ async function toWebRequest(targetUrl, request) {
   };
 
   if (method !== "GET" && method !== "HEAD") {
-    init.body = await readRequestBody(request);
+    init.body = await requestBody(request);
+    if (isReadableStream(init.body)) {
+      // Node's fetch implementation requires this when constructing a Request
+      // with a streaming body. EdgeOne ignores unknown RequestInit fields.
+      init.duplex = "half";
+    }
   }
 
   return new Request(targetUrl, init);
 }
 
-async function readRequestBody(request) {
-  if (typeof request.text === "function") {
-    return request.text();
-  }
-  if (typeof request.arrayBuffer === "function") {
-    return request.arrayBuffer();
-  }
-  if (typeof request.json === "function") {
-    return JSON.stringify(await request.json());
+async function requestBody(request) {
+  if (isReadableStream(request.body)) {
+    return request.body;
   }
   if (typeof request.body === "string" || request.body instanceof ArrayBuffer) {
     return request.body;
@@ -46,8 +45,21 @@ async function readRequestBody(request) {
   if (request.body instanceof Uint8Array) {
     return request.body;
   }
+  if (typeof request.arrayBuffer === "function") {
+    return request.arrayBuffer();
+  }
+  if (typeof request.text === "function") {
+    return request.text();
+  }
+  if (typeof request.json === "function") {
+    return JSON.stringify(await request.json());
+  }
   if (request.body == null) {
     return "";
   }
   return JSON.stringify(request.body);
+}
+
+function isReadableStream(value) {
+  return value && typeof value.getReader === "function";
 }
