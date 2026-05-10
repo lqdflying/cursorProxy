@@ -194,6 +194,6 @@ flowchart LR
 | `EDGEONE_KV_BINDING` | EdgeOne KV namespace binding |
 | **Timeouts** | |
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | Connect-phase timeout ms (default 15 000, 0 = disabled) |
-| `STREAM_TIMEOUT_SECONDS` | Stream timeout (default 280 on Vercel, 110 on EdgeOne Cloud Functions, 0 disabled on Docker) |
+| `STREAM_TIMEOUT_SECONDS` | Stream timeout (default 280 on Vercel, 110 on EdgeOne Cloud Functions with `edgeone.json` maxDuration 120, 0 disabled on Docker) |
 | `PRESTREAM_BUDGET_MS` | Vercel pre-stream wall time ms (default 22 000) |
 | `SHUTDOWN_GRACE_MS` | Docker graceful drain ms (default 25 000) |

@@ -76,7 +76,7 @@ flowchart TD
 |---|---|---|---|
 | Entry point | `server.js` | `api/proxy.js` via `vercel.json` rewrites | `cloud-functions/v1/[[default]].js` |
 | KV backend | Local Redis (ioredis) | Upstash REST | EdgeOne KV binding |
-| Stream timeout | Disabled | 280 s | 110 s default |
+| Stream timeout | Disabled | 280 s | 110 s default, with Cloud Function maxDuration set to 120 s |
 | Pre-stream budget guard | No | Yes (22 s default) | No |
 | Graceful shutdown | Yes (25 s drain) | N/A (stateless) | N/A (stateless) |
 | Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes in EdgeOne Log Analysis for Cloud Functions |
@@ -86,7 +86,7 @@ flowchart TD
 
 EdgeOne Pages currently documents Log Analysis for Cloud Functions. Custom logs are collected from `console.log` inside the Cloud Function request lifecycle. For this repo, the EdgeOne entry points are under `cloud-functions/` so the shared proxy `REQ` / `RES` diagnostics appear in Log Analysis.
 
-The same-path `edge-functions/` route files were removed to avoid ambiguous EdgeOne routing and make `/v1/*` log-visible by default. Use `DEBUG=true` only while troubleshooting because it logs request routing and proxy internals.
+The same-path `edge-functions/` route files were removed to avoid ambiguous EdgeOne routing and make `/v1/*` log-visible by default. `edgeone.json` sets `cloudFunctions.nodejs.maxDuration` to 120 seconds; the proxy's default EdgeOne stream timeout is 110 seconds so it can emit a clean stream timeout before the platform limit. Use `DEBUG=true` only while troubleshooting because it logs request routing and proxy internals.
 
 ## Docker Graceful Shutdown
 
