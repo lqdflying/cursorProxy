@@ -46,6 +46,8 @@ See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for V
 
 > [!NOTE]
 > **Log control.** `docker-compose.yml` caps container logs at 10 MiB × 3 rotated files per service. Set `DEBUG=true` in `.env` only for troubleshooting — it enables per-request access logs and verbose proxy internals. For `docker run`, add `--log-opt max-size=10m --log-opt max-file=3`.
+>
+> **EdgeOne logs.** EdgeOne Pages Log Analysis currently shows Cloud Functions logs. This repo uses EdgeOne Cloud Function entry points under `cloud-functions/` so `console.log` output appears in the EdgeOne console. Avoid restoring same-path `edge-functions/` routes unless you intentionally prefer the Edge Runtime and accept that those logs may not appear in Log Analysis yet.
 
 ### 4. Configure Cursor
 

@@ -70,7 +70,7 @@ flowchart LR
     end
 
     subgraph "EdgeOne Pages"
-        EOF["edge-functions/v1/[[default]].js\nEdgeOne Edge Runtime"]
+        EOF["cloud-functions/v1/[[default]].js\nEdgeOne Cloud Function\nLog Analysis visible"]
         EO_KV["EdgeOne KV\n(global namespace binding)\nEDGEONE_KV_BINDING"]
         EOF <-->|binding| EO_KV
     end
@@ -141,8 +141,8 @@ flowchart LR
 |---|---|
 | `server.js` | HTTP server entry point (Docker) |
 | `api/proxy.js` | Shared edge-safe proxy handler and Vercel entry target |
-| `edge-functions/v1/[[default]].js` | EdgeOne unified `/v1/*` entry point |
-| `edge-functions/v0/[[default]].js` | EdgeOne legacy unified `/v0/*` entry point |
+| `cloud-functions/v1/[[default]].js` | EdgeOne Cloud Function unified `/v1/*` entry point with console logs in Log Analysis |
+| `cloud-functions/v0/[[default]].js` | EdgeOne Cloud Function legacy unified `/v0/*` entry point |
 | `api/models.js` | Model ID parsing, alias resolution, `/v1/models` |
 | `api/auth.js` | Proxy auth, timing-safe key comparison |
 | `api/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
@@ -194,6 +194,6 @@ flowchart LR
 | `EDGEONE_KV_BINDING` | EdgeOne KV namespace binding |
 | **Timeouts** | |
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | Connect-phase timeout ms (default 15 000, 0 = disabled) |
-| `STREAM_TIMEOUT_SECONDS` | Stream timeout (default 280 on Vercel, 0 disabled on Docker) |
+| `STREAM_TIMEOUT_SECONDS` | Stream timeout (default 280 on Vercel, 110 on EdgeOne Cloud Functions, 0 disabled on Docker) |
 | `PRESTREAM_BUDGET_MS` | Vercel pre-stream wall time ms (default 22 000) |
 | `SHUTDOWN_GRACE_MS` | Docker graceful drain ms (default 25 000) |

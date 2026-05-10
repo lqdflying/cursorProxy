@@ -64,7 +64,7 @@ flowchart TD
     end
 
     subgraph "EdgeOne Pages"
-        E_ENTRY["edge-functions/v1/[[default]].js\nEdgeOne Edge Runtime"]
+        E_ENTRY["cloud-functions/v1/[[default]].js\nEdgeOne Cloud Function\nNode.js runtime"]
         E_KV["EdgeOne KV\nGlobal namespace binding\nEDGEONE_KV_BINDING"]
         E_ENTRY <-->|binding| E_KV
     end
@@ -74,13 +74,19 @@ flowchart TD
 
 | Feature | Docker | Vercel Edge | EdgeOne Pages |
 |---|---|---|---|
-| Entry point | `server.js` | `api/proxy.js` via `vercel.json` rewrites | `edge-functions/v1/[[default]].js` |
+| Entry point | `server.js` | `api/proxy.js` via `vercel.json` rewrites | `cloud-functions/v1/[[default]].js` |
 | KV backend | Local Redis (ioredis) | Upstash REST | EdgeOne KV binding |
-| Stream timeout | Disabled | 280 s | Configurable |
+| Stream timeout | Disabled | 280 s | 110 s default |
 | Pre-stream budget guard | No | Yes (22 s default) | No |
 | Graceful shutdown | Yes (25 s drain) | N/A (stateless) | N/A (stateless) |
-| Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes (DEBUG=true) |
+| Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes in EdgeOne Log Analysis for Cloud Functions |
 | Health check | `GET /health` | N/A | N/A |
+
+## EdgeOne Log Analysis
+
+EdgeOne Pages currently documents Log Analysis for Cloud Functions. Custom logs are collected from `console.log` inside the Cloud Function request lifecycle. For this repo, the EdgeOne entry points are under `cloud-functions/` so the shared proxy `REQ` / `RES` diagnostics appear in Log Analysis.
+
+The same-path `edge-functions/` route files were removed to avoid ambiguous EdgeOne routing and make `/v1/*` log-visible by default. Use `DEBUG=true` only while troubleshooting because it logs request routing and proxy internals.
 
 ## Docker Graceful Shutdown
 
@@ -148,6 +154,6 @@ flowchart LR
 | Variable | Default | Notes |
 |---|---|---|
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | 15 000 | Connect-phase only; set 0 to disable |
-| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 0 (Docker default) | 0 = disabled |
+| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 110 (EdgeOne Cloud Functions) / 0 (Docker default) | 0 = disabled |
 | `PRESTREAM_BUDGET_MS` | 22 000 | Vercel only |
 | `SHUTDOWN_GRACE_MS` | 25 000 | Docker only |

@@ -923,15 +923,23 @@ export default async function handler(req) {
     });
   }
 
-  // Streaming timeout: defaults to 280s on Vercel (under the 300s limit) or 0 (disabled)
-  // Also clamps to remaining Vercel budget so pre-stream work doesn't eat into the 300s wall.
+  // Streaming timeout: defaults to 280s on Vercel (under the 300s limit),
+  // 110s on EdgeOne Cloud Functions (under the 120s limit), or 0 (disabled).
+  // Also clamps to remaining platform budget so pre-stream work doesn't eat
+  // into the wall-clock limit.
   const streamTimeoutSec = parseInt(process.env.STREAM_TIMEOUT_SECONDS || "", 10);
   const elapsedSec = (Date.now() - t0) / 1000;
-  const platformLimit = process.env.VERCEL ? 295 : Infinity;
+  const isVercel = Boolean(process.env.VERCEL);
+  const isEdgeOneCloud = process.env.EDGEONE_CLOUD_FUNCTION === "true";
+  const platformLimit = isVercel ? 295 : (isEdgeOneCloud ? 115 : Infinity);
   const maxStreamSec = platformLimit - elapsedSec - 5; // 5s safety margin
+  const defaultStreamSec = isVercel ? 280 : (isEdgeOneCloud ? 110 : 0);
+  const capToPlatform = (seconds) => Number.isFinite(maxStreamSec)
+    ? Math.max(1, Math.min(seconds, maxStreamSec))
+    : seconds;
   const effectiveTimeoutSec = streamTimeoutSec > 0
-    ? Math.min(streamTimeoutSec, maxStreamSec)
-    : (process.env.VERCEL ? Math.min(280, maxStreamSec) : 0);
+    ? capToPlatform(streamTimeoutSec)
+    : (defaultStreamSec > 0 ? capToPlatform(defaultStreamSec) : 0);
 
   log("STREAM_START", "timeout:", effectiveTimeoutSec > 0 ? effectiveTimeoutSec + "s" : "none",
       "provider:", providerKey);

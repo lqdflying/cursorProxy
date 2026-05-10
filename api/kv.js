@@ -23,8 +23,8 @@ export function setKvDriver(driver) {
   _driver = driver;
 }
 
-// Register the EdgeOne Pages KV namespace binding from edge function context.
-// Called by edge-functions/_shared/proxy.js before delegating to the handler.
+// Register the EdgeOne Pages KV namespace binding from an EdgeOne function context.
+// Called by the EdgeOne runtime wrappers before delegating to the handler.
 export function setEdgeOneKvBinding(binding) {
   _edgeoneKv = binding;
 }
