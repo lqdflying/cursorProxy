@@ -84,7 +84,8 @@ export async function kvGet(key) {
     }
   }
 
-  // EdgeOne Pages KV backend (no native TTL — values wrapped as {v: "...", e: <expiry_ms>})
+  // EdgeOne Pages KV backend (native TTL via expirationTtl; backward-compat with old
+  // manually-wrapped {v, e} values that may still be in the store)
   const eoKv = resolveEdgeOneKv();
   if (eoKv) {
     try {
@@ -94,8 +95,9 @@ export async function kvGet(key) {
       let parsed;
       try { parsed = JSON.parse(raw); } catch { return raw; }
       if (parsed && typeof parsed === "object" && typeof parsed.v !== "undefined") {
+        // Old format: manually-wrapped {v: value, e: expiry_ms} — still honour expiry
         if (typeof parsed.e === "number" && Date.now() > parsed.e) {
-          eoKv.delete(safeKey).catch(() => {});  // expired — best-effort cleanup
+          eoKv.delete(safeKey).catch(() => {});
           return null;
         }
         return parsed.v;
@@ -140,13 +142,12 @@ export async function kvSet(key, value, ttlSeconds) {
     return;
   }
 
-  // EdgeOne Pages KV backend — wrap with expiry metadata since EdgeOne KV has no native TTL
+  // EdgeOne Pages KV backend — native TTL via expirationTtl option (seconds)
   const eoKv = resolveEdgeOneKv();
   if (eoKv) {
     try {
       const safeKey = sanitizeKeyForEdgeOne(key);
-      const wrapped = JSON.stringify({ v: value, e: Date.now() + ttl * 1000 });
-      await eoKv.put(safeKey, wrapped);
+      await eoKv.put(safeKey, value, { expirationTtl: ttl });
     } catch (err) { diag("SET_ERROR", "edgeone", err?.message); }
     return;
   }
