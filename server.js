@@ -1,6 +1,6 @@
 import http from "node:http";
 import handler from "./api/proxy.js";
-import { setKvDriver } from "./api/kv.js";
+import { kvBackendStatus, setKvDriver } from "./api/kv.js";
 
 const DEBUG = process.env.DEBUG === "true";
 
@@ -13,6 +13,17 @@ if (process.env.REDIS_URL) {
   redis.on("error", (err) => console.error("[cursorProxy:server] redis error:", err.message));
   setKvDriver(redis);
   console.log("[cursorProxy:server] using local Redis:", process.env.REDIS_URL);
+}
+
+// Surface KV backend status loudly at boot so a missing configuration doesn't
+// silently degrade reasoning bridge / response-id chaining / image cache.
+{
+  const status = kvBackendStatus();
+  if (status.available) {
+    console.log(`[cursorProxy:server] kv backend: ${status.backend}`);
+  } else {
+    console.warn(`[cursorProxy:server] kv backend: NONE — ${status.detail}`);
+  }
 }
 
 const PORT = process.env.PORT || 3000;
@@ -46,8 +57,17 @@ const server = http.createServer(async (req, res) => {
   const start = Date.now();
   try {
     if (req.url === "/health") {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
+      const status = kvBackendStatus();
+      const body = JSON.stringify({
+        status: "ok",
+        kv: {
+          backend: status.backend,
+          available: status.available,
+          detail: status.detail,
+        },
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(body);
       return;
     }
 

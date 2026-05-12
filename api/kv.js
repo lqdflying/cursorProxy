@@ -9,14 +9,52 @@
 
 let _driver = null; // { get(key): Promise<string|null>, set(key, value, "EX", ttl): Promise<void> }
 let _edgeoneKv = null; // EdgeOne Pages KV namespace binding (global variable)
+let _noBackendWarningLogged = false;
 
 function diag(...args) {
   console.log("[cursorProxy:kv]", ...args);
 }
 
+// Cap error-body previews so a multi-MB upstream error response can't bloat logs.
+const ERROR_PREVIEW_MAX = 240;
+
 async function responsePreview(res) {
   const text = await res.text().catch(() => "");
-  return text ? text.slice(0, 240) : "(empty)";
+  if (!text) return "(empty)";
+  return text.length > ERROR_PREVIEW_MAX
+    ? text.slice(0, ERROR_PREVIEW_MAX) + "…(truncated)"
+    : text;
+}
+
+// Upstash REST fetch timeout (ms). Defaults to UPSTREAM_CONNECT_TIMEOUT_MS so the
+// KV path inherits the same hang-protection budget as the model-provider fetch.
+// Set to 0 to disable. Without this, a stalled Upstash region can exhaust the
+// Vercel Edge 25s pre-stream budget before the model call even starts.
+function kvFetchTimeoutMs() {
+  const explicit = parseInt(process.env.KV_FETCH_TIMEOUT_MS || "", 10);
+  if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+  const inherited = parseInt(process.env.UPSTREAM_CONNECT_TIMEOUT_MS || "", 10);
+  if (Number.isFinite(inherited) && inherited >= 0) return inherited;
+  return 8000;
+}
+
+async function fetchWithTimeout(url, init, label) {
+  const timeoutMs = kvFetchTimeoutMs();
+  if (timeoutMs <= 0) return fetch(url, init);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const wrapped = new Error(`${label} timed out after ${timeoutMs}ms`);
+      wrapped.name = "KvTimeoutError";
+      throw wrapped;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function setKvDriver(driver) {
@@ -27,6 +65,10 @@ export function setKvDriver(driver) {
 // Called by the EdgeOne runtime wrappers before delegating to the handler.
 export function setEdgeOneKvBinding(binding) {
   _edgeoneKv = binding;
+  // A binding was provided after the lazy resolver may have already cached
+  // "no backend" — reset so the next call re-detects with the new binding.
+  _eoKvBinding = undefined;
+  _noBackendWarningLogged = false;
 }
 
 // ─── EdgeOne Pages KV key sanitization ───────────────────────────────────
@@ -61,7 +103,44 @@ function resolveEdgeOneKv() {
   return (_eoKvBinding = null);
 }
 
+// Returns one of: "redis" | "upstash" | "edgeone" | null
+function resolveBackend() {
+  if (_driver) return "redis";
+  if (process.env.KV_URL && process.env.KV_TOKEN) return "upstash";
+  if (resolveEdgeOneKv()) return "edgeone";
+  return null;
+}
+
+// Public health probe: returns { backend, available, detail }.
+// Server bootstrap / health endpoints can call this once at startup to surface
+// a missing KV configuration BEFORE cache-dependent features start no-oping.
+export function kvBackendStatus() {
+  const backend = resolveBackend();
+  return {
+    backend,
+    available: backend !== null,
+    detail: backend === null
+      ? "No KV backend configured. Reasoning bridge, Azure response-id chaining, and image-description caching will silently degrade. Configure REDIS_URL (Docker), KV_URL+KV_TOKEN (Vercel/Upstash), or an EdgeOne Pages KV namespace."
+      : `Using ${backend} backend.`,
+  };
+}
+
+// Emit a single loud warning the first time a KV op runs with no backend.
+// Throttled to once-per-process so we don't drown logs in a hot path.
+function warnIfNoBackend() {
+  if (_noBackendWarningLogged) return;
+  if (resolveBackend() !== null) return;
+  _noBackendWarningLogged = true;
+  const status = kvBackendStatus();
+  diag("NO_BACKEND_CONFIGURED", status.detail);
+}
+
+// kvGet returns the cached value or null. A null return means EITHER cache
+// miss OR transient backend failure — callers can rely on diag() error logs
+// (always-on) for the latter. We do not throw because every caller is already
+// in a "fall through to stateless mode" branch on miss.
 export async function kvGet(key) {
+  warnIfNoBackend();
   if (_driver) {
     try { return await _driver.get(key); } catch (err) { diag("GET_ERROR", "driver", err?.message); return null; }
   }
@@ -69,9 +148,9 @@ export async function kvGet(key) {
   const token = process.env.KV_TOKEN;
   if (url && token) {
     try {
-      const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
+      const res = await fetchWithTimeout(`${url}/get/${encodeURIComponent(key)}`, {
         headers: { Authorization: `Bearer ${token}` },
-      });
+      }, "upstash GET");
       if (!res.ok) {
         diag("GET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
         return null;
@@ -97,7 +176,7 @@ export async function kvGet(key) {
       if (parsed && typeof parsed === "object" && typeof parsed.v !== "undefined") {
         // Old format: manually-wrapped {v: value, e: expiry_ms} — still honour expiry
         if (typeof parsed.e === "number" && Date.now() > parsed.e) {
-          eoKv.delete(safeKey).catch(() => {});
+          eoKv.delete(safeKey).catch((err) => diag("DELETE_ERROR", "edgeone", err?.message));
           return null;
         }
         return parsed.v;
@@ -112,13 +191,37 @@ export async function kvGet(key) {
   return null;
 }
 
+// Default TTL applies when callers don't pass an explicit ttlSeconds. Response
+// IDs and reasoning use the same default by design (they expire together with
+// the model's server-side memory); image descriptions get a longer TTL since
+// they're content-addressed and effectively immutable.
 function defaultTtlSeconds() {
   const raw = parseInt(process.env.KV_TTL_SECONDS || "", 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 7200;
 }
 
+function imageTtlSeconds() {
+  const raw = parseInt(process.env.KV_IMAGE_TTL_SECONDS || "", 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  // Default to 7 days for image-description cache: images are content-addressed
+  // by SHA-256 of the data URI, so the same image always hashes to the same key
+  // and the description is effectively immutable. No reason to re-pay the
+  // vision-API cost every 2 hours.
+  return 7 * 24 * 3600;
+}
+
+// Derive a sensible TTL from the key prefix when the caller didn't specify one.
+// "img:" -> image cache (long TTL). Everything else uses the conversation default.
+function pickTtlForKey(key) {
+  if (typeof key === "string" && key.startsWith("img:")) return imageTtlSeconds();
+  return defaultTtlSeconds();
+}
+
 export async function kvSet(key, value, ttlSeconds) {
-  const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : defaultTtlSeconds();
+  warnIfNoBackend();
+  const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0
+    ? ttlSeconds
+    : pickTtlForKey(key);
   if (_driver) {
     try { await _driver.set(key, value, "EX", ttl); } catch (err) { diag("SET_ERROR", "driver", err?.message); }
     return;
@@ -127,14 +230,14 @@ export async function kvSet(key, value, ttlSeconds) {
   const token = process.env.KV_TOKEN;
   if (url && token) {
     try {
-      const res = await fetch(`${url}/set/${encodeURIComponent(key)}?EX=${ttl}`, {
+      const res = await fetchWithTimeout(`${url}/set/${encodeURIComponent(key)}?EX=${ttl}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
           "content-type": "text/plain",
         },
         body: String(value),
-      });
+      }, "upstash SET");
       if (!res.ok) {
         diag("SET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
       }

@@ -27,6 +27,9 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry
 - **Docker:** add `REDIS_URL=redis://redis:6379` to your `.env`
 - **EdgeOne Pages:** create a KV namespace in the console and bind it with variable name `cursorproxy_kv`
 
+> [!IMPORTANT]
+> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax), Azure OpenAI cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. The server logs `kv backend: NONE` at boot and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
+
 ### 3. Deploy
 
 ```bash
@@ -80,11 +83,16 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `AZURE_OPENAI_REASONING_EFFORT` | Optional | Force `reasoning.effort` for Azure OpenAI reasoning models, overriding client values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` (model support varies) |
 | `AZURE_OPENAI_GENERAL_ALIAS_TARGET` | Optional | Real Azure OpenAI deployment that the public alias `cursorproxy/gpt-general` resolves to (e.g. `gpt-5.5-mini`). Required when clients use the alias |
 | `AZURE_OPENAI_GENERAL_REASONING_EFFORT` | Optional | Alias-only override of `reasoning.effort` when clients route through `cursorproxy/gpt-general`. Precedence: alias env > `AZURE_OPENAI_REASONING_EFFORT` > client value |
-| `AZURE_ANTHROPIC_THINKING` | Optional | Default Claude thinking mode when request omits it: `adaptive` or `disabled` |
-| `AZURE_ANTHROPIC_EFFORT` | Optional | Default Claude effort when request omits it: `low`, `medium`, `high`, or `max` |
+| `AZURE_ANTHROPIC_THINKING` | Optional | Default Claude thinking mode when request omits it: `adaptive` or `disabled`. **Unset:** the proxy adds no `thinking` field and Azure Anthropic applies its own default. |
+| `AZURE_ANTHROPIC_EFFORT` | Optional | Default Claude effort when request omits it: `low`, `medium`, `high`, or `max`. **Unset:** no `output_config.effort` is injected and the upstream default applies. |
+| `VISION_API_KEY` | Required when `VISION_API_PROVIDER=openai` | Vision provider API key. For the default `minimax_vl` provider, `MINIMAX_API_KEY` is reused — no separate var needed. |
 | `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
 | `REDIS_URL` | Docker: recommended | Local Redis URL |
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
+| `KV_FETCH_TIMEOUT_MS` | Optional | Upstash REST request timeout in ms. Defaults to `UPSTREAM_CONNECT_TIMEOUT_MS`, or 8000 if neither is set. Set 0 to disable. |
+| `KV_IMAGE_TTL_SECONDS` | Optional | TTL for the vision/image-description cache (`img:*` keys). Default 7 days. Conversation entries continue to use `KV_TTL_SECONDS` (default 2h). |
+| `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; 110 on EdgeOne Cloud Functions when `edgeone.json` `maxDuration=120`; disabled on Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
+| `PRESTREAM_BUDGET_MS` | Optional (Vercel only) | If pre-stream work (reasoning injection + vision conversion) exceeds this, return `504 prestream_timeout` rather than be killed by the platform at ~25s. Default 22000. |
 
 ### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`
 
@@ -133,6 +141,14 @@ Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Co
 - [Advanced Usage](https://github.com/lqdflying/cursorProxy/wiki/Advanced-Usage-for-CursorProxy) — OAI VSCode Plugin and other OpenAI-compatible clients
 - [Architecture](https://github.com/lqdflying/cursorProxy/wiki/Architecture) — Request flow, TLS, file structure
 - [Development](https://github.com/lqdflying/cursorProxy/wiki/Development) — Contributing, adding providers
+
+## In-repo docs
+
+- [doc/known-issues.md](doc/known-issues.md) — Cursor-side bugs and workarounds (vision, apply_patch, etc.)
+- [doc/architecture-overview.md](doc/architecture-overview.md) — Request flow at a glance
+- [doc/kv-caching.md](doc/kv-caching.md) — What is cached, how invalidation works
+- [doc/reasoning-bridge.md](doc/reasoning-bridge.md) — DeepSeek / Kimi / MiniMax reasoning injection
+- [doc/vision-bridge.md](doc/vision-bridge.md) — Image-to-text conversion for non-vision providers
 
 ---
 
