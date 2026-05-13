@@ -43,6 +43,20 @@ const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
 let proxyAuthWarningLogged = false;
 
+// Soft caps for per-stream string accumulators. These prevent a runaway
+// reasoning model from OOMing a single Vercel Edge instance during a long
+// stream. The values are stored, not the forwarded SSE — clients still see
+// the full upstream output; only the proxy's internal accumulators are bounded.
+// Override via env when needed.
+function readSizeCap(envName, fallback) {
+  const raw = parseInt(process.env[envName] || "", 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return fallback;
+}
+const ACC_CONTENT_CAP = readSizeCap("ACC_CONTENT_CAP_CHARS", 4_000_000);   // ~4MB chars
+const ACC_REASONING_CAP = readSizeCap("ACC_REASONING_CAP_CHARS", 8_000_000); // ~8MB chars
+const ACC_REFUSAL_CAP = 64_000;
+
 const PROVIDERS = {
   deepseek: {
     url: process.env.UPSTREAM_DEEPSEEK || "https://api.deepseek.com",
@@ -297,6 +311,23 @@ export default async function handler(req) {
   // instead of re-reasoning from scratch on every turn. Falls back to stateless
   // full-input-array mode on KV miss.
   if (providerKey === "azureopenai") {
+    // Provider-wide guard: store:false (privacy/compliance opt-out) is
+    // incompatible with background:true (Azure background responses cannot
+    // resume without server-side stored state). Reject before any shape
+    // detection so the rule applies uniformly to messages, array input,
+    // string input, and missing input. A later sanitizer would silently
+    // flip store:true on a background job, defeating the opt-out — that
+    // path is also hardened, but rejecting here is the source of truth.
+    if (parsedBody?.store === false && parsedBody?.background === true) {
+      diag("AZURE_STORE_BACKGROUND_CONFLICT", "store:false + background:true is incompatible");
+      return jsonErrorResponse(
+        400,
+        "store:false is incompatible with background:true. Azure background responses require server-side stored state to resume. Send store:true to allow chaining, or drop background:true for a stateless one-shot.",
+        "store_background_conflict",
+        "invalid_request_error"
+      );
+    }
+
     const hasMessages = parsedBody?.messages && !parsedBody?.input;
     const hasInput = parsedBody?.input && Array.isArray(parsedBody.input);
 
@@ -407,10 +438,27 @@ export default async function handler(req) {
       // so upTo=hashItems.length hashes ALL items.
       azureReplyKey = await conversationHash(hashItems, hashItems.length, azureScope);
 
+      // Honour an explicit client opt-out before doing anything KV-related.
+      // store:false means the client requires this turn to be stateless on
+      // Azure's side (compliance / privacy-sensitive workloads). That implies
+      // BOTH directions:
+      //   - we must not forward a previous_response_id (which would replay
+      //     prior turns the client has just asked us to forget), and
+      //   - we must not persist this turn's response id for the next turn.
+      // Skip the KV read entirely and clear the write key. The store:false +
+      // background:true conflict is rejected as a 400 at the provider-wide
+      // guard above, so reaching here with storeOptOut implies background
+      // is omitted or false.
+      const storeOptOut = parsedBody.store === false;
+      if (storeOptOut) {
+        azureReplyKey = null;
+        diag("AZURE_STORE_OPT_OUT", "client sent store:false — chaining disabled (no prev lookup, no KV write)");
+      }
+
       // Look up a cached response ID from the prior turn.
       // hashBoundaryIdx marks items BEFORE the contiguous assistant block.
       let prevRespId = null;
-      if (hashBoundaryIdx >= 0) {
+      if (!storeOptOut && hashBoundaryIdx >= 0) {
         const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, azureScope);
         const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
         if (readResult) {
@@ -421,12 +469,13 @@ export default async function handler(req) {
         }
       }
 
-      // store=true is required for previous_response_id lookups to work.
-      // Even on first/KV-miss turns we must persist the response so the ID
-      // we save to KV is actually retrievable on the next turn.  The sanitizer
-      // below only injects store=false when the field is absent, so setting it
-      // here unconditionally overrides that default.
-      parsedBody.store = true;
+      // store=true is required for previous_response_id lookups to work, but
+      // we only set it for clients that didn't explicitly opt out above. When
+      // storeOptOut is true, parsedBody.store stays false and Azure won't
+      // persist server-side state for this turn.
+      if (!storeOptOut) {
+        parsedBody.store = true;
+      }
 
       if (hasMessages) {
         // Chat Completions → Responses conversion with tool-call normalization.
@@ -652,11 +701,24 @@ export default async function handler(req) {
   // Always inject DeepSeek thinking mode params (proxy controls this; default: high)
   if (providerKey === "deepseek" && parsedBody) {
     parsedBody.thinking = { type: "enabled" };
-    const effortEnv = (process.env.DEEPSEEK_REASONING_EFFORT || "").trim().replace(/^["']|["']$/g, "");
-    const effort = effortEnv === "max" ? "max" : "high";
+    const rawEnv = process.env.DEEPSEEK_REASONING_EFFORT || "";
+    const effortEnv = rawEnv.trim().replace(/^["']|["']$/g, "");
+    // DeepSeek currently accepts "high" and "max". Anything else (typos,
+    // future levels) silently falls back to the safe default — but we log it
+    // once so operators don't think a misspelled value is taking effect.
+    const validEfforts = new Set(["high", "max"]);
+    let effort;
+    if (effortEnv === "") {
+      effort = "high";
+    } else if (validEfforts.has(effortEnv)) {
+      effort = effortEnv;
+    } else {
+      effort = "high";
+      diag("THINKING_INVALID_EFFORT", "provider: deepseek", "raw_env:", rawEnv, "fallback:", effort, "valid:", "high|max");
+    }
     parsedBody.reasoning_effort = effort;
     bodyText = JSON.stringify(parsedBody);
-    diag("THINKING", "provider: deepseek", "reasoning_effort:", effort, "raw_env:", process.env.DEEPSEEK_REASONING_EFFORT || "(unset)");
+    diag("THINKING", "provider: deepseek", "reasoning_effort:", effort, "raw_env:", rawEnv || "(unset)");
   }
 
   const originalMessages = parsedBody?.messages ? structuredClone(parsedBody.messages) : null;
@@ -871,11 +933,17 @@ export default async function handler(req) {
   const isStream = contentType.includes("text/event-stream");
   log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
 
-  // Log upstream errors with full response body for debugging (always-on)
+  // Log upstream errors with response body for debugging (always-on).
+  // Cap the captured preview so a multi-MB Azure error payload doesn't
+  // double memory pressure on the failing path or flood log lines.
   if (upstreamRes.status >= 400) {
     const cloned = upstreamRes.clone();
     const errText = await cloned.text().catch(() => "(unreadable)");
-    diag("UPSTREAM_ERROR_STATUS", upstreamRes.status, "provider:", providerKey, "body:", errText);
+    const ERROR_BODY_MAX = 2000;
+    const preview = errText.length > ERROR_BODY_MAX
+      ? errText.slice(0, ERROR_BODY_MAX) + `…(truncated ${errText.length - ERROR_BODY_MAX} chars)`
+      : errText;
+    diag("UPSTREAM_ERROR_STATUS", upstreamRes.status, "provider:", providerKey, "body:", preview);
   }
 
   if (!isStream) {
@@ -916,12 +984,19 @@ export default async function handler(req) {
     // Convert Responses API output to Chat Completions format
     if (providerKey === "azureopenai") {
       const azureRespId = json.id;
+      // Mirror the stream-side cache guard: only persist response IDs for
+      // turns that actually completed. A response with status=incomplete /
+      // failed / cancelled cannot be replayed via previous_response_id —
+      // caching it would 400 the next turn and burn a free retry.
+      const azureRespStatus = json.status || "completed";
       json = mapResponsesToOpenAI(json);
-      // Save the Azure response ID to KV so the next turn can chain via
-      // previous_response_id instead of re-sending the full conversation.
       if (azureRespId && azureReplyKey) {
-        log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId);
-        await kvSet("azresp:" + azureReplyKey, azureRespId);
+        if (azureRespStatus === "completed") {
+          log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId);
+          await kvSet("azresp:" + azureReplyKey, azureRespId);
+        } else {
+          log("SKIP_CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId, "status:", azureRespStatus);
+        }
       }
     }
 
@@ -946,7 +1021,14 @@ export default async function handler(req) {
   // into the wall-clock limit.
   const streamTimeoutRaw = process.env.STREAM_TIMEOUT_SECONDS;
   const streamTimeoutConfigured = streamTimeoutRaw != null && String(streamTimeoutRaw).trim() !== "";
-  const streamTimeoutSec = parseInt(streamTimeoutRaw || "", 10);
+  let streamTimeoutSec = parseInt(streamTimeoutRaw || "", 10);
+  // A negative or non-numeric configured value silently falls back to the
+  // default if we don't guard here, which masks operator misconfiguration.
+  // Log loudly and treat it as unset so the platform default applies.
+  if (streamTimeoutConfigured && (!Number.isFinite(streamTimeoutSec) || streamTimeoutSec < 0)) {
+    diag("STREAM_TIMEOUT_INVALID", "raw:", streamTimeoutRaw, "fallback: platform default");
+    streamTimeoutSec = NaN;
+  }
   const elapsedSec = (Date.now() - t0) / 1000;
   const isVercel = Boolean(process.env.VERCEL);
   const isEdgeOneCloud = process.env.EDGEONE_CLOUD_FUNCTION === "true";
@@ -996,6 +1078,24 @@ export default async function handler(req) {
     let accReasoning = null;
     let accContent = "";
     let accRefusal = "";
+    let contentCapHit = false;
+    let refusalCapHit = false;
+    // Bounded append for plain-string accumulators. The forwarded SSE still
+    // carries the full upstream text — only the proxy-side string used for
+    // logging / size checks is truncated, so a 100MB reply doesn't pin 100MB
+    // of heap on the function instance.
+    function appendCapped(prev, addition, cap, label, flagSetter) {
+      if (!addition) return prev;
+      if (prev.length >= cap) {
+        if (flagSetter) flagSetter();
+        return prev;
+      }
+      if (prev.length + addition.length <= cap) return prev + addition;
+      if (flagSetter) flagSetter();
+      const room = cap - prev.length;
+      log("STREAM_ACC_CAP_REACHED", "label:", label, "cap:", cap);
+      return prev + addition.slice(0, room);
+    }
     let doneSeen = false;
     let lastCachedReasoningSize = 0;
     let azureResponseId = null; // captured from response.created for KV write
@@ -1241,7 +1341,13 @@ export default async function handler(req) {
               const responsesEvent = json?.type || currentResponsesEvent;
               countAzureEvent(responsesEvent);
               if (responsesEvent === "response.refusal.delta") {
-                accRefusal += json?.delta || "";
+                accRefusal = appendCapped(
+                  accRefusal,
+                  json?.delta || "",
+                  ACC_REFUSAL_CAP,
+                  "refusal",
+                  () => { refusalCapHit = true; },
+                );
               } else if (
                 responsesEvent === "response.function_call_arguments.delta" ||
                 responsesEvent === "response.custom_tool_call_input.delta" ||
@@ -1294,10 +1400,26 @@ export default async function handler(req) {
             const delta = json.choices?.[0]?.delta;
             const chunkReasoning = readReasoning(providerKey, delta);
             accReasoning = updateStreamReasoning(providerKey, accReasoning, chunkReasoning);
+            // Soft cap: DeepSeek/Kimi accumulate reasoning as a single growing
+            // string; MiniMax replaces the object wholesale so already bounded.
+            // We truncate the stored string but keep forwarding the SSE chunk
+            // unchanged so clients still receive every token from upstream.
+            if (typeof accReasoning === "string" && accReasoning.length > ACC_REASONING_CAP) {
+              log("STREAM_ACC_CAP_REACHED", "label:", "reasoning", "cap:", ACC_REASONING_CAP);
+              accReasoning = accReasoning.slice(0, ACC_REASONING_CAP);
+            }
             if (hasReasoningValue(chunkReasoning)) {
               await cacheReasoningSnapshot();
             }
-            if (delta?.content != null) accContent += delta.content;
+            if (delta?.content != null) {
+              accContent = appendCapped(
+                accContent,
+                String(delta.content),
+                ACC_CONTENT_CAP,
+                "content",
+                () => { contentCapHit = true; },
+              );
+            }
             json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo));
             await writer.write(
               encoder.encode(
