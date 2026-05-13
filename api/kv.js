@@ -38,13 +38,23 @@ function kvFetchTimeoutMs() {
   return 8000;
 }
 
-async function fetchWithTimeout(url, init, label) {
+// Run an Upstash REST call under a single AbortController whose timer covers
+// BOTH the connect phase AND the body read. The previous version cleared the
+// timer as soon as fetch() returned headers, which left res.json() free to
+// hang indefinitely on a stalled body. The caller passes a `consume` callback
+// that does whatever it needs with the response (text, json, .ok check) — the
+// signal and timer remain live for that entire call.
+async function fetchWithTimeout(url, init, label, consume) {
   const timeoutMs = kvFetchTimeoutMs();
-  if (timeoutMs <= 0) return fetch(url, init);
+  if (timeoutMs <= 0) {
+    const res = await fetch(url, init);
+    return consume(res);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    return await consume(res);
   } catch (err) {
     if (err?.name === "AbortError") {
       const wrapped = new Error(`${label} timed out after ${timeoutMs}ms`);
@@ -148,15 +158,19 @@ export async function kvGet(key) {
   const token = process.env.KV_TOKEN;
   if (url && token) {
     try {
-      const res = await fetchWithTimeout(`${url}/get/${encodeURIComponent(key)}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      }, "upstash GET");
-      if (!res.ok) {
-        diag("GET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
-        return null;
-      }
-      const json = await res.json();
-      return json.result ?? null;
+      return await fetchWithTimeout(
+        `${url}/get/${encodeURIComponent(key)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+        "upstash GET",
+        async (res) => {
+          if (!res.ok) {
+            diag("GET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
+            return null;
+          }
+          const json = await res.json();
+          return json.result ?? null;
+        },
+      );
     } catch (err) {
       diag("GET_ERROR", "upstash", err?.message);
       return null;
@@ -230,17 +244,23 @@ export async function kvSet(key, value, ttlSeconds) {
   const token = process.env.KV_TOKEN;
   if (url && token) {
     try {
-      const res = await fetchWithTimeout(`${url}/set/${encodeURIComponent(key)}?EX=${ttl}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "content-type": "text/plain",
+      await fetchWithTimeout(
+        `${url}/set/${encodeURIComponent(key)}?EX=${ttl}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "content-type": "text/plain",
+          },
+          body: String(value),
         },
-        body: String(value),
-      }, "upstash SET");
-      if (!res.ok) {
-        diag("SET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
-      }
+        "upstash SET",
+        async (res) => {
+          if (!res.ok) {
+            diag("SET_ERROR", "upstash", "status:", res.status, "key:", key, "body:", await responsePreview(res));
+          }
+        },
+      );
     } catch (err) { diag("SET_ERROR", "upstash", err?.message); }
     return;
   }

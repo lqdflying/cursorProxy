@@ -421,10 +421,24 @@ export default async function handler(req) {
       // so upTo=hashItems.length hashes ALL items.
       azureReplyKey = await conversationHash(hashItems, hashItems.length, azureScope);
 
+      // Honour an explicit client opt-out before doing anything KV-related.
+      // store:false means the client requires this turn to be stateless on
+      // Azure's side (compliance / privacy-sensitive workloads). That implies
+      // BOTH directions:
+      //   - we must not forward a previous_response_id (which would replay
+      //     prior turns the client has just asked us to forget), and
+      //   - we must not persist this turn's response id for the next turn.
+      // Skip the KV read entirely and clear the write key.
+      const storeOptOut = parsedBody.store === false;
+      if (storeOptOut) {
+        azureReplyKey = null;
+        diag("AZURE_STORE_OPT_OUT", "client sent store:false — chaining disabled (no prev lookup, no KV write)");
+      }
+
       // Look up a cached response ID from the prior turn.
       // hashBoundaryIdx marks items BEFORE the contiguous assistant block.
       let prevRespId = null;
-      if (hashBoundaryIdx >= 0) {
+      if (!storeOptOut && hashBoundaryIdx >= 0) {
         const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, azureScope);
         const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
         if (readResult) {
@@ -435,16 +449,11 @@ export default async function handler(req) {
         }
       }
 
-      // store=true is required for previous_response_id lookups to work.
-      // Even on first/KV-miss turns we must persist the response so the ID
-      // we save to KV is actually retrievable on the next turn.  However, a
-      // client that explicitly opts out with store:false (e.g. compliance /
-      // privacy-sensitive workloads) is honoured: we skip the KV write below
-      // and just forward in stateless mode.
-      if (parsedBody.store === false) {
-        azureReplyKey = null; // suppresses the response-id KV write at end of request
-        diag("AZURE_STORE_OPT_OUT", "client sent store:false — chaining disabled for this turn");
-      } else {
+      // store=true is required for previous_response_id lookups to work, but
+      // we only set it for clients that didn't explicitly opt out above. When
+      // storeOptOut is true, parsedBody.store stays false and Azure won't
+      // persist server-side state for this turn.
+      if (!storeOptOut) {
         parsedBody.store = true;
       }
 

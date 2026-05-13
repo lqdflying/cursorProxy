@@ -124,7 +124,7 @@ sequenceDiagram
 
             alt Vision API responds in time
                 VIS-->>P: Text description
-                P->>KV: SET img:<sha256> = description (TTL 2h)
+                P->>KV: SET img:<sha256> = description (TTL 7d, KV_IMAGE_TTL_SECONDS)
             else Timeout or error
                 Note over P: Insert placeholder text:<br/>"[Image could not be processed]"
             end
@@ -206,7 +206,7 @@ flowchart LR
 img:<sha256-of-image-data-uri>
 │
 ├── Value: plain text description
-└── TTL:   KV_TTL_SECONDS (default 7200 s / 2 h)
+└── TTL:   KV_IMAGE_TTL_SECONDS (default 604 800 s / 7 d)
 ```
 
 The same image sent in different conversations or by different users hits the

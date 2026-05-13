@@ -208,18 +208,24 @@ flowchart TD
 |---|---|---|
 | `conv:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
 | `azresp:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
-| `img:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
 | `claude_thinking:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
+| `img:*` | 604 800 s (7 d) | `KV_IMAGE_TTL_SECONDS` |
 
-All keys share the same TTL. The cache version tag (`v7` in `azresp:`) acts as a
-logical namespace bump — old keys are orphaned and expire naturally when the
-cache version is incremented after a breaking schema change.
+Conversation-scoped entries share `KV_TTL_SECONDS`. The image-description
+cache uses its own longer TTL (`KV_IMAGE_TTL_SECONDS`, default 7 days) because
+keys are content-addressed by SHA-256 of the data URI and the description is
+effectively immutable — there's no reason to re-pay the vision-API cost every
+2 hours. The cache version tag (`v7` in `azresp:`) acts as a logical namespace
+bump — old keys are orphaned and expire naturally when the cache version is
+incremented after a breaking schema change.
 
 ## Key Environment Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `KV_TTL_SECONDS` | 7 200 | TTL for all cache keys (seconds) |
+| `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `claude_thinking:`) |
+| `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
+| `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |
 | `REDIS_URL` | — | Local Redis connection string (Docker) |
 | `KV_URL` | — | Upstash Redis REST endpoint (Vercel) |
