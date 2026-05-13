@@ -78,7 +78,7 @@ Discovery (`GET /v1/models`) is independent — list `gpt-general` (or `cursorpr
 - **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` (in `api/models.js`) before the request body reaches Azure; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
 - **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
-- **State**: `store=false` is injected by the sanitizer when omitted. `api/proxy.js` sets `store=true` for conversation-shaped Azure OpenAI requests (`messages` or array `input`) so `previous_response_id` chaining can work. The sanitizer also forces `store=true` when `background:true`, because Azure background responses require stored state.
+- **State**: `store=false` is injected by the sanitizer when omitted. `api/proxy.js` sets `store=true` for conversation-shaped Azure OpenAI requests (`messages` or array `input`) so `previous_response_id` chaining can work. **Exception**: a client that explicitly sends `store:false` is honoured as a privacy/compliance opt-out — the proxy skips the prior-turn KV lookup and the response-id write, and a conflicting `background:true` is rejected with HTTP 400 (`store_background_conflict`) instead of being silently flipped to `store:true`.
 
 ### azureanthropic ONLY
 - **Model field**: Kept in body (Anthropic requires it)
@@ -103,7 +103,7 @@ service_tier, text
 ```
 - `previous_response_id` MUST be in the whitelist — without it the sanitizer drops the chaining ID set by `proxy.js` and every turn becomes stateless (silent token regression).
 - `max_tokens` / `max_completion_tokens` → remapped to `max_output_tokens`
-- `background:true` requires `store:true`; do not let the sanitizer inject `store:false` for background jobs
+- `background:true` requires `store:true`; do not let the sanitizer inject `store:false` for background jobs. A client request that combines `store:false` with `background:true` is incompatible and is rejected as a 400 in `proxy.js` before reaching the sanitizer.
 - `temperature` and other sampling params are stripped for reasoning models only; standard models preserve supported user-set params
 - `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias` → stripped for reasoning models
 - Env override: `AZURE_OPENAI_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) — forces `reasoning.effort` for reasoning models even when the client sends a value; model support varies (`none` and `xhigh` are not universal)
@@ -161,11 +161,11 @@ Turn 1 (first message):                    Turn 2 (second message):
 
 ### Key design decisions
 
-- **`store=true` is unconditional**: Even on first turns and KV-miss fallbacks, `store=true` must be set. The sanitizer's default `store=false` is overridden in `api/proxy.js` before the sanitizer runs. Without this, Azure won't persist the response and the next turn's `previous_response_id` lookup will fail with `previous_response_not_found`.
+- **`store=true` by default, with a single explicit opt-out**: Even on first turns and KV-miss fallbacks, `store=true` is set so the next turn's `previous_response_id` lookup can resolve. The sanitizer's default `store=false` is overridden in `api/proxy.js` before the sanitizer runs. The only exception is a client request with `store:false`: that path skips the prior-turn KV lookup, skips the response-id KV write, and forwards `store:false` upstream untouched. A simultaneous `background:true` is rejected as a 400 (`store_background_conflict`) since Azure background responses cannot run without server-side stored state.
 - **Hash is computed from FULL input before trimming**: `conversationHash(hashItems, hashItems.length, scope)` hashes ALL items up to and including the last assistant turn. The next request hashes `slice(0, lastAssistantIdx)` to derive the same key. This is why `upTo=lastAssistantIdx` matches `upTo=messages.length` from the prior turn.
 - **Two input formats supported**: Both legacy `messages` (Chat Completions) and native `input` (Responses API) are handled. The native path skips the `normalizeAzureInput` tool-call conversion since items are already in Responses format.
 - **Trim boundary**: After KV hit, only items after `lastAssistantIdx` are forwarded. The assistant's own response items plus all subsequent user/tool items are preserved.
-- **TTL**: Response IDs use the default KV TTL (`KV_TTL_SECONDS`, default 7200s). After expiry, the lookup returns null and the proxy falls back to stateless mode (full input forwarded). This is silent — no error, just higher token costs for that turn.
+- **TTL**: Response IDs (`azresp:*` keys) use the conversation-scoped KV TTL (`KV_TTL_SECONDS`, default 7200s / 2h). Image-description cache (`img:*`) uses its own longer TTL (`KV_IMAGE_TTL_SECONDS`, default 7d). After expiry, lookup returns null and the proxy falls back to stateless mode (full input forwarded). This is silent — no error, just higher token costs for that turn.
 
 ### Response ID capture (streaming)
 
@@ -213,7 +213,7 @@ const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
 
 1. **Wrong code path**: The initial implementation only handled `messages` → `input` conversion. Cursor sends Responses-native `input` directly, so the KV block never executed. `msgRoles: undefined` in logs was the smoking gun.
 
-2. **`store` default**: The sanitizer's default `store=false` caused `previous_response_not_found` errors. `store=true` must be set before the sanitizer runs.
+2. **`store` default**: The sanitizer's default `store=false` caused `previous_response_not_found` errors. `store=true` must be set before the sanitizer runs — except when the client explicitly sent `store:false` (privacy/compliance opt-out), in which case it stays false and chaining is disabled for that turn.
 
 3. **Hash before normalize**: A proposed hardening plan would have normalized input BEFORE hashing, which would have changed hash keys and invalidated all cached response IDs across the deploy boundary. Normalize AFTER hashing (or only normalize in the forwarding path, not the hash path).
 

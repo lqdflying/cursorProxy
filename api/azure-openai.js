@@ -367,7 +367,11 @@ function sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName, aliasI
   }
 
   // Background Responses require stored state so the response can be resumed.
-  if (parsedBody.background === true && parsedBody.store !== true) {
+  // We never silently flip an explicit store:false to true here — that case
+  // is rejected as a 400 in proxy.js (AZURE_STORE_BACKGROUND_CONFLICT) before
+  // the sanitizer runs, so the only path that reaches us with both fields is
+  // background:true + store omitted, which is safe to upgrade.
+  if (parsedBody.background === true && parsedBody.store !== true && parsedBody.store !== false) {
     parsedBody.store = true;
     sanitized = true;
   }

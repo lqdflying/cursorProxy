@@ -31,7 +31,7 @@ All files in `api/` run on **Vercel Edge Runtime** and **EdgeOne Pages** — Nod
   - `azresp:conv:<sha…>` — Azure OpenAI `previous_response_id` chaining (set in `proxy.js` as `"azresp:" + conversationHash(...)` before forwarding the response ID).
   - `img:<sha…>` — vision-bridge image-description cache (`sha256ImageHash`).
 - Scope: `providerKey + ":" + apiKeyHash` (prevents cross-provider and cross-user collisions). For Azure response IDs the scope additionally embeds `AZURE_OPENAI_RESPONSE_CACHE_VERSION`, a normalized Azure resource/endpoint identifier (`AZURE_OPENAI_ENDPOINT || AZURE_FOUNDRY_RESOURCE`), and the resolved Azure deployment name. This makes retargeting an alias like `gpt-general`, switching deployments mid-conversation, or rotating the Azure resource each yield a fresh cache bucket so a stale `previous_response_id` is never replayed against a deployment/resource that no longer holds it. A deploy can also invalidate orphaned IDs wholesale (without touching reasoning caches) by bumping `AZURE_OPENAI_RESPONSE_CACHE_VERSION`.
-- Default TTL: 7200s (2 hours)
+- Default TTL: 7200s (2 h) for conversation-scoped keys (`conv:`, `asst:`, `azresp:`) via `KV_TTL_SECONDS`. Image-description keys (`img:`) use `KV_IMAGE_TTL_SECONDS`, default 604800s (7 d), because they're content-addressed and effectively immutable.
 
 ## Hashing
 

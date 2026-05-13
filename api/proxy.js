@@ -431,6 +431,22 @@ export default async function handler(req) {
       // Skip the KV read entirely and clear the write key.
       const storeOptOut = parsedBody.store === false;
       if (storeOptOut) {
+        // Azure background responses cannot run without server-side state —
+        // the resume mechanism literally polls the stored response. If the
+        // client asked for both background:true and store:false there is no
+        // way to honour the privacy intent and still produce a working
+        // background job, so reject loudly instead of silently flipping
+        // store:true (which would defeat the compliance guarantee) or
+        // silently dropping background:true (which would surprise the client).
+        if (parsedBody.background === true) {
+          diag("AZURE_STORE_BACKGROUND_CONFLICT", "store:false + background:true is incompatible");
+          return jsonErrorResponse(
+            400,
+            "store:false is incompatible with background:true. Azure background responses require server-side stored state to resume. Send store:true to allow chaining, or drop background:true for a stateless one-shot.",
+            "store_background_conflict",
+            "invalid_request_error"
+          );
+        }
         azureReplyKey = null;
         diag("AZURE_STORE_OPT_OUT", "client sent store:false — chaining disabled (no prev lookup, no KV write)");
       }

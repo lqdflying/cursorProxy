@@ -45,7 +45,7 @@ sequenceDiagram
         alt cache miss
             P->>V: Describe image (concurrent, max 2)
             V-->>P: Text description
-            P->>KV: SET img:<sha256> = description (TTL 2h)
+            P->>KV: SET img:<sha256> = description (TTL 7d, KV_IMAGE_TTL_SECONDS)
         else cache hit
             KV-->>P: Cached description
         end
@@ -105,7 +105,7 @@ flowchart LR
     HIT{"KV cache\nhit?"}
     VIS["Vision API call\n(MiniMax VL-01\nor GPT-4o-mini)"]
     DESC["Text description"]
-    KVC["Save to KV\n(TTL 2h)"]
+    KVC["Save to KV\n(TTL 7d,\nKV_IMAGE_TTL_SECONDS)"]
     OUT["messages with\ntext descriptions\n(no image_url)"]
 
     MSG --> HASH --> HIT
