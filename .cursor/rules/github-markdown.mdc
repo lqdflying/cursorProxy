@@ -1,0 +1,20 @@
+---
+description: Use GitHub Flavored Markdown for all markdown content
+alwaysApply: true
+---
+
+# GitHub Markdown Style
+
+When writing any markdown, always use **GitHub Flavored Markdown** (GFM) conventions:
+
+- Use `> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, and `> [!CAUTION]` for callout blocks.
+- Use `|` pipe tables with aligned dashes (`:---`, `:---:`, `---:`) for tabular data.
+- Use `~~strikethrough~~` for strikethrough text.
+- Use task list syntax: `- [ ]` and `- [x]` for checklists.
+- Use triple backtick fenced code blocks with a language tag (e.g. ```markdown, ```yaml, ```bash).
+- Use `[text](url)` for links and `![alt](url)` for images.
+- Use `**bold**` and `*italic*` (not underscores for emphasis).
+- Use `#` headings with a space after the `#`.
+- Use `---` for horizontal rules.
+- Use `<!-- -->` for HTML comments when needed.
+- Stick to one blank line between blocks; avoid excessive whitespace.
