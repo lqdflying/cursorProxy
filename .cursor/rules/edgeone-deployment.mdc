@@ -1,6 +1,7 @@
 ---
 description: EdgeOne Pages deployment patterns — Cloud Functions, KV bindings, cold starts, and build requirements.
-alwaysApply: true
+globs: cloud-functions/**,api/edgeone.js,api/kv.js,edgeone.json
+alwaysApply: false
 ---
 
 # EdgeOne Pages Deployment
