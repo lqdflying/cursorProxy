@@ -94,7 +94,7 @@ function sanitizeKeyForEdgeOne(key) {
 // Null means "not available on this platform"; a non-null result is the KV binding.
 let _eoKvBinding = undefined; // undefined = not yet resolved, null = unavailable, or binding object
 
-function resolveEdgeOneKv() {
+export function resolveEdgeOneKv() {
   if (_eoKvBinding !== undefined) return _eoKvBinding;  // already resolved
 
   if (_driver) return (_eoKvBinding = null);             // Docker Redis takes priority
