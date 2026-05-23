@@ -1,6 +1,6 @@
 // EdgeOne Pages Cloud Function: legacy /azure-anthropic/v1/* path.
 
-import { handleProxyRequest } from "../_shared/proxy.js";
+import { handleProxyRequest } from "../../shared/proxy.js";
 
 export function onRequest(context) {
   return handleProxyRequest(context, "azureanthropic");
