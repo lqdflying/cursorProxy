@@ -79,21 +79,20 @@ flowchart TD
 | Stream timeout | Disabled | 280 s | Disabled by default |
 | Pre-stream budget guard | No | Yes (22 s default) | No |
 | Graceful shutdown | Yes (25 s drain) | N/A (stateless) | N/A (stateless) |
-| Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes (DEBUG=true, Edge Function logs) |
+| Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes (Cloud Function logs) |
 | Health check | `GET /health` | N/A | `GET /health` |
 
 ## EdgeOne KV Runtime
 
-EdgeOne Pages KV is exposed to Edge Functions, so the proxy routes `/v0/*`,
-`/v1/*`, and legacy provider paths through `edge-functions/`. The default KV
+EdgeOne Pages KV is exposed to Cloud Functions, so the proxy routes `/v0/*`,
+`/v1/*`, and legacy provider paths through `cloud-functions/`. The default KV
 binding variable name is `cursorproxy_kv`; set `EDGEONE_KV_BINDING` only if you
 bind the namespace under a different variable name.
 
-Do not add same-path Cloud Function entry files for these API routes unless you
-also switch to another KV backend such as Upstash. Cloud Functions do not receive
-the built-in EdgeOne Pages KV binding, so reasoning, response-id, Claude thinking,
-and image caches would no-op. Use `DEBUG=true` only while troubleshooting because
-it logs request routing and proxy internals.
+Cloud Functions provide both KV bindings and Log Analysis visibility, so
+`console.log` output from the proxy wrapper (`[cursorProxy:edgeone] REQ` / `RES`)
+appears in the EdgeOne console. Use `DEBUG=true` only while troubleshooting
+because it logs request routing and proxy internals.
 
 ## Docker Graceful Shutdown
 
@@ -161,6 +160,6 @@ flowchart LR
 | Variable | Default | Notes |
 |---|---|---|
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | 15 000 | Connect-phase only; set 0 to disable |
-| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 0 (EdgeOne Edge Functions and Docker default) | 0 = disabled |
+| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 110 (EdgeOne Cloud Functions) / 0 (Docker default) | 0 = disabled |
 | `PRESTREAM_BUDGET_MS` | 22 000 | Vercel only |
 | `SHUTDOWN_GRACE_MS` | 25 000 | Docker only |

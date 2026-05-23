@@ -52,7 +52,7 @@ See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for V
 > [!NOTE]
 > **Log control.** `docker-compose.yml` caps container logs at 10 MiB × 3 rotated files per service. Set `DEBUG=true` in `.env` only for troubleshooting — it enables per-request access logs and verbose proxy internals. For `docker run`, add `--log-opt max-size=10m --log-opt max-file=3`.
 >
-> **EdgeOne KV.** EdgeOne Pages exposes KV bindings to Edge Functions. The API entry points therefore live under `edge-functions/`; moving the same routes back to `cloud-functions/` will make the built-in `cursorproxy_kv` binding unavailable and caching will silently degrade.
+> **EdgeOne KV.** EdgeOne Pages exposes KV bindings to Cloud Functions. The API entry points live under `cloud-functions/` so both KV bindings and `console.log` output are available in EdgeOne Pages Log Analysis.
 
 ### 4. Configure Cursor
 
@@ -93,7 +93,7 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
 | `KV_FETCH_TIMEOUT_MS` | Optional | Upstash REST request timeout in ms. Defaults to `UPSTREAM_CONNECT_TIMEOUT_MS`, or 8000 if neither is set. Set 0 to disable. |
 | `KV_IMAGE_TTL_SECONDS` | Optional | TTL for the vision/image-description cache (`img:*` keys). Default 7 days. Conversation entries continue to use `KV_TTL_SECONDS` (default 2h). |
-| `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; disabled on EdgeOne Edge Functions and Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
+| `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; 110 on EdgeOne Cloud Functions (under the 120s maxDuration); disabled on Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
 | `PRESTREAM_BUDGET_MS` | Optional (Vercel only) | If pre-stream work (reasoning injection + vision conversion) exceeds this, return `504 prestream_timeout` rather than be killed by the platform at ~25s. Default 22000. |
 
 ### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`

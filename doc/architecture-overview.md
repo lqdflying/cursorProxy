@@ -70,8 +70,8 @@ flowchart LR
     end
 
     subgraph "EdgeOne Pages"
-        EOF["edge-functions/v1/[[default]].js\nEdgeOne Edge Function"]
-        EO_KV["EdgeOne KV\n(Edge Function binding)\nEDGEONE_KV_BINDING"]
+        EOF["cloud-functions/v1/[[default]].js\nEdgeOne Cloud Function"]
+        EO_KV["EdgeOne KV\n(Cloud Function binding)\nEDGEONE_KV_BINDING"]
         EOF <-->|binding| EO_KV
     end
 
@@ -141,9 +141,9 @@ flowchart LR
 |---|---|
 | `server.js` | HTTP server entry point (Docker) |
 | `api/proxy.js` | Shared edge-safe proxy handler and Vercel entry target |
-| `edge-functions/v1/[[default]].js` | EdgeOne Edge Function unified `/v1/*` entry point with KV binding support |
-| `edge-functions/v0/[[default]].js` | EdgeOne Edge Function legacy unified `/v0/*` entry point |
-| `edge-functions/health.js` | EdgeOne health probe exposing KV backend status |
+| `cloud-functions/v1/[[default]].js` | EdgeOne Cloud Function unified `/v1/*` entry point with KV binding support |
+| `cloud-functions/v0/[[default]].js` | EdgeOne Cloud Function legacy unified `/v0/*` entry point |
+| `cloud-functions/health.js` | EdgeOne health probe exposing KV backend status |
 | `api/models.js` | Model ID parsing, alias resolution, `/v1/models` |
 | `api/auth.js` | Proxy auth, timing-safe key comparison |
 | `api/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |

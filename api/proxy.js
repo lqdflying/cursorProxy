@@ -1016,7 +1016,7 @@ export default async function handler(req) {
   }
 
   // Streaming timeout: defaults to 280s on Vercel (under the 300s limit),
-  // 110s on legacy EdgeOne Cloud Functions (under the 120s limit), or 0 (disabled).
+  // 110s on EdgeOne Cloud Functions (under the 120s maxDuration), or 0 (disabled).
   // Also clamps to remaining platform budget so pre-stream work doesn't eat
   // into the wall-clock limit.
   const streamTimeoutRaw = process.env.STREAM_TIMEOUT_SECONDS;

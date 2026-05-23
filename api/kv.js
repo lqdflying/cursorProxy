@@ -2,7 +2,7 @@
 // Supports three backends:
 //   1. Local Redis (Docker)  — server.js injects an ioredis client via setKvDriver()
 //   2. Upstash REST (Vercel) — set KV_URL + KV_TOKEN environment variables
-//   3. EdgeOne Pages KV       — Edge Function namespace binding (configurable via
+//   3. EdgeOne Pages KV       — Cloud Function namespace binding (configurable via
 //                               EDGEONE_KV_BINDING env var, default cursorproxy_kv)
 //
 // proxy.js never imports ioredis directly, so it stays safe for Vercel Edge Runtime.
@@ -79,6 +79,7 @@ export function setEdgeOneKvBinding(binding) {
   // "no backend" — reset so the next call re-detects with the new binding.
   _eoKvBinding = undefined;
   _noBackendWarningLogged = false;
+  diag("KV binding registered (EdgeOne)");
 }
 
 // ─── EdgeOne Pages KV key sanitization ───────────────────────────────────
@@ -100,17 +101,25 @@ function resolveEdgeOneKv() {
   const url = process.env.KV_URL;
   const token = process.env.KV_TOKEN;
   if (url && token) return (_eoKvBinding = null);        // Upstash REST takes priority
-  if (_edgeoneKv) return (_eoKvBinding = _edgeoneKv);    // Explicitly registered binding
+  if (_edgeoneKv) {
+    _eoKvBinding = _edgeoneKv;
+    diag("KV found (edgeone, registered binding)");
+    return _eoKvBinding;
+  }
 
   // Auto-detect: check global scope for the configured binding variable name
   const name = process.env.EDGEONE_KV_BINDING || "cursorproxy_kv";
   try {
     if (typeof globalThis !== "undefined" && globalThis[name] != null) {
-      return (_eoKvBinding = globalThis[name]);
+      _eoKvBinding = globalThis[name];
+      diag("KV found (edgeone, auto-detected binding:", name + ")");
+      return _eoKvBinding;
     }
   } catch { /* globalThis unavailable (rare) */ }
 
-  return (_eoKvBinding = null);
+  _eoKvBinding = null;
+  diag("KV unavailable (no Redis, Upstash, or EdgeOne KV binding found)");
+  return _eoKvBinding;
 }
 
 // Returns one of: "redis" | "upstash" | "edgeone" | null
@@ -177,8 +186,8 @@ export async function kvGet(key) {
     }
   }
 
-  // EdgeOne Pages KV backend. Pages KV does not expose per-write TTL in the
-  // function binding, so TTL is stored alongside the value and enforced on read.
+  // EdgeOne Pages KV backend (native TTL via expirationTtl; backward-compat with old
+  // manually-wrapped {v, e} values that may still be in the store from prior deploys)
   const eoKv = resolveEdgeOneKv();
   if (eoKv) {
     try {
@@ -265,14 +274,12 @@ export async function kvSet(key, value, ttlSeconds) {
     return;
   }
 
-  // EdgeOne Pages KV backend. The binding API is put(key, value), so keep TTL
-  // metadata in the value instead of passing a third argument.
+  // EdgeOne Pages KV backend — native TTL via expirationTtl option (seconds)
   const eoKv = resolveEdgeOneKv();
   if (eoKv) {
     try {
       const safeKey = sanitizeKeyForEdgeOne(key);
-      const wrapped = JSON.stringify({ v: String(value), e: Date.now() + ttl * 1000 });
-      await eoKv.put(safeKey, wrapped);
+      await eoKv.put(safeKey, value, { expirationTtl: ttl });
     } catch (err) { diag("SET_ERROR", "edgeone", err?.message); }
     return;
   }

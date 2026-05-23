@@ -19,6 +19,9 @@ export function setupEdgeOneCompatibility(context, extraEnv = {}) {
     const binding = globalThis[bindingName] ?? context.env?.[bindingName];
     if (binding != null && typeof binding === "object") {
       setEdgeOneKvBinding(binding);
+      console.log("[cursorProxy:edgeone]", "KV binding registered:", bindingName);
+    } else {
+      console.warn("[cursorProxy:edgeone]", "KV binding not found (tried: " + bindingName + ")");
     }
   } catch { /* globalThis unavailable (rare) */ }
 }

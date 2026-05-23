@@ -12,7 +12,7 @@ flowchart TD
     E1{"REDIS_URL\nset?"}
     UP["Upstash REST\n(Bearer auth over HTTPS)"]
     E2{"KV_URL + KV_TOKEN\nset?"}
-    EO["EdgeOne KV\n(Edge Function namespace binding)"]
+    EO["EdgeOne KV\n(Cloud Function namespace binding)"]
     E3{"EDGEONE_KV_BINDING\nor registered binding available?"}
     NOP["No-op\n(KV disabled, caching skipped)"]
 
