@@ -206,7 +206,13 @@ export async function kvGet(key) {
       }
       return raw;
     } catch (err) {
-      diag("GET_ERROR", "edgeone", err?.message);
+      // Suppress cold-start connection noise: the binding object exists
+      // but the underlying TCP connection hasn't initialized yet. Return
+      // null (cache-miss fallback) without logging — this is transient.
+      const msg = err?.message || "";
+      if (!/not connected|cannot read properties of null.*sendcommand/i.test(msg)) {
+        diag("GET_ERROR", "edgeone", msg);
+      }
       return null;
     }
   }
