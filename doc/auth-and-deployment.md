@@ -64,8 +64,8 @@ flowchart TD
     end
 
     subgraph "EdgeOne Pages"
-        E_ENTRY["cloud-functions/v1/[[default]].js\nEdgeOne Cloud Function\nNode.js runtime"]
-        E_KV["EdgeOne KV\nGlobal namespace binding\nEDGEONE_KV_BINDING"]
+        E_ENTRY["edge-functions/v1/[[default]].js\nEdgeOne Edge Function\nEdge Runtime"]
+        E_KV["EdgeOne KV\nEdge Function binding\nEDGEONE_KV_BINDING"]
         E_ENTRY <-->|binding| E_KV
     end
 ```
@@ -74,19 +74,26 @@ flowchart TD
 
 | Feature | Docker | Vercel Edge | EdgeOne Pages |
 |---|---|---|---|
-| Entry point | `server.js` | `api/proxy.js` via `vercel.json` rewrites | `cloud-functions/v1/[[default]].js` |
+| Entry point | `server.js` | `api/proxy.js` via `vercel.json` rewrites | `edge-functions/v1/[[default]].js` |
 | KV backend | Local Redis (ioredis) | Upstash REST | EdgeOne KV binding |
-| Stream timeout | Disabled | 280 s | 110 s default, with Cloud Function maxDuration set to 120 s |
+| Stream timeout | Disabled | 280 s | Disabled by default |
 | Pre-stream budget guard | No | Yes (22 s default) | No |
 | Graceful shutdown | Yes (25 s drain) | N/A (stateless) | N/A (stateless) |
-| Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes in EdgeOne Log Analysis for Cloud Functions |
-| Health check | `GET /health` | N/A | N/A |
+| Access logging | Yes (DEBUG=true) | Yes (DEBUG=true) | Yes (DEBUG=true, Edge Function logs) |
+| Health check | `GET /health` | N/A | `GET /health` |
 
-## EdgeOne Log Analysis
+## EdgeOne KV Runtime
 
-EdgeOne Pages currently documents Log Analysis for Cloud Functions. Custom logs are collected from `console.log` inside the Cloud Function request lifecycle. For this repo, the EdgeOne entry points are under `cloud-functions/` so the shared proxy `REQ` / `RES` diagnostics appear in Log Analysis.
+EdgeOne Pages KV is exposed to Edge Functions, so the proxy routes `/v0/*`,
+`/v1/*`, and legacy provider paths through `edge-functions/`. The default KV
+binding variable name is `cursorproxy_kv`; set `EDGEONE_KV_BINDING` only if you
+bind the namespace under a different variable name.
 
-The same-path `edge-functions/` route files were removed to avoid ambiguous EdgeOne routing and make `/v1/*` log-visible by default. `edgeone.json` sets `cloudFunctions.nodejs.maxDuration` to 120 seconds; the proxy's default EdgeOne stream timeout is 110 seconds so it can emit a clean stream timeout before the platform limit. Use `DEBUG=true` only while troubleshooting because it logs request routing and proxy internals.
+Do not add same-path Cloud Function entry files for these API routes unless you
+also switch to another KV backend such as Upstash. Cloud Functions do not receive
+the built-in EdgeOne Pages KV binding, so reasoning, response-id, Claude thinking,
+and image caches would no-op. Use `DEBUG=true` only while troubleshooting because
+it logs request routing and proxy internals.
 
 ## Docker Graceful Shutdown
 
@@ -154,6 +161,6 @@ flowchart LR
 | Variable | Default | Notes |
 |---|---|---|
 | `UPSTREAM_CONNECT_TIMEOUT_MS` | 15 000 | Connect-phase only; set 0 to disable |
-| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 110 (EdgeOne Cloud Functions) / 0 (Docker default) | 0 = disabled |
+| `STREAM_TIMEOUT_SECONDS` | 280 (Vercel) / 0 (EdgeOne Edge Functions and Docker default) | 0 = disabled |
 | `PRESTREAM_BUDGET_MS` | 22 000 | Vercel only |
 | `SHUTDOWN_GRACE_MS` | 25 000 | Docker only |

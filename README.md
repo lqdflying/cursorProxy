@@ -27,8 +27,10 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry
 - **Docker:** add `REDIS_URL=redis://redis:6379` to your `.env`
 - **EdgeOne Pages:** create a KV namespace in the console and bind it with variable name `cursorproxy_kv`
 
+On EdgeOne, `GET /health` should return `"kv":{"backend":"edgeone","available":true,...}` after deployment.
+
 > [!IMPORTANT]
-> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax), Azure OpenAI cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. The server logs `kv backend: NONE` at boot and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
+> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax), Azure OpenAI cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
 
 ### 3. Deploy
 
@@ -50,7 +52,7 @@ See [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) for V
 > [!NOTE]
 > **Log control.** `docker-compose.yml` caps container logs at 10 MiB × 3 rotated files per service. Set `DEBUG=true` in `.env` only for troubleshooting — it enables per-request access logs and verbose proxy internals. For `docker run`, add `--log-opt max-size=10m --log-opt max-file=3`.
 >
-> **EdgeOne logs.** EdgeOne Pages Log Analysis currently shows Cloud Functions logs. This repo uses EdgeOne Cloud Function entry points under `cloud-functions/` so `console.log` output appears in the EdgeOne console. Avoid restoring same-path `edge-functions/` routes unless you intentionally prefer the Edge Runtime and accept that those logs may not appear in Log Analysis yet.
+> **EdgeOne KV.** EdgeOne Pages exposes KV bindings to Edge Functions. The API entry points therefore live under `edge-functions/`; moving the same routes back to `cloud-functions/` will make the built-in `cursorproxy_kv` binding unavailable and caching will silently degrade.
 
 ### 4. Configure Cursor
 
@@ -91,7 +93,7 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
 | `KV_FETCH_TIMEOUT_MS` | Optional | Upstash REST request timeout in ms. Defaults to `UPSTREAM_CONNECT_TIMEOUT_MS`, or 8000 if neither is set. Set 0 to disable. |
 | `KV_IMAGE_TTL_SECONDS` | Optional | TTL for the vision/image-description cache (`img:*` keys). Default 7 days. Conversation entries continue to use `KV_TTL_SECONDS` (default 2h). |
-| `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; 110 on EdgeOne Cloud Functions when `edgeone.json` `maxDuration=120`; disabled on Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
+| `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; disabled on EdgeOne Edge Functions and Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
 | `PRESTREAM_BUDGET_MS` | Optional (Vercel only) | If pre-stream work (reasoning injection + vision conversion) exceeds this, return `504 prestream_timeout` rather than be killed by the platform at ~25s. Default 22000. |
 
 ### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`
