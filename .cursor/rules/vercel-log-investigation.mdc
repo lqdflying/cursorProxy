@@ -1,5 +1,6 @@
 ---
 description: "Use when checking Vercel production runtime logs for cursorProxy incidents, deploy validation, Azure OpenAI errors, or tool-call evidence"
+globs: vercel.json
 alwaysApply: false
 ---
 

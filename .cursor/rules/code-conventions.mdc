@@ -1,7 +1,6 @@
 ---
 description: "JS coding style, logging, security, header hygiene, and Docker Compose conventions for the entire project"
-globs: **/*.js,**/*.yml
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Code Conventions

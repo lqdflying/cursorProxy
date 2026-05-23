@@ -1,6 +1,6 @@
 ---
 description: "Checklist for adding a new upstream provider — must update 5+ locations"
-globs: api/**/*.js,server.js,vercel.json,.env.example,README.md,edge-functions/**/*.js
+globs: api/**/*.js,server.js,vercel.json,.env.example,README.md,cloud-functions/**/*.js
 alwaysApply: false
 ---
 
