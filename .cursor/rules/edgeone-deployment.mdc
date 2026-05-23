@@ -1,0 +1,106 @@
+---
+description: EdgeOne Pages deployment patterns — Cloud Functions, KV bindings, cold starts, and build requirements.
+alwaysApply: true
+---
+
+# EdgeOne Pages Deployment
+
+## Route handlers go in `cloud-functions/`, not `edge-functions/`
+
+EdgeOne Pages KV namespace bindings are available to **Cloud Functions** (`cloud-functions/`), not just Edge Functions. Cloud Functions also make `console.log` output visible in EdgeOne Pages Log Analysis. Do not move API route handlers to `edge-functions/` — doing so loses both KV access and log visibility.
+
+Route handler pattern (each file is a thin delegation):
+
+```js
+// cloud-functions/v1/[[default]].js
+import { handleProxyRequest } from "../shared/proxy.js";
+
+export function onRequest(context) {
+  return handleProxyRequest(context, null);
+}
+```
+
+Nested provider routes use two-level relative imports:
+
+```js
+// cloud-functions/deepseek/v1/[[default]].js
+import { handleProxyRequest } from "../../shared/proxy.js";
+```
+
+## Shared wrapper directory: `shared/`, not `_shared/`
+
+EdgeOne's build CLI excludes underscore-prefixed directories (`_shared/`) from the Node function bundle context. This causes `Could not resolve "../_shared/proxy.js"` at build time. Use `shared/` instead. This differs from other projects (e.g. cliProxy) that may have been deployed before this CLI change.
+
+## EdgeOne KV binding — native `expirationTtl`, not `{v, e}` wrapper
+
+The EdgeOne Pages KV binding API supports `put(key, value, { expirationTtl: seconds })` in Cloud Functions. The native TTL option works correctly and is preferred over manually wrapping values in `{v: value, e: expiry_ms}` JSON. The read path should keep backward-compat `{v, e}` unwrapping for stale pre-existing keys.
+
+```js
+// Correct
+await eoKv.put(safeKey, value, { expirationTtl: ttl });
+```
+
+## KV cold-start warmup
+
+Every EdgeOne Cloud Function request is a **separate cold start** — there is no instance reuse between requests. The KV binding object appears on `globalThis` immediately, but the underlying TCP connection needs time to initialize (sometimes 2+ seconds). Without a warmup, early `kvGet` calls in the reasoning bridge hit transient "Not connected" / "sendCommand on null" errors and return null (cache miss).
+
+Add a warmup `get()` in the Cloud Function wrapper BEFORE importing the proxy handler:
+
+```js
+const eoKv = resolveEdgeOneKv();
+if (eoKv) {
+  await eoKv.get("__cursorproxy_warmup__", { type: "text" });
+}
+```
+
+This forces the TCP handshake to complete before downstream KV reads fire. The warmup is best-effort — a `try/catch` around it prevents a cold KV service from blocking the request entirely.
+
+## Suppress only transient GET errors, not SET errors
+
+On cold starts, `kvGet` may throw "Not connected" or "Cannot read properties of null (reading 'sendCommand')". These are transient startup states — suppress the `diag("GET_ERROR")` logging for these specific messages to avoid log floods. Return `null` (cache-miss fallback) silently.
+
+Do NOT suppress `SET_ERROR` — a write failure is significant and should always be logged.
+
+```js
+} catch (err) {
+  const msg = err?.message || "";
+  if (!/not connected|cannot read properties of null.*sendcommand/i.test(msg)) {
+    diag("GET_ERROR", "edgeone", msg);
+  }
+  return null;
+}
+```
+
+## `cliProxy` is the reference implementation
+
+The sibling project at `/home/opc/cliProxy` is the tested, working reference for EdgeOne Pages deployment. When in doubt about EdgeOne behavior (KV bindings, log visibility, build requirements, runtime differences), compare against cliProxy's structure and code. It has production traffic and proves the patterns work.
+
+## Architecture isolation from Vercel
+
+EdgeOne-specific code (`cloud-functions/`, `api/edgeone.js`) is never imported on Vercel. Vercel routes through `vercel.json` → `api/proxy.js` directly. Changes to EdgeOne deployment files do not affect Vercel. The KV backend selection in `api/kv.js` is gated: EdgeOne KV only activates when a binding is detected; Vercel's Upstash path is separate. The stream timeout is also gated (`EDGEONE_CLOUD_FUNCTION === "true"` → 110s; Vercel → 280s).
+
+## `edgeone.json`
+
+Keep the existing `cloudFunctions` config. No `edgeFunctions` block needed.
+
+```json
+{
+  "cloudFunctions": {
+    "nodejs": {
+      "maxDuration": 120
+    }
+  }
+}
+```
+
+The 120s `maxDuration` and the proxy's 110s stream timeout (5s safety margin) must stay in sync.
+
+## Build requirements checklist
+
+When adding or modifying Cloud Function files:
+- [ ] Shared code is in `cloud-functions/shared/` (not `_shared/`)
+- [ ] Import paths use `../shared/proxy.js` or `../../shared/proxy.js` (not `_shared`)
+- [ ] Each route file exports `onRequest(context)` function
+- [ ] `edgeone.json` has `cloudFunctions.nodejs.maxDuration: 120`
+- [ ] No `edge-functions/` directory exists (remove it if present)
+- [ ] KV warmup runs in the wrapper before importing the proxy handler
