@@ -27,7 +27,23 @@ export async function handleProxyRequest(context, provider) {
     setupEdgeOneCompatibility(context, { EDGEONE_CLOUD_FUNCTION: "true" });
 
     const kvAvailable = (await import("../../api/kv.js")).resolveEdgeOneKv() != null;
-    if (kvAvailable) edgeOneLog("KV ready");
+    if (kvAvailable) {
+      edgeOneLog("KV ready");
+      // EdgeOne Cloud Functions are ephemeral — every request is a cold start.
+      // The KV binding object appears on globalThis immediately, but the
+      // underlying TCP connection needs time to initialize. A warmup get()
+      // forces the handshake so reasoning-bridge and response-id lookups
+      // further down the pipeline don't hit transient "Not connected" errors.
+      const warmupStart = Date.now();
+      try {
+        const eoKv = (await import("../../api/kv.js")).resolveEdgeOneKv();
+        if (eoKv) {
+          await eoKv.get("__cursorproxy_warmup__", { type: "text" });
+          const warmupMs = Date.now() - warmupStart;
+          edgeOneLog("KV warmup done", warmupMs + "ms");
+        }
+      } catch { /* warmup is best-effort */ }
+    }
 
     const { default: handler } = await import("../../api/proxy.js");
     const targetUrl = rewriteEdgeOneProxyUrl(context.request, provider);
