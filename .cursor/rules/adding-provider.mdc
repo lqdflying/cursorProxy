@@ -27,7 +27,7 @@ Provider routing is replicated in multiple places. Adding a provider requires up
    { "source": "/newprovider/v1/:path*", "destination": "/api/proxy?provider=newprovider&path=:path*" }
    ```
 
-4. **`edge-functions/newprovider/v1/[[default]].js`** — EdgeOne route handler (copy from existing provider, change provider name)
+4. **`cloud-functions/newprovider/v1/[[default]].js`** — EdgeOne route handler (copy from existing provider, change provider name; import from `../../shared/proxy.js`)
 
 5. **`README.md`** — env table: document `NEWPROVIDER_API_KEY` and `UPSTREAM_NEWPROVIDER`
 
@@ -39,7 +39,7 @@ Provider routing is replicated in multiple places. Adding a provider requires up
 
 Reasoning helpers live in **`api/reasoning.js`**, not `api/proxy.js`.
 
-- DeepSeek & Kimi: `reasoning_content` (string)
+- DeepSeek, Kimi & MiMo: `reasoning_content` (string). MiMo also gets `thinking: { type: "enabled" }` injected in `api/proxy.js`.
 - MiniMax: `reasoning_details` (object, array, or structured — sent with `reasoning_split: true`)
 - If new provider has a different reasoning field, update these functions in `api/reasoning.js`: `reasoningField()`, `readReasoning()`, `serializeReasoning()`, `deserializeReasoning()` (private), `hasReasoningField()` (private), `updateStreamReasoning()`
 - Add the provider key to the `reasoningProviders` set inside `injectStoredReasoning()` if its assistant turns must carry reasoning back upstream
@@ -47,7 +47,8 @@ Reasoning helpers live in **`api/reasoning.js`**, not `api/proxy.js`.
 
 ## Vision support
 
-- Add provider to `providersWithoutVision` array in `api/proxy.js` if it doesn't support inline images (DeepSeek and MiniMax are there; Kimi supports vision natively so it's excluded)
+- Extend `requiresVisionBridge(providerKey, bareModel)` in `api/proxy.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo), gate on model id inside the helper.
+- Also update `api/edgeone.js` URL regex and unknown-provider error string in `api/proxy.js`.
 - The vision bridge orchestration lives in `api/vision-bridge.js` (`convertImagesToText`); the upstream HTTP call lives in `api/vision.js` (`describeImage`). Neither needs editing for a new provider.
 
 ## Azure-specific transforms

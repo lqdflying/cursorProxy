@@ -26,7 +26,7 @@ All files in `api/` run on **Vercel Edge Runtime** and **EdgeOne Pages** — Nod
 
 - `kvGet`/`kvSet` must **never throw** — both backends swallow errors silently
 - Cache key prefixes (all defined in `api/cache.js`):
-  - `conv:<sha…>` — reasoning bridge (`conversationHash`, raw `JSON.stringify(messages.slice(0, upTo))`). Used by DeepSeek/Kimi/MiniMax reasoning re-injection.
+  - `conv:<sha…>` — reasoning bridge (`conversationHash`, raw `JSON.stringify(messages.slice(0, upTo))`). Used by DeepSeek/Kimi/MiniMax/MiMo reasoning re-injection.
   - `asst:<sha…>` — Claude adaptive-thinking cache (`normalizedConversationHash`, typed-canonical content). Distinct prefix prevents collisions with the reasoning-bridge `conv:` key.
   - `azresp:conv:<sha…>` — Azure OpenAI `previous_response_id` chaining (set in `proxy.js` as `"azresp:" + conversationHash(...)` before forwarding the response ID).
   - `img:<sha…>` — vision-bridge image-description cache (`sha256ImageHash`).

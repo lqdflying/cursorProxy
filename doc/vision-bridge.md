@@ -2,15 +2,19 @@
 
 ## Cursor ↔ cursorProxy Vision Collaboration
 
-All five provider paths work with images except one: directly named GPT-5 / o-series
+Most provider paths work with images through cursorProxy except one: directly named GPT-5 / o-series
 models on affected Cursor builds (for example `gpt-5.4` or `gpt-5.5`). The
 `gpt-general` alias is vision-capable and works end-to-end because Cursor never
 matches the alias name against the GPT-5.x pattern that triggers its BYOK
 validation.
 
-The proxy vision bridge only applies to DeepSeek and MiniMax (text-only
-providers). All other providers — including `gpt-general` — receive images
-natively.
+The proxy vision bridge applies to providers that cannot accept `image_url`
+parts on every model: **DeepSeek**, **MiniMax** (all chat models), and **MiMo**
+text-only models (`mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, etc.).
+**MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`) skip the bridge.
+All other providers — including Kimi and `gpt-general` — receive images natively.
+
+Gate: `requiresVisionBridge(providerKey, bareModel)` in `api/proxy.js`.
 
 ```mermaid
 flowchart TD
@@ -20,45 +24,54 @@ flowchart TD
     %% ── Path A: DeepSeek / MiniMax ──────────────────────────────────────────
     A_MODEL["deepseek-* / minimax-*\n(no native vision support)"]
     A_CURSOR["Cursor routes to custom base URL ✅\n(non-GPT name — no BYOK validation)"]
-    A_GATE["cursorProxy:\nprovider in providersWithoutVision\n→ Vision Bridge runs"]
+    A_GATE["cursorProxy:\nrequiresVisionBridge() → true\n→ Vision Bridge runs"]
     A_KV["KV cache check (img:<sha256>)"]
     A_VIS["Vision API\n(MiniMax VL-01 or OpenAI-compatible)"]
     A_TEXT["image_url → '[Image content: ...]' text"]
     A_DS["DeepSeek / MiniMax API (text-only ✅)"]
     A_OK["Response → Cursor ✅"]
 
-    %% ── Path B: Kimi ─────────────────────────────────────────────────────────
+    %% ── Path B: MiMo multimodal ─────────────────────────────────────────────
+    MIMO_MM["mimo-v2.5 / mimo-v2-omni\n(native vision)"]
+    MIMO_CURSOR["Cursor routes to custom base URL ✅"]
+    MIMO_GATE["cursorProxy: requiresVisionBridge() → false\nimages forwarded natively"]
+    MIMO_API["MiMo API (native image_url ✅)"]
+    MIMO_OK["Response → Cursor ✅"]
+
+    %% ── Path C: Kimi ─────────────────────────────────────────────────────────
     B_MODEL["kimi-*\n(natively vision-capable)"]
     B_CURSOR["Cursor routes to custom base URL ✅\n(non-GPT name — no BYOK validation)"]
     B_GATE["cursorProxy: bridge skipped\nimages forwarded natively"]
     B_KIMI["Kimi API (native image_url ✅)"]
     B_OK["Response → Cursor ✅"]
 
-    %% ── Path C: Azure Anthropic ──────────────────────────────────────────────
+    %% ── Path D: Azure Anthropic ──────────────────────────────────────────────
     C_MODEL["claude-*\n(natively vision-capable)"]
     C_CURSOR["Cursor uses Anthropic key path ✅\n(separate from OpenAI BYOK)"]
     C_GATE["cursorProxy: bridge skipped\nimages forwarded natively"]
     C_AA["Azure Anthropic API (native ✅)"]
     C_OK["Response → Cursor ✅"]
 
-    %% ── Path D: gpt-general alias — WORKS ───────────────────────────────────
+    %% ── Path E: gpt-general alias — WORKS ───────────────────────────────────
     D_MODEL["gpt-general (alias)\n(natively vision-capable)"]
     D_CURSOR["Cursor routes to custom base URL ✅\n'gpt-general' does not match gpt-5.x pattern\n→ no BYOK validation triggered"]
     D_GATE["cursorProxy: bridge skipped\nimages forwarded natively"]
     D_AO["Azure OpenAI — real deployment\n(e.g. gpt-5.5 backend, native vision ✅)"]
     D_OK["Response → Cursor ✅"]
 
-    %% ── Path E: direct GPT-5 / o-series name — BROKEN ───────────────────────
+    %% ── Path F: direct GPT-5 / o-series name — BROKEN ───────────────────────
     E_MODEL["Direct gpt-5.x / o-series name\n(natively vision-capable)"]
     E_VAL["Cursor matches gpt-5.x pattern\n→ triggers OpenAI BYOK validation:\nGET api.openai.com/v1/models ⚠\n(hardcoded — ignores custom base URL)"]
     E_FAIL["api.openai.com → 401 Unauthorized\n(CURSORPROXY_API_KEY is not a real OpenAI key)"]
     E_ABORT["Request aborted ❌\ncursorProxy never reached"]
 
     U --> M
-    M -->|"deepseek / minimax"| A_MODEL --> A_CURSOR --> A_GATE --> A_KV
+    M -->|"deepseek / minimax / mimo text-only"| A_MODEL --> A_CURSOR --> A_GATE --> A_KV
     A_KV -->|cache hit| A_TEXT
     A_KV -->|cache miss| A_VIS --> A_TEXT
     A_TEXT --> A_DS --> A_OK
+
+    M -->|"mimo-v2.5 / mimo-v2-omni"| MIMO_MM --> MIMO_CURSOR --> MIMO_GATE --> MIMO_API --> MIMO_OK
 
     M -->|kimi| B_MODEL --> B_CURSOR --> B_GATE --> B_KIMI --> B_OK
     M -->|claude| C_MODEL --> C_CURSOR --> C_GATE --> C_AA --> C_OK
@@ -69,6 +82,8 @@ flowchart TD
 | Model | Native vision? | Proxy vision bridge? | Cursor routing | End-to-end result |
 |---|---|---|---|---|
 | DeepSeek / MiniMax | ❌ No | ✅ Yes — image → text | Custom base URL (direct) | ✅ Works via bridge |
+| MiMo `mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, … | ❌ No (text API) | ✅ Yes — image → text | Custom base URL (direct) | ✅ Works via bridge |
+| MiMo `mimo-v2.5`, `mimo-v2-omni` | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
 | Kimi | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
 | Azure Anthropic (Claude) | ✅ Yes | ❌ No | Anthropic key path | ✅ Works natively |
 | `gpt-general` (alias) | ✅ Yes | ❌ No | Custom base URL — alias name skips BYOK validation | ✅ Works natively |
@@ -81,25 +96,31 @@ flowchart TD
 
 ---
 
-## Vision Bridge Detail (DeepSeek / MiniMax only)
+## Vision Bridge Detail (DeepSeek / MiniMax / MiMo text-only)
 
-Providers that only accept text (DeepSeek, MiniMax chat endpoint) cannot handle
-`image_url` content parts. The vision bridge intercepts those messages, describes
-every image via a vision-capable API, and replaces the image parts with text
-before the request is forwarded.
+Providers (or models) that only accept text cannot handle `image_url` content
+parts. The vision bridge intercepts those messages, describes every image via a
+vision-capable API, and replaces the image parts with text before the request is
+forwarded. For MiMo, multimodal model IDs are allowlisted in `MIMO_MULTIMODAL`;
+all other `mimo-*` models use the bridge.
 
 ## When the Bridge Activates
 
 ```mermaid
 flowchart LR
-    P{"Provider?"}
+    P{"Provider + model?"}
     DS["deepseek"]
     MM["minimax"]
-    SKIP["Skip — provider\nsupports vision natively\n(Azure OpenAI, Azure Anthropic, Kimi)"]
+    MIMO["mimo"]
+    MIMO_CHK{"Model in\nMIMO_MULTIMODAL?"}
+    SKIP["Skip — native vision\n(Kimi, Azure, gpt-general, …)"]
     VB["Vision Bridge runs"]
 
     P -->|deepseek| DS --> VB
     P -->|minimax| MM --> VB
+    P -->|mimo| MIMO --> MIMO_CHK
+    MIMO_CHK -->|yes mimo-v2.5 / mimo-v2-omni| SKIP
+    MIMO_CHK -->|no pro / flash / …| VB
     P -->|other| SKIP
 ```
 

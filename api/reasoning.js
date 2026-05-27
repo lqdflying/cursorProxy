@@ -2,7 +2,7 @@ import { kvGet, kvSet } from "./kv.js";
 import { createLogger } from "./logger.js";
 
 const { log, diag } = createLogger("reasoning");
-const { log: proxyLog } = createLogger("proxy");
+const { diag: proxyDiag } = createLogger("proxy");
 
 function reasoningField(providerKey) {
   return providerKey === "minimax" ? "reasoning_details" : "reasoning_content";
@@ -142,7 +142,7 @@ async function injectStoredReasoning({
   // Skip for providers that don't support reasoning fields:
   // - Anthropic's Messages API rejects `reasoning_content` (Extra inputs not permitted)
   // - Azure OpenAI's Chat Completions API may also reject it on certain models
-  const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
+  const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo"]);
   let injectedCount = 0;
   if (originalMessages && reasoningProviders.has(providerKey)) {
     const messages = parsedBody.messages;
@@ -190,8 +190,11 @@ async function injectStoredReasoning({
       }
     }
     log("INJECT_SUMMARY", "turns:", assistantIndices.length, "hits:", injectedCount, "misses:", missedCount, "recovered:", recoveredCount);
-    if (recoveredCount > 0) proxyLog("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
-    if (missedCount > 0) proxyLog("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
+    if (assistantIndices.length > 0) {
+      proxyDiag("INJECT_SUMMARY", "turns:", assistantIndices.length, "hits:", injectedCount, "misses:", missedCount, "recovered:", recoveredCount);
+    }
+    if (recoveredCount > 0) proxyDiag("INJECT_RECOVERED", "count:", recoveredCount, "of:", fetched.length);
+    if (missedCount > 0) proxyDiag("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
   }
 
   return { parsedBody, injectedCount };

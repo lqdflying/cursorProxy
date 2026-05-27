@@ -15,8 +15,8 @@ flowchart TD
         ALIAS["Alias resolution\ngpt-general → real deployment"]
         TOOLS["Tool normalization\n(apply_patch, function, custom)"]
         FMT["Format conversion\n(Chat Completions ↔ provider API)"]
-        VB["Vision bridge\n(image → text for DeepSeek/MiniMax)"]
-        RSN["Reasoning injection\n(prior turns for DeepSeek/Kimi/MiniMax)"]
+        VB["Vision bridge\n(DeepSeek/MiniMax;\nMiMo text-only models)"]
+        RSN["Reasoning injection\n(DeepSeek/Kimi/MiniMax/MiMo)"]
     end
 
     subgraph "KV Store (shared)"
@@ -27,6 +27,7 @@ flowchart TD
         DS["DeepSeek\napi.deepseek.com"]
         KI["Kimi\napi.moonshot.ai"]
         MM["MiniMax\napi.minimax.io"]
+        MI["MiMo\napi.xiaomimimo.com"]
         AO["Azure OpenAI\nResponses API"]
         AA["Azure Anthropic\nMessages API"]
     end
@@ -41,12 +42,14 @@ flowchart TD
     RSN -->|deepseek-*| DS
     RSN -->|kimi-*| KI
     RSN -->|minimax-*| MM
+    RSN -->|mimo-*| MI
     ALIAS -->|gpt-* / o-series| AO
     ALIAS -->|claude-*| AA
 
     DS -->|reasoning_content| FMT
     KI -->|reasoning_content| FMT
     MM -->|reasoning_details| FMT
+    MI -->|reasoning_content| FMT
     AO -->|Responses API SSE| FMT
     AA -->|Messages API SSE| FMT
 
@@ -93,9 +96,9 @@ flowchart TD
     E{"Provider\nresolved?"}
     F{"API key\nconfigured?"}
 
-    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax only)"]
+    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax / MiMo)"]
     THINK["Claude thinking injection\n(azureanthropic only)"]
-    VISION["Vision bridge\n(DeepSeek / MiniMax only)"]
+    VISION["Vision bridge\n(DeepSeek / MiniMax;\nMiMo text-only models)"]
     UPSTREAM["Forward to upstream\n(with connect timeout)"]
     STREAM{"Streaming?"}
     NONSTR["Buffer response\nconvert format\ncache reasoning/ID/thinking\nreturn JSON"]
@@ -169,6 +172,9 @@ flowchart LR
 | `KIMI_API_KEY` | Kimi / Moonshot auth |
 | **MiniMax** | |
 | `MINIMAX_API_KEY` | MiniMax auth (also used for default vision backend) |
+| **MiMo (Xiaomi)** | |
+| `MIMO_API_KEY` | MiMo auth |
+| `UPSTREAM_MIMO` | Optional base URL override (Token Plan, etc.); `Host` header follows this URL |
 | **Azure (shared)** | |
 | `AZURE_FOUNDRY_API_KEY` | Shared key for Azure OpenAI and Azure Anthropic |
 | `AZURE_FOUNDRY_RESOURCE` | Azure resource name (used to build default endpoint URLs) |

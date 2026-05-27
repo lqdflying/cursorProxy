@@ -1,11 +1,11 @@
 # cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
+A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
-- **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
+- **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so subsequent turns use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly.
 - **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (typed-canonical hash) so multi-turn conversations reuse prior reasoning instead of re-thinking from scratch.
-- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax).
+- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax, MiMo Pro/Flash/TTS). MiMo `mimo-v2.5` and `mimo-v2-omni` accept images natively.
 - **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates request bodies and SSE streams to/from Azure OpenAI Responses and Azure Anthropic Messages.
 - **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 
@@ -19,6 +19,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry
 - [DeepSeek](https://platform.deepseek.com) → `DEEPSEEK_API_KEY`
 - [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY` (for Azure Foundry Kimi, see the `UPSTREAM_KIMI` reminder below)
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
+- [Xiaomi MiMo](https://platform.xiaomimimo.com) → `MIMO_API_KEY`
 - [Azure Foundry](https://ai.azure.com) → `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_RESOURCE`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
 
@@ -30,7 +31,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, and **Azure Foundry
 On EdgeOne, `GET /health` should return `"kv":{"backend":"edgeone","available":true,...}` after deployment.
 
 > [!IMPORTANT]
-> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax), Azure OpenAI cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
+> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax/MiMo), Azure OpenAI cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
 
 ### 3. Deploy
 
@@ -77,6 +78,8 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `KIMI_API_KEY` | For Kimi | Upstream Kimi API key. For Azure Foundry Kimi routed through the `kimi` provider, set this to the Azure Foundry key |
 | `UPSTREAM_KIMI` | Optional | Kimi upstream base URL. Defaults to Moonshot (`https://api.moonshot.ai`). **Current-code Azure Foundry Kimi workaround:** set this to `https://<resource>.services.ai.azure.com/openai` (without trailing `/v1/`) because the proxy appends `/v1/<path>` itself |
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
+| `MIMO_API_KEY` | For MiMo | Upstream Xiaomi MiMo API key ([platform.xiaomimimo.com](https://platform.xiaomimimo.com)) |
+| `UPSTREAM_MIMO` | Optional | MiMo upstream base URL. Default: `https://api.xiaomimimo.com`. Token Plan subscribers can set `https://token-plan-cn.xiaomimimo.com` |
 | `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key (used as `api-key` for OpenAI, `x-api-key` for Anthropic) |
 | `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
 | `AZURE_OPENAI_API_VERSION` | For Azure Foundry | Azure OpenAI Responses API version (default `2025-04-01-preview`) |

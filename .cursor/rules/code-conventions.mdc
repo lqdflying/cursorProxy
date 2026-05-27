@@ -17,8 +17,8 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 
 | Tag | Source file(s) | Purpose |
 |-----|----------------|---------|
-| `[cursorProxy:proxy]` | `api/proxy.js`, `api/reasoning.js` (via `createLogger("proxy")`) | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, UPSTREAM_*, STREAM_*, etc. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. **Aggregate reasoning injection summaries (INJECT_RECOVERED count, INJECT_MISS count) use this tag** — emitted at most once per request so Vercel's log viewer groups them correctly with REQ/RES. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
-| `[cursorProxy:reasoning]` | `api/reasoning.js` | Reasoning bridge internals: INJECT_SUMMARY (aggregate), INJECT_RECOVERED per-index. Claude thinking KV caching: CLAUDE_THINKING_LOOKUP, CLAUDE_THINKING_LOOKUP_SOURCE, CLAUDE_THINKING_MISS, CLAUDE_THINKING_INJECTED. |
+| `[cursorProxy:proxy]` | `api/proxy.js`, `api/reasoning.js` (via `createLogger("proxy").diag` as `proxyDiag`) | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, UPSTREAM_*, STREAM_*, etc. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. **Always-on aggregate reasoning lines on this tag:** `INJECT_SUMMARY`, `INJECT_RECOVERED` (count), `INJECT_MISS` (count) — use `proxyDiag`, never `createLogger("proxy").log`. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
+| `[cursorProxy:reasoning]` | `api/reasoning.js` | Reasoning bridge internals (DEBUG `log()`): duplicate `INJECT_SUMMARY`, per-index `INJECT_RECOVERED`. Claude thinking KV caching: CLAUDE_THINKING_LOOKUP, CLAUDE_THINKING_LOOKUP_SOURCE, CLAUDE_THINKING_MISS, CLAUDE_THINKING_INJECTED. |
 | `[cursorProxy:azure-openai]` | `api/azure-openai.js` | Azure OpenAI Responses API sanitization: AZURE_BODY_SANITIZED, REASONING_EFFORT, TOOLS_FIXED. |
 | `[cursorProxy:azure-anthropic]` | `api/azure-anthropic.js` | Azure Claude sanitization: AZURE_BODY_SANITIZED, INPUT_REMAPPED, ANTHROPIC_CONTENT_FIXED, ANTHROPIC_THINKING, ANTHROPIC_EFFORT. |
 | `[cursorProxy:vision]` | `api/vision.js`, `api/vision-bridge.js` | Vision provider calls + image-to-text orchestration: VISION_BATCH, VISION_CONVERTED, VISION_ERROR. |
@@ -59,6 +59,7 @@ Both `diag()` and `log()` emit to all platforms from every `api/*.js` module. Th
 ```
 [cursorProxy:proxy] START POST https://one.example.com/v1/chat/completions?... pathname: /v1/chat/completions provider(query): (infer)
 [cursorProxy:proxy] RESOLVED model: deepseek-chat provider: deepseek stream: true
+[cursorProxy:proxy] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0
 [cursorProxy:reasoning] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0
 ```
 
@@ -174,7 +175,7 @@ Implementation lives in `api/reasoning.js` (helpers + `injectStoredReasoning` or
 - Inject reasoning into prior assistant messages on next turn
 - Fast follow-up races: retry with configurable delays (`KV_RETRY_DELAYS_MS`, default: `40,120,240,400`ms)
 - If KV miss: inject placeholder `"(prior reasoning unavailable)"` so DeepSeek/Kimi thinking mode doesn't reject the request
-- Provider gating set lives in `injectStoredReasoning()`: only `deepseek`, `kimi`, `minimax` get reasoning re-injected. Anthropic and Azure OpenAI are excluded.
+- Provider gating set lives in `injectStoredReasoning()`: only `deepseek`, `kimi`, `minimax`, `mimo` get reasoning re-injected. Anthropic and Azure OpenAI are excluded.
 
 ## GitHub Releases
 

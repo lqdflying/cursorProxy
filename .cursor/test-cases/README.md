@@ -10,6 +10,9 @@ Use these cases when validating provider/model behavior on a deployed proxy, esp
 |---|---|
 | [Template](TEMPLATE.md) | Required shape for future Cursor manual test cases. |
 | [Azure OpenAI Responses apply_patch](azure-openai-responses-apply-patch.md) | Verifies Cursor -> proxy -> Azure OpenAI Responses custom `apply_patch` tool calls, tool outputs, and `previous_response_id` chaining. |
+| [MiMo basic](mimo-basic.md) | MiMo routing, forced thinking injection, upstream URL, successful completion. |
+| [MiMo reasoning cache](mimo-reasoning-cache.md) | Multi-turn `reasoning_content` KV inject on MiMo. |
+| [MiMo vision routing](mimo-vision-routing.md) | Vision bridge on Pro vs native images on `mimo-v2.5`. |
 
 ## Maintenance Rule
 

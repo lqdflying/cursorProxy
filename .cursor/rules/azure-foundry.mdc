@@ -123,10 +123,10 @@ metadata, thinking, output_config
 
 ## Reasoning Injection — SKIPPED for Azure
 
-The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
+The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax/MiMo but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
 
 ```javascript
-const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
+const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo"]);
 ```
 
 ## Query String Construction
@@ -188,13 +188,13 @@ The ID is captured from `json.id` BEFORE `mapResponsesToOpenAI()` transforms the
 
 ### Why reasoning injection is skipped for Azure
 
-The reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax but is **skipped** for Azure providers:
+The reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax/MiMo but is **skipped** for Azure providers:
 - **Anthropic**: rejects `reasoning_content` as "Extra inputs are not permitted"
 - **OpenAI Responses API**: uses server-side state via `previous_response_id` — reasoning is already preserved on Azure's side, so injection would be both redundant and rejected
 
 The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
 ```javascript
-const reasoningProviders = new Set(["deepseek", "kimi", "minimax"]);
+const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo"]);
 ```
 
 ### Diagnostics

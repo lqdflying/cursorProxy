@@ -79,6 +79,13 @@ const PROVIDERS = {
     authHeaderName: "authorization",
     authHeaderPrefix: "Bearer ",
   },
+  mimo: {
+    url: process.env.UPSTREAM_MIMO || "https://api.xiaomimimo.com",
+    host: "api.xiaomimimo.com",
+    apiKeyEnv: "MIMO_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
+  },
   azureopenai: {
     apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
     authHeaderName: "api-key",
@@ -128,6 +135,17 @@ function isAzureFoundryKimiEndpoint(base) {
   } catch {
     return false;
   }
+}
+
+const MIMO_MULTIMODAL = new Set(["mimo-v2.5", "mimo-v2-omni"]);
+
+function requiresVisionBridge(providerKey, bareModel) {
+  if (providerKey === "deepseek" || providerKey === "minimax") return true;
+  if (providerKey === "mimo") {
+    const m = (bareModel || "").toLowerCase();
+    return !MIMO_MULTIMODAL.has(m);
+  }
+  return false;
 }
 
 function decodedPathCandidates(pathParam) {
@@ -635,7 +653,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6 or claude-sonnet-4-6).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6 or claude-sonnet-4-6).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -654,7 +672,7 @@ export default async function handler(req) {
 
   // Inject a default model when missing from the request body
   if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", azureanthropic: "claude-sonnet-4-6" };
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", mimo: "mimo-v2.5-pro", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "model:", parsedBody.model);
@@ -721,6 +739,12 @@ export default async function handler(req) {
     diag("THINKING", "provider: deepseek", "reasoning_effort:", effort, "raw_env:", rawEnv || "(unset)");
   }
 
+  if (providerKey === "mimo" && parsedBody) {
+    parsedBody.thinking = { type: "enabled" };
+    bodyText = JSON.stringify(parsedBody);
+    diag("THINKING", "provider: mimo", "type: enabled");
+  }
+
   const originalMessages = parsedBody?.messages ? structuredClone(parsedBody.messages) : null;
 
   const scopeUser = await cacheScopeUserId(req);
@@ -747,7 +771,7 @@ export default async function handler(req) {
   // --- Claude thinking block injection (azureanthropic only) ---
   // Inject cached thinking blocks into prior assistant messages so Claude
   // doesn't re-reason from scratch on every turn when thinking.type === "adaptive".
-  // The existing reasoning bridge (DeepSeek/Kimi/MiniMax) uses reasoning_content
+  // The existing reasoning bridge (DeepSeek/Kimi/MiniMax/MiMo) uses reasoning_content
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
   if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled") {
     const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash);
@@ -759,10 +783,10 @@ export default async function handler(req) {
 
   // Convert images to text for providers that don't support vision inputs
   // DeepSeek and MiniMax chat endpoints do not accept inline image_url content.
-  // The vision API (MiniMax VL-01 by default) is called to describe images,
-  // and the descriptions are injected as text before forwarding.
-  const providersWithoutVision = ["deepseek", "minimax"];
-  if (providersWithoutVision.includes(providerKey) && parsedBody?.messages) {
+  // MiMo Pro/Flash/TTS variants are text-only; mimo-v2.5 and mimo-v2-omni accept
+  // image_url natively. The vision API (MiniMax VL-01 by default) describes images
+  // and injects text before forwarding when requiresVisionBridge() is true.
+  if (requiresVisionBridge(providerKey, upstreamModelName) && parsedBody?.messages) {
     const visionT0 = Date.now();
     const {
       messages: convertedMessages,
@@ -832,16 +856,27 @@ export default async function handler(req) {
   const usesAzureHeaderIsolation = isAzureProvider || isAzureFoundryKimi;
   const headers = usesAzureHeaderIsolation ? new Headers() : new Headers(req.headers);
 
-  // Build dynamic host header. Azure Foundry Kimi must use the configured
-  // upstream hostname, not Kimi's default api.moonshot.ai host.
-  if (provider.host && !isAzureFoundryKimi) {
-    headers.set("host", provider.host);
-  } else {
+  // Build dynamic host header. Prefer the hostname from provider.url so
+  // UPSTREAM_* overrides (e.g. MiMo Token Plan) send Host matching the target.
+  // Azure Foundry Kimi uses upstreamUrl because provider.url is the API base.
+  if (isAzureFoundryKimi) {
     try {
       headers.set("host", new URL(upstreamUrl).hostname);
     } catch {
       if (provider.host) headers.set("host", provider.host);
     }
+  } else {
+    let hostHeader = "";
+    try {
+      if (provider.url) hostHeader = new URL(provider.url).hostname;
+    } catch { /* fall through */ }
+    if (!hostHeader && provider.host) hostHeader = provider.host;
+    if (!hostHeader) {
+      try {
+        hostHeader = new URL(upstreamUrl).hostname;
+      } catch { /* ignore */ }
+    }
+    if (hostHeader) headers.set("host", hostHeader);
   }
 
   // Clean up headers that shouldn't leak upstream
