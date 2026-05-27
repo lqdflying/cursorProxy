@@ -181,6 +181,20 @@ Implementation lives in `api/reasoning.js` (helpers + `injectStoredReasoning` or
 
 Release notes must **compare against the previous release tag**, not just describe the latest commit. A release accumulates all commits since the prior tag.
 
+### Version numbering (semver)
+
+Tags use **`vMAJOR.MINOR.PATCH`** (e.g. `v2.4.0`). Bump from the latest tag:
+
+| Bump | Example | When |
+|------|---------|------|
+| **PATCH** | `v2.4.0` → `v2.4.1` | Bug fixes, logging/docs-only, small behavior fixes, dependency or platform tweaks with no new operator-facing capability |
+| **MINOR** | `v2.3.7` → `v2.4.0` | New **user-facing** capability: new upstream provider, new routing surface, new env-driven feature operators must configure |
+| **MAJOR** | `v2.x` → `v3.0.0` | Breaking changes: removed env vars, changed default behavior, incompatible API or auth |
+
+**Examples:** MiMo provider support → **minor** (`v2.4.0`). `UPSTREAM_MIMO` Host-header fix alone → **patch**. Wiki-only updates shipped as a release → **patch** (or skip tagging if nothing changed in the binary).
+
+When unsure between patch and minor, prefer **minor** if release notes would headline a new capability; prefer **patch** if it is only “fixes and polish.”
+
 ### Process
 
 1. Find the previous tag: `git tag --sort=-v:refname | head -5`
