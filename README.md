@@ -135,6 +135,23 @@ overrides the global `AZURE_OPENAI_REASONING_EFFORT` for requests that route
 through this alias only. To advertise the alias via `GET /v1/models`, also
 add `gpt-general` (or `cursorproxy/gpt-general`) to `CURSORPROXY_MODELS`.
 
+### MiniMax M3
+
+MiniMax M3 is a natively multimodal model with 1M context window. Unlike M2.x models, it accepts images and videos directly — the vision bridge is automatically bypassed.
+
+**Model IDs are case-sensitive.** Use `MiniMax-M3` (not `minimax-m3` or `MINIMAX-M3`). The proxy forwards the model name exactly as provided to the MiniMax API.
+
+```env
+CURSORPROXY_MODELS=MiniMax-M3
+```
+
+The proxy automatically injects `thinking: { type: "adaptive" }` when the client omits it, enabling the model's reasoning capabilities. If the client explicitly sends a `thinking` parameter, the proxy preserves it.
+
+**Key differences from M2.x:**
+- **Native vision:** Images and videos are forwarded directly to MiniMax (no conversion to text)
+- **Thinking mode:** Supports `adaptive` (default) or `disabled`
+- **Context window:** 1M tokens (vs 204K for M2.x)
+
 Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration).
 
 ---
