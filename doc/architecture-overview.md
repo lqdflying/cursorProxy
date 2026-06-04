@@ -15,7 +15,7 @@ flowchart TD
         ALIAS["Alias resolution\ngpt-general → real deployment"]
         TOOLS["Tool normalization\n(apply_patch, function, custom)"]
         FMT["Format conversion\n(Chat Completions ↔ provider API)"]
-        VB["Vision bridge\n(DeepSeek/MiniMax;\nMiMo text-only models)"]
+        VB["Vision bridge\n(DeepSeek/MiniMax M2.x;\nMiMo text-only models)"]
         RSN["Reasoning injection\n(DeepSeek/Kimi/MiniMax/MiMo)"]
     end
 
@@ -98,7 +98,7 @@ flowchart TD
 
     INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax / MiMo)"]
     THINK["Claude thinking injection\n(azureanthropic only)"]
-    VISION["Vision bridge\n(DeepSeek / MiniMax;\nMiMo text-only models)"]
+    VISION["Vision bridge\n(DeepSeek / MiniMax M2.x;\nMiMo text-only models)"]
     UPSTREAM["Forward to upstream\n(with connect timeout)"]
     STREAM{"Streaming?"}
     NONSTR["Buffer response\nconvert format\ncache reasoning/ID/thinking\nreturn JSON"]

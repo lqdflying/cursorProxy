@@ -111,7 +111,7 @@ async function convertImagesToText(messages, sha256ImageHash) {
   }
 
   // Merge consecutive text parts and (when no image_url remains) collapse to a
-  // single string. DeepSeek / MiniMax non-vision chat endpoints are not
+  // single string. DeepSeek / MiniMax M2.x non-vision chat endpoints are not
   // reliable about reading the 2nd+ entry of a multi-part text content array,
   // so leaving N separate {type:"text"} parts for N images causes only the
   // first description to be read by the model. Only touch user/system turns

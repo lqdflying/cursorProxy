@@ -159,8 +159,11 @@ against the hardcoded `api.openai.com` first.
 flowchart TD
     IMG{"Image attachment\n— which model name?"}
 
-    DS_MM["deepseek-* / minimax-*"]
+    DS_MM["deepseek-* / MiniMax-M2.*"]
     DS_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nProxy vision bridge converts image → text\nForwards text-only ✅"]
+
+    M3["MiniMax-M3"]
+    M3_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nMiniMax M3 natively handles images ✅"]
 
     KIMI["kimi-*"]
     KIMI_PATH["Name does not match gpt-5.x pattern ✅\nCursor sends to custom base URL\nProxy forwards image natively ✅"]
@@ -177,6 +180,7 @@ flowchart TD
     IMG_ABORT["Request aborted — proxy never reached ❌"]
 
     IMG --> DS_MM --> DS_PATH
+    IMG --> M3 --> M3_PATH
     IMG --> KIMI --> KIMI_PATH
     IMG --> AA --> AA_PATH
     IMG --> GG --> GG_PATH
@@ -187,7 +191,8 @@ flowchart TD
 
 | Model | Vision handling | Affected? |
 |---|---|---|
-| DeepSeek / MiniMax | Proxy vision bridge (not natively vision-capable) | ❌ Not affected |
+| DeepSeek / MiniMax M2.x | Proxy vision bridge (not natively vision-capable) | ❌ Not affected |
+| MiniMax M3 | Natively vision-capable — forwarded as-is | ❌ Not affected |
 | Kimi | Natively vision-capable — forwarded as-is | ❌ Not affected |
 | Azure Anthropic (Claude) | Natively vision-capable — Anthropic key path | ❌ Not affected |
 | `gpt-general` (alias) | Natively vision-capable — alias name bypasses validation | ❌ Not affected |
@@ -207,8 +212,8 @@ still routes through the proxy.
 
 | File | Role | Fixable here? |
 |---|---|---|
-| `api/vision-bridge.js` | Works correctly for DeepSeek/MiniMax | No |
-| `api/vision.js` | Vision API calls — works for DeepSeek/MiniMax | No |
+| `api/vision-bridge.js` | Works correctly for DeepSeek/MiniMax M2.x | No |
+| `api/vision.js` | Vision API calls — works for DeepSeek/MiniMax M2.x | No |
 | `api/proxy.js` | For gpt-5.x directly: request aborted before arrival | No |
 
 ### Related Links

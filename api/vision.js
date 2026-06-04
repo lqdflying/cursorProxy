@@ -1,6 +1,6 @@
 // ─── Image-to-Text Bridge ───────────────────────────────────────────────────
 // Converts base64 image_url content blocks to text descriptions before
-// forwarding to text-only models (DeepSeek, MiniMax chat).
+// forwarding to text-only models (DeepSeek, MiniMax M2.x chat).
 //
 // Supports backends:
 //   1. minimax_vl  — MiniMax VL-01 via /v1/coding_plan/vlm (default)

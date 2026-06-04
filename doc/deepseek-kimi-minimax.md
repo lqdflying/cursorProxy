@@ -39,8 +39,8 @@ sequenceDiagram
         Note over P: Inject reasoning into<br/>prior assistant messages
     end
 
-    %% Vision bridge (DeepSeek & MiniMax only)
-    alt messages contain image_url (DeepSeek or MiniMax)
+    %% Vision bridge (DeepSeek & MiniMax M2.x only)
+    alt messages contain image_url (DeepSeek or MiniMax M2.x)
         P->>KV: GET img:<sha256> (cache check)
         alt cache miss
             P->>V: Describe image (concurrent, max 2)
@@ -96,7 +96,7 @@ flowchart TD
     T1 --> R1 --> C1 --> T2 --> L1 --> R2 --> C2
 ```
 
-## Vision Bridge Detail (DeepSeek & MiniMax)
+## Vision Bridge Detail (DeepSeek & MiniMax M2.x)
 
 ```mermaid
 flowchart LR

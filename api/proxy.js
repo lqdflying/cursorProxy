@@ -140,7 +140,12 @@ function isAzureFoundryKimiEndpoint(base) {
 const MIMO_MULTIMODAL = new Set(["mimo-v2.5", "mimo-v2-omni"]);
 
 function requiresVisionBridge(providerKey, bareModel) {
-  if (providerKey === "deepseek" || providerKey === "minimax") return true;
+  if (providerKey === "deepseek") return true;
+  if (providerKey === "minimax") {
+    const m = (bareModel || "").toLowerCase();
+    if (m.startsWith("minimax-m3")) return false; // M3 is natively multimodal
+    return true; // M2.x still needs the bridge
+  }
   if (providerKey === "mimo") {
     const m = (bareModel || "").toLowerCase();
     return !MIMO_MULTIMODAL.has(m);
@@ -672,7 +677,7 @@ export default async function handler(req) {
 
   // Inject a default model when missing from the request body
   if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M2.7", mimo: "mimo-v2.5-pro", azureanthropic: "claude-sonnet-4-6" };
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "model:", parsedBody.model);
@@ -713,6 +718,11 @@ export default async function handler(req) {
 
   if (providerKey === "minimax" && parsedBody) {
     parsedBody.reasoning_split = true;
+    // M3 supports toggleable thinking mode; inject adaptive default when omitted
+    const bareModel = (parsedBody.model || "").toLowerCase();
+    if (bareModel.startsWith("minimax-m3") && !parsedBody.thinking) {
+      parsedBody.thinking = { type: "adaptive" };
+    }
     bodyText = JSON.stringify(parsedBody);
   }
 
@@ -782,7 +792,8 @@ export default async function handler(req) {
   }
 
   // Convert images to text for providers that don't support vision inputs
-  // DeepSeek and MiniMax chat endpoints do not accept inline image_url content.
+  // DeepSeek and MiniMax M2.x chat endpoints do not accept inline image_url content.
+  // MiniMax M3 is natively multimodal and accepts image_url/video_url directly.
   // MiMo Pro/Flash/TTS variants are text-only; mimo-v2.5 and mimo-v2-omni accept
   // image_url natively. The vision API (MiniMax VL-01 by default) describes images
   // and injects text before forwarding when requiresVisionBridge() is true.
