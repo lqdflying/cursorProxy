@@ -99,6 +99,27 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; 110 on EdgeOne Cloud Functions (under the 120s maxDuration); disabled on Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
 | `PRESTREAM_BUDGET_MS` | Optional (Vercel only) | If pre-stream work (reasoning injection + vision conversion) exceeds this, return `504 prestream_timeout` rather than be killed by the platform at ~25s. Default 22000. |
 
+### Kimi K2.7 Code: `cursorproxy/kimi-k2.7-code`
+
+Moonshot's coding-focused `kimi-k2.7-code` model always runs in thinking mode and
+requires `reasoning_content` on prior assistant turns (including multi-step tool
+calls). cursorProxy caches and re-injects that field via the reasoning bridge, so
+configure KV for multi-turn quality.
+
+The proxy also sanitizes Kimi K2.x requests before forwarding:
+
+- Strips Cursor sampling params (`temperature`, `top_p`, penalties) that Kimi rejects
+- Coerces unsupported `tool_choice` values to `auto`
+- Floors low `max_tokens` / remaps `max_completion_tokens` to at least 16k when set
+- Omits the `thinking` parameter for `kimi-k2.7-code` (always-on upstream)
+- Injects `thinking: { type: "enabled", keep: "all" }` for `kimi-k2.6` when thinking is on
+
+`kimi-latest` is discontinued; the Kimi provider default is now `kimi-k2.7-code`.
+
+Sanitization and reasoning injection live in shared `api/` modules (`api/kimi.js`,
+`api/proxy.js`, `api/reasoning.js`), so **Vercel Edge**, **EdgeOne Pages**, and
+**Docker** all get the same K2.7 Code behavior with no platform-specific config.
+
 ### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`
 
 Azure Foundry's official Kimi sample shows the OpenAI-compatible base URL as

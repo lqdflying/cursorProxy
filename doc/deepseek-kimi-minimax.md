@@ -62,6 +62,11 @@ sequenceDiagram
         Note over P: Set reasoning_split: true
     end
 
+    %% Kimi K2.x-specific
+    alt provider = kimi and model is kimi-k2.7-code / kimi-k2.6 / kimi-k2.5
+        Note over P: sanitizeKimiBody()<br/>strip fixed sampling params,<br/>normalize tool_choice,<br/>apply thinking rules
+    end
+
     P->>UP: POST /v1/chat/completions<br/>(provider API key, modified body)
 
     alt streaming response
@@ -113,6 +118,25 @@ flowchart LR
     HIT -->|no| VIS --> KVC --> DESC
     DESC --> OUT
 ```
+
+## Kimi K2.x Request Sanitization
+
+Implementation lives in `api/kimi.js` (`sanitizeKimiBody`). It runs for Kimi
+thinking models before the reasoning bridge injects cached `reasoning_content`.
+
+| Model | Thinking behavior | Proxy action |
+|---|---|---|
+| `kimi-k2.7-code` | Always on; Preserved Thinking always on; do not pass `thinking` | Delete `thinking`; strip fixed sampling params |
+| `kimi-k2.6` | On by default; supports `thinking.keep: "all"` | Inject `{ type: "enabled", keep: "all" }` unless client disables thinking |
+| `kimi-k2.5` | On by default; no `keep` support | Inject `{ type: "enabled" }` when omitted; strip `thinking.keep` |
+
+All three tiers also:
+
+- Remove `temperature`, `top_p`, `n`, `presence_penalty`, `frequency_penalty`, and `reasoning_effort` (non-default values 400 upstream)
+- Coerce unsupported `tool_choice` to `auto`
+- Remap `max_completion_tokens` → `max_tokens` and floor low `max_tokens` to 16k
+
+Kimi remains natively multimodal (images and video); the vision bridge is not used.
 
 ## Key Environment Variables
 

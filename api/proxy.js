@@ -37,6 +37,7 @@ import {
   stripResponseChunk,
   updateStreamReasoning,
 } from "./reasoning.js";
+import { sanitizeKimiBody } from "./kimi.js";
 import { convertImagesToText } from "./vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
@@ -677,7 +678,7 @@ export default async function handler(req) {
 
   // Inject a default model when missing from the request body
   if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-latest", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", azureanthropic: "claude-sonnet-4-6" };
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k2.7-code", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "model:", parsedBody.model);
@@ -753,6 +754,12 @@ export default async function handler(req) {
     parsedBody.thinking = { type: "enabled" };
     bodyText = JSON.stringify(parsedBody);
     diag("THINKING", "provider: mimo", "type: enabled");
+  }
+
+  if (providerKey === "kimi" && parsedBody) {
+    if (sanitizeKimiBody(parsedBody, upstreamModelName)) {
+      bodyText = JSON.stringify(parsedBody);
+    }
   }
 
   const originalMessages = parsedBody?.messages ? structuredClone(parsedBody.messages) : null;
