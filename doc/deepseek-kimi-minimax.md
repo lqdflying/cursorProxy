@@ -129,7 +129,7 @@ flowchart LR
 
 ## Kimi K2.x Request Sanitization
 
-Implementation lives in `api/kimi.js` (`sanitizeKimiBody`). It runs for Kimi
+Implementation lives in `lib/kimi.js` (`sanitizeKimiBody`). It runs for Kimi
 thinking models before the reasoning bridge injects cached `reasoning_content`.
 
 | Model | Thinking behavior | Proxy action |
@@ -148,7 +148,7 @@ Kimi remains natively multimodal (images and video); the vision bridge is not us
 
 ## GLM-5.2 Request Sanitization
 
-Implementation lives in `api/glm.js` (`sanitizeGlmBody`). It runs for GLM models
+Implementation lives in `lib/glm.js` (`sanitizeGlmBody`). It runs for GLM models
 before the reasoning bridge injects cached `reasoning_content`.
 
 - Default model is `glm-5.2`; `GLM-5.2` is accepted and forwarded to upstream as lowercase.

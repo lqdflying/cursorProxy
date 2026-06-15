@@ -1,7 +1,7 @@
 // EdgeOne Pages Cloud Function: health probe with KV backend visibility.
 
-import { setupEdgeOneCompatibility } from "../api/edgeone.js";
-import { kvBackendStatus } from "../api/kv.js";
+import { setupEdgeOneCompatibility } from "../lib/edgeone.js";
+import { kvBackendStatus } from "../lib/kv.js";
 
 export function onRequest(context) {
   setupEdgeOneCompatibility(context, { EDGEONE_CLOUD_FUNCTION: "true" });

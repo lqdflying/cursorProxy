@@ -1,6 +1,6 @@
 ---
 description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers azureopenai (gpt-5.5) and azureanthropic (claude-sonnet-4-6).
-globs: api/proxy.js,api/models.js,api/reasoning.js,api/azure-openai.js,api/azure-anthropic.js
+globs: api/proxy.js,lib/models.js,lib/reasoning.js,lib/azure-openai.js,lib/azure-anthropic.js
 alwaysApply: false
 ---
 
@@ -11,11 +11,11 @@ alwaysApply: false
 | Concern | Module |
 |---|---|
 | Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `api/proxy.js` |
-| `azureopenai` body sanitizer / tool format / mappers | `api/azure-openai.js` |
-| `azureanthropic` body sanitizer / input remap / content-type fix / mappers | `api/azure-anthropic.js` |
+| `azureopenai` body sanitizer / tool format / mappers | `lib/azure-openai.js` |
+| `azureanthropic` body sanitizer / input remap / content-type fix / mappers | `lib/azure-anthropic.js` |
 | Streaming SSE pump that calls the mappers above | inline IIFE in `api/proxy.js` |
-| Reasoning bridge gating (`reasoningProviders`) | `injectStoredReasoning()` in `api/reasoning.js` |
-| Model prefix stripping (`modelIdParts`, `withPublicResponseModel`, `providerFromModel`) | `api/models.js` |
+| Reasoning bridge gating (`reasoningProviders`) | `injectStoredReasoning()` in `lib/reasoning.js` |
+| Model prefix stripping (`modelIdParts`, `withPublicResponseModel`, `providerFromModel`) | `lib/models.js` |
 
 ## API Surfaces
 
@@ -50,7 +50,7 @@ The proxy remaps `chat/completions` → `messages` in `buildUrl()` since Cursor 
 
 ### Azure OpenAI Aliases
 
-Public alias model ids (currently just `gpt-general`) resolve to a real Azure OpenAI deployment chosen via env. The alias registry lives in `AZURE_OPENAI_ALIASES` inside `api/models.js`; each entry names a `targetEnv` (the deployment to forward to) and an `effortEnv` (an alias-specific reasoning-effort override).
+Public alias model ids (currently just `gpt-general`) resolve to a real Azure OpenAI deployment chosen via env. The alias registry lives in `AZURE_OPENAI_ALIASES` inside `lib/models.js`; each entry names a `targetEnv` (the deployment to forward to) and an `effortEnv` (an alias-specific reasoning-effort override).
 
 | Env var | Purpose |
 |---|---|
@@ -75,7 +75,7 @@ Discovery (`GET /v1/models`) is independent — list `gpt-general` (or `cursorpr
 - **Native Responses input is preserved**: do not rewrite `input_text`, `output_text`, `function_call`, or `function_call_output` items.
 - **Legacy fallback**: if a client sends `messages` without `input`, rename `messages` → `input`.
 - **Tool format**: Anthropic flat `{type, name, description, input_schema}` or Chat Completions wrapped `{type, function:{...}}` → Responses function tools `{type:"function", name, description, parameters}`. Known native Responses tools such as `custom`, `apply_patch`, `mcp`, `web_search`, `file_search`, `code_interpreter`, `image_generation`, and `computer_use_preview` are preserved instead of being converted or dropped.
-- **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` (in `api/models.js`) before the request body reaches Azure; bare deployment name stays in request body.
+- **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` (in `lib/models.js`) before the request body reaches Azure; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
 - **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
 - **State**: `store=false` is injected by the sanitizer when omitted. `api/proxy.js` sets `store=true` for conversation-shaped Azure OpenAI requests (`messages` or array `input`) so `previous_response_id` chaining can work. **Exception**: a client that explicitly sends `store:false` is honoured as a privacy/compliance opt-out — the proxy skips the prior-turn KV lookup and the response-id write, and a conflicting `background:true` is rejected with HTTP 400 (`store_background_conflict`) instead of being silently flipped to `store:true`.
@@ -123,7 +123,7 @@ metadata, thinking, output_config
 
 ## Reasoning Injection — SKIPPED for Azure
 
-The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax/MiMo/GLM but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
+The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax/MiMo/GLM but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set lives in `injectStoredReasoning()` inside `lib/reasoning.js`:
 
 ```javascript
 const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm"]);
@@ -192,7 +192,7 @@ The reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into 
 - **Anthropic**: rejects `reasoning_content` as "Extra inputs are not permitted"
 - **OpenAI Responses API**: uses server-side state via `previous_response_id` — reasoning is already preserved on Azure's side, so injection would be both redundant and rejected
 
-The gating set lives in `injectStoredReasoning()` inside `api/reasoning.js`:
+The gating set lives in `injectStoredReasoning()` inside `lib/reasoning.js`:
 ```javascript
 const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm"]);
 ```
@@ -229,10 +229,10 @@ Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thin
 
 | Concern | Location |
 |---|---|
-| Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `api/cache.js` |
+| Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `lib/cache.js` |
 | Write — non-streaming | `api/proxy.js` non-streaming branch: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` BEFORE `mapAnthropicResponseToOpenAI` runs (the mapper discards thinking blocks). |
 | Write — streaming | `api/proxy.js` streaming IIFE: `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
-| Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `api/reasoning.js`) AFTER the reasoning bridge runs, gated on `parsedBody.thinking?.type` being a non-disabled value. |
+| Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `lib/reasoning.js`) AFTER the reasoning bridge runs, gated on `parsedBody.thinking?.type` being a non-disabled value. |
 | SSE suppression | `api/proxy.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
 | Key prefix | `asst:` — distinct from `conv:` (reasoning bridge) and `azresp:conv:` (Azure response ID chaining) |
 
@@ -292,7 +292,7 @@ Turn 1 (no cache):                         Turn 2 (cache hit):
 
 ### Non-Streaming (azureopenai)
 
-`mapResponsesToOpenAI()` (in `api/azure-openai.js`) converts Responses API output to Chat Completions shape:
+`mapResponsesToOpenAI()` (in `lib/azure-openai.js`) converts Responses API output to Chat Completions shape:
 
 | Responses Field | OpenAI-Compatible Field |
 |---|---|
@@ -301,11 +301,11 @@ Turn 1 (no cache):                         Turn 2 (cache hit):
 
 ### Streaming (azureopenai)
 
-`mapResponsesSSEToOpenAI()` (in `api/azure-openai.js`) converts Responses named SSE events such as `response.output_text.delta`, `response.output_item.added`, and `response.function_call_arguments.delta` into OpenAI-style `choices[0].delta` chunks. Suppress raw `event:` lines for `azureopenai`; emit only transformed `data:` chunks.
+`mapResponsesSSEToOpenAI()` (in `lib/azure-openai.js`) converts Responses named SSE events such as `response.output_text.delta`, `response.output_item.added`, and `response.function_call_arguments.delta` into OpenAI-style `choices[0].delta` chunks. Suppress raw `event:` lines for `azureopenai`; emit only transformed `data:` chunks.
 
 ### Non-Streaming (azureanthropic)
 
-`mapAnthropicResponseToOpenAI()` (in `api/azure-anthropic.js`) converts Anthropic response format to OpenAI:
+`mapAnthropicResponseToOpenAI()` (in `lib/azure-anthropic.js`) converts Anthropic response format to OpenAI:
 
 | Anthropic Field | OpenAI Field |
 |---|---|
@@ -315,11 +315,11 @@ Turn 1 (no cache):                         Turn 2 (cache hit):
 
 ### Streaming (azureanthropic)
 
-`mapAnthropicSSEToOpenAI()` (in `api/azure-anthropic.js`) converts Anthropic named SSE events to OpenAI-style `choices[0].delta` chunks. See the full conversion table below.
+`mapAnthropicSSEToOpenAI()` (in `lib/azure-anthropic.js`) converts Anthropic named SSE events to OpenAI-style `choices[0].delta` chunks. See the full conversion table below.
 
 ## Anthropic SSE → OpenAI SSE Stream Transformation
 
-Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `api/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming IIFE in `api/proxy.js` to thread tool_use blocks across events.
+Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `lib/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming IIFE in `api/proxy.js` to thread tool_use blocks across events.
 
 ### Event Format Overview
 
@@ -395,11 +395,11 @@ data: [DONE]
 
 ## Provider Routing
 
-`providerFromModel()` (in `api/models.js`) strips the `cursorproxy/` prefix (and legacy `azure/`) via `modelIdParts()`, then routes by bare name pattern:
+`providerFromModel()` (in `lib/models.js`) strips the `cursorproxy/` prefix (and legacy `azure/`) via `modelIdParts()`, then routes by bare name pattern:
 - `claude*` → `azureanthropic`
 - `gpt-*` or `o\d*` (e.g. `gpt-5.5`, `o4-mini`) → `azureopenai`
 
-The `cursorproxy/` prefix is stripped from the model name before forwarding and re-added to response model fields via `withPublicResponseModel()` (in `api/models.js`).
+The `cursorproxy/` prefix is stripped from the model name before forwarding and re-added to response model fields via `withPublicResponseModel()` (in `lib/models.js`).
 
 ## No Impact to Other Providers
 

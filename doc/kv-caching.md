@@ -1,6 +1,6 @@
 # KV Store & Caching Architecture
 
-The proxy uses a single KV abstraction (`api/kv.js`) that supports three
+The proxy uses a single KV abstraction (`lib/kv.js`) that supports three
 backends. All caching is stateless per-request — no shared in-process memory.
 
 ## Backend Selection

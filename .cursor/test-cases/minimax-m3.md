@@ -99,7 +99,7 @@ Verify reasoning injection is working (hit count should be non-zero for the seco
 
 ## Notes
 
-- M3 uses `reasoning_details` (object/array) same as M2.x — no changes to `api/reasoning.js`.
+- M3 uses `reasoning_details` (object/array) same as M2.x — no changes to `lib/reasoning.js`.
 - M3 is natively multimodal (images and videos). The vision bridge is bypassed for models starting with `minimax-m3`.
 - M2.x models are unaffected and continue to use the vision bridge.
 - The `thinking: { type: "adaptive" }` parameter is injected only when the client omits it. If the client explicitly sends `thinking: { type: "disabled" }`, the proxy preserves it.

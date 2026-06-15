@@ -1,6 +1,6 @@
 ---
 description: Request transformation review checklist — full-path trace and count reconciliation
-globs: api/proxy.js,api/azure-openai.js,api/azure-anthropic.js,api/reasoning.js
+globs: api/proxy.js,lib/azure-openai.js,lib/azure-anthropic.js,lib/reasoning.js
 alwaysApply: false
 ---
 # Review Gating

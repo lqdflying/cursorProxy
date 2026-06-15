@@ -17,12 +17,12 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 
 | Tag | Source file(s) | Purpose |
 |-----|----------------|---------|
-| `[cursorProxy:proxy]` | `api/proxy.js`, `api/reasoning.js` (via `createLogger("proxy").diag` as `proxyDiag`), `api/kimi.js` (via `createLogger("proxy").diag`), `api/glm.js` (via `createLogger("proxy").diag`) | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, UPSTREAM_*, STREAM_*, etc. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. Kimi K2.x sanitization: `KIMI_BODY_SANITIZED`, `KIMI_TOOL_CHOICE_FIXED`. GLM sanitization: `GLM_BODY_SANITIZED`, `GLM_TOOL_CHOICE_FIXED`. **Always-on aggregate reasoning lines on this tag:** `INJECT_SUMMARY`, `INJECT_RECOVERED` (count), `INJECT_MISS` (count) — use `proxyDiag` / `createLogger("proxy").diag`, never `createLogger("proxy").log`. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
-| `[cursorProxy:reasoning]` | `api/reasoning.js` | Reasoning bridge internals (DEBUG `log()`): duplicate `INJECT_SUMMARY`, per-index `INJECT_RECOVERED`. Claude thinking KV caching: CLAUDE_THINKING_LOOKUP, CLAUDE_THINKING_LOOKUP_SOURCE, CLAUDE_THINKING_MISS, CLAUDE_THINKING_INJECTED. |
-| `[cursorProxy:azure-openai]` | `api/azure-openai.js` | Azure OpenAI Responses API sanitization: AZURE_BODY_SANITIZED, REASONING_EFFORT, TOOLS_FIXED. |
-| `[cursorProxy:azure-anthropic]` | `api/azure-anthropic.js` | Azure Claude sanitization: AZURE_BODY_SANITIZED, INPUT_REMAPPED, ANTHROPIC_CONTENT_FIXED, ANTHROPIC_THINKING, ANTHROPIC_EFFORT. |
-| `[cursorProxy:vision]` | `api/vision.js`, `api/vision-bridge.js` | Vision provider calls + image-to-text orchestration: VISION_BATCH, VISION_CONVERTED, VISION_ERROR. |
-| `[cursorProxy:kv]` | `api/kv.js` | KV backend selection + read/write diagnostics. |
+| `[cursorProxy:proxy]` | `api/proxy.js`, `lib/reasoning.js` (via `createLogger("proxy").diag` as `proxyDiag`), `lib/kimi.js` (via `createLogger("proxy").diag`), `lib/glm.js` (via `createLogger("proxy").diag`) | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, UPSTREAM_*, STREAM_*, etc. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. Kimi K2.x sanitization: `KIMI_BODY_SANITIZED`, `KIMI_TOOL_CHOICE_FIXED`. GLM sanitization: `GLM_BODY_SANITIZED`, `GLM_TOOL_CHOICE_FIXED`. **Always-on aggregate reasoning lines on this tag:** `INJECT_SUMMARY`, `INJECT_RECOVERED` (count), `INJECT_MISS` (count) — use `proxyDiag` / `createLogger("proxy").diag`, never `createLogger("proxy").log`. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
+| `[cursorProxy:reasoning]` | `lib/reasoning.js` | Reasoning bridge internals (DEBUG `log()`): duplicate `INJECT_SUMMARY`, per-index `INJECT_RECOVERED`. Claude thinking KV caching: CLAUDE_THINKING_LOOKUP, CLAUDE_THINKING_LOOKUP_SOURCE, CLAUDE_THINKING_MISS, CLAUDE_THINKING_INJECTED. |
+| `[cursorProxy:azure-openai]` | `lib/azure-openai.js` | Azure OpenAI Responses API sanitization: AZURE_BODY_SANITIZED, REASONING_EFFORT, TOOLS_FIXED. |
+| `[cursorProxy:azure-anthropic]` | `lib/azure-anthropic.js` | Azure Claude sanitization: AZURE_BODY_SANITIZED, INPUT_REMAPPED, ANTHROPIC_CONTENT_FIXED, ANTHROPIC_THINKING, ANTHROPIC_EFFORT. |
+| `[cursorProxy:vision]` | `lib/vision.js`, `lib/vision-bridge.js` | Vision provider calls + image-to-text orchestration: VISION_BATCH, VISION_CONVERTED, VISION_ERROR. |
+| `[cursorProxy:kv]` | `lib/kv.js` | KV backend selection + read/write diagnostics. |
 | `[cursorProxy:server]` | `server.js` | Docker-only: per-request access log + Redis lifecycle. |
 
 **Rule:** when adding a new module, prefer reusing one of the tags above by concern. Do NOT invent a new tag for a one-line helper — fold it into the closest existing module.
@@ -34,18 +34,18 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 | `diag()` | **always-on** | Diagnostics visible in production (Vercel, Docker, EdgeOne) |
 | `log()`  | `DEBUG === "true"` | Verbose internals: START, RESOLVED, INJECT, vision req/res, etc. |
 
-**For NEW modules:** import `createLogger(tag)` from `api/logger.js`:
+**For NEW modules:** import `createLogger(tag)` from `lib/logger.js`:
 
 ```js
 import { createLogger } from "./logger.js";
 const { log, diag } = createLogger("azure-openai");
 ```
 
-**Existing modules** that pre-date the factory (`api/proxy.js`, `api/vision.js`, `api/kv.js`) keep their inline `log()`/`diag()` definitions for stability — do NOT migrate them just for cosmetics. `api/proxy.js` in particular MUST keep its inline `[cursorProxy:proxy]` definitions to guarantee the production REQ/RES dashboard filter never breaks.
+**Existing modules** that pre-date the factory (`api/proxy.js`, `lib/vision.js`, `lib/kv.js`) keep their inline `log()`/`diag()` definitions for stability — do NOT migrate them just for cosmetics. `api/proxy.js` in particular MUST keep its inline `[cursorProxy:proxy]` definitions to guarantee the production REQ/RES dashboard filter never breaks.
 
 ### Log message format (applies to ALL platforms: Vercel, EdgeOne, Docker)
 
-Both `diag()` and `log()` emit to all platforms from every `api/*.js` module. The format is identical everywhere — only the outer envelope differs (Vercel wraps each line in JSONL; Docker emits plain text to stdout).
+Both `diag()` and `log()` emit to all platforms from `api/proxy.js` and shared `lib/*.js` modules. The format is identical everywhere — only the outer envelope differs (Vercel wraps each line in JSONL; Docker emits plain text to stdout).
 
 **Every line follows `[cursorProxy:<module>] TITLE arg1 arg2 ...`**
 
@@ -89,14 +89,14 @@ The first value after TITLE may be positional (e.g. `GET`, `200`, `/path`) when 
                   └───────┬─────────┘
                           │ imports
    ┌──────────────────────┼──────────────────────────────────┐
-   │  NEVER TOUCH LOGS    │  api/proxy.js, api/auth.js,      │ ← shared: log()/diag()
-   │  IN THESE FILES      │  api/models.js, api/cache.js,    │   changes here affect
-   │  FOR DOCKER CONTROL  │  api/reasoning.js,               │   ALL platforms
-   │                      │  api/azure-openai.js,            │
-   │                      │  api/azure-anthropic.js,         │
-   │                      │  api/vision.js,                  │
-   │                      │  api/vision-bridge.js,           │
-   │                      │  api/kv.js, api/logger.js        │
+   │  NEVER TOUCH LOGS    │  api/proxy.js, lib/auth.js,      │ ← shared: log()/diag()
+   │  IN THESE FILES      │  lib/models.js, lib/cache.js,    │   changes here affect
+   │  FOR DOCKER CONTROL  │  lib/reasoning.js,               │   ALL platforms
+   │                      │  lib/azure-openai.js,            │
+   │                      │  lib/azure-anthropic.js,         │
+   │                      │  lib/vision.js,                  │
+   │                      │  lib/vision-bridge.js,           │
+   │                      │  lib/kv.js, lib/logger.js        │
    └──────────────────────┴──────────────────────────────────┘
                           │ imports
                   ┌───────▼─────────┐
@@ -105,7 +105,7 @@ The first value after TITLE may be positional (e.g. `GET`, `200`, `/path`) when 
                   └─────────────────┘
 ```
 
-**Every `api/` file is shared across all platforms.** Any logging change in any `api/*.js` module affects Vercel, EdgeOne, and Docker simultaneously. These files are the wrong place for platform-specific log gating.
+**`api/proxy.js` and `lib/*.js` are shared across all platforms.** Any logging change there affects Vercel, EdgeOne, and Docker simultaneously. These files are the wrong place for platform-specific log gating.
 
 **`server.js` is Docker-only.** Vercel and EdgeOne NEVER import `server.js`. Gate the per-request access log here:
 
@@ -121,11 +121,11 @@ Docker then gets the same `[cursorProxy:proxy] REQ ... / RES ...` lines from `di
 
 - **Never gate `diag()` on `process.env.VERCEL`** — `diag()` MUST emit on Vercel. The REQ/RES pair is the primary observability signal in production.
 - **Never gate `log()` on `process.env.VERCEL`** — `log()` is already gated by `DEBUG`. When a developer enables `DEBUG=true`, they want verbose output on ALL platforms.
-- **Never add a `process.env.VERCEL` guard to any log function in `api/`** — platform gating belongs in the platform-specific entry point (`server.js`), not the shared proxy layer.
+- **Never add a `process.env.VERCEL` guard to any log function in `api/proxy.js` or `lib/`** — platform gating belongs in the platform-specific entry point (`server.js`), not the shared proxy layer.
 - **Never change the REQ/RES message format or its `[cursorProxy:proxy]` tag** — the `provider:` and `ms:` fields are relied on by log aggregators and dashboards.
 - **Never add unconditional `console.log` to hot paths** — every request goes through `proxy.js`. Use `diag()` or `log()` only.
 - **Never log API keys.** Only first 16 hex chars of `sha256(authHeader)` (`apiKeyHash`) may appear.
-- **Use `createLogger(tag)` from `api/logger.js` for new modules.** Do not duplicate the `DEBUG === "true"` check inline.
+- **Use `createLogger(tag)` from `lib/logger.js` for new modules.** Do not duplicate the `DEBUG === "true"` check inline.
 
 ## Security & Headers
 - **Auth:** timing-safe comparison for `CURSORPROXY_API_KEY` (see `timingSafeEqualStr`)
@@ -168,9 +168,9 @@ services:
 
 ## Reasoning caching (multi-turn)
 
-Implementation lives in `api/reasoning.js` (helpers + `injectStoredReasoning` orchestrator). `api/cache.js` provides `conversationHash` and `cacheScopeUserId`. `api/proxy.js` calls `injectStoredReasoning()` after body sanitization and before vision conversion.
+Implementation lives in `lib/reasoning.js` (helpers + `injectStoredReasoning` orchestrator). `lib/cache.js` provides `conversationHash` and `cacheScopeUserId`. `api/proxy.js` calls `injectStoredReasoning()` after body sanitization and before vision conversion.
 
-- Strip `reasoning_content`/`reasoning_details` from response before sending to client (`stripResponseChunk` in `api/reasoning.js`)
+- Strip `reasoning_content`/`reasoning_details` from response before sending to client (`stripResponseChunk` in `lib/reasoning.js`)
 - Cache reasoning in KV keyed by conversation hash (messages BEFORE the assistant reply)
 - Inject reasoning into prior assistant messages on next turn
 - Fast follow-up races: retry with configurable delays (`KV_RETRY_DELAYS_MS`, default: `40,120,240,400`ms)

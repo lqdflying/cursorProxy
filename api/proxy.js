@@ -1,22 +1,22 @@
 export const config = { runtime: "edge" };
 
-import { kvGet, kvSet } from "./kv.js";
+import { kvGet, kvSet } from "../lib/kv.js";
 import {
   mapAnthropicResponseToOpenAI,
   mapAnthropicSSEToOpenAI,
   normalizeAnthropicContentTypes,
   remapAnthropicInput,
   sanitizeAzureAnthropicBody,
-} from "./azure-anthropic.js";
+} from "../lib/azure-anthropic.js";
 import {
   mapResponsesSSEToOpenAI,
   mapResponsesToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeAzureOpenAITools,
   sanitizeAzureOpenAIBody,
-} from "./azure-openai.js";
-import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "./auth.js";
-import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "./cache.js";
+} from "../lib/azure-openai.js";
+import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "../lib/auth.js";
+import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "../lib/cache.js";
 import {
   isModelDiscoveryRequest,
   modelDiscoveryResponse,
@@ -25,7 +25,7 @@ import {
   publicModelId,
   resolveAzureAlias,
   withPublicResponseModel,
-} from "./models.js";
+} from "../lib/models.js";
 import {
   extractClaudeThinkingBlocks,
   hasReasoningValue,
@@ -36,10 +36,10 @@ import {
   serializeReasoning,
   stripResponseChunk,
   updateStreamReasoning,
-} from "./reasoning.js";
-import { sanitizeGlmBody } from "./glm.js";
-import { sanitizeKimiBody } from "./kimi.js";
-import { convertImagesToText } from "./vision-bridge.js";
+} from "../lib/reasoning.js";
+import { sanitizeGlmBody } from "../lib/glm.js";
+import { sanitizeKimiBody } from "../lib/kimi.js";
+import { convertImagesToText } from "../lib/vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";

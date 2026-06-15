@@ -101,7 +101,7 @@ later release.
 
 | File | Role | Fixable here? |
 |---|---|---|
-| `api/models.js` — `withPublicResponseModel` | Forces alias name in responses | No — changing this breaks routing |
+| `lib/models.js` — `withPublicResponseModel` | Forces alias name in responses | No — changing this breaks routing |
 | `api/proxy.js:616-618` — `azureAliasPublicId` | Preserves alias as response model | No — same constraint |
 
 ---
@@ -212,8 +212,8 @@ still routes through the proxy.
 
 | File | Role | Fixable here? |
 |---|---|---|
-| `api/vision-bridge.js` | Works correctly for DeepSeek/MiniMax M2.x | No |
-| `api/vision.js` | Vision API calls — works for DeepSeek/MiniMax M2.x | No |
+| `lib/vision-bridge.js` | Works correctly for DeepSeek/MiniMax M2.x | No |
+| `lib/vision.js` | Vision API calls — works for DeepSeek/MiniMax M2.x | No |
 | `api/proxy.js` | For gpt-5.x directly: request aborted before arrival | No |
 
 ### Related Links

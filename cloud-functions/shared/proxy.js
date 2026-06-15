@@ -6,7 +6,7 @@
 import {
   setupEdgeOneCompatibility,
   rewriteEdgeOneProxyUrl,
-} from "../../api/edgeone.js";
+} from "../../lib/edgeone.js";
 
 function edgeOneLog(...args) {
   console.log("[cursorProxy:edgeone]", ...args);
@@ -26,7 +26,7 @@ export async function handleProxyRequest(context, provider) {
   try {
     setupEdgeOneCompatibility(context, { EDGEONE_CLOUD_FUNCTION: "true" });
 
-    const kvAvailable = (await import("../../api/kv.js")).resolveEdgeOneKv() != null;
+    const kvAvailable = (await import("../../lib/kv.js")).resolveEdgeOneKv() != null;
     if (kvAvailable) {
       edgeOneLog("KV ready");
       // EdgeOne Cloud Functions are ephemeral — every request is a cold start.
@@ -36,7 +36,7 @@ export async function handleProxyRequest(context, provider) {
       // further down the pipeline don't hit transient "Not connected" errors.
       const warmupStart = Date.now();
       try {
-        const eoKv = (await import("../../api/kv.js")).resolveEdgeOneKv();
+        const eoKv = (await import("../../lib/kv.js")).resolveEdgeOneKv();
         if (eoKv) {
           await eoKv.get("__cursorproxy_warmup__", { type: "text" });
           const warmupMs = Date.now() - warmupStart;

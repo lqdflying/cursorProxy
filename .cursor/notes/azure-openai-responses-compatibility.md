@@ -20,12 +20,12 @@ This file records each gap: the symptom, root cause, fix, and verification diagn
 | **Commit** | `6482918` |
 | **Symptom** | Cursor model says "ApplyPatch is still failing in this environment, so I'm doing the same tiny edit with a direct file write." gpt-5.x via proxy cannot apply patches. |
 | **Root cause** | Cursor sends `{type:"custom", name:"apply_patch", format:{type:"grammar", syntax:"lark", definition:"..."}}` in the tools array. Azure streams `response.custom_tool_call_input.delta` events with the patch data. `mapResponsesSSEToOpenAI()` had no case for this event — it fell through to `default: return null` and was silently dropped. Cursor never received the tool call. |
-| **Fix** | Three changes in `api/azure-openai.js` and `api/proxy.js`: |
+| **Fix** | Three changes in `lib/azure-openai.js` and `api/proxy.js`: |
 
 **Tool normalization** — preserve known Responses native tool definitions instead of converting or dropping them. `custom` was the confirmed production fix; the other native tool types are preserved for request compatibility but do not imply full downstream Cursor integration.
 
 ```js
-// api/azure-openai.js — AZURE_OPENAI_RESPONSES_TOOL_TYPES set
+// lib/azure-openai.js — AZURE_OPENAI_RESPONSES_TOOL_TYPES set
 const AZURE_OPENAI_RESPONSES_TOOL_TYPES = new Set([
   "custom", "web_search", "web_search_preview", "file_search",
   "computer_use_preview", "code_interpreter", "image_generation",
@@ -43,7 +43,7 @@ if (isKnownResponsesToolType(tool.type)) {
 **SSE mapper** — add cases for the confirmed custom-tool stream and provisional native apply_patch stream names:
 
 ```js
-// api/azure-openai.js — mapResponsesSSEToOpenAI()
+// lib/azure-openai.js — mapResponsesSSEToOpenAI()
 case "response.custom_tool_call_input.delta": { /* map to tool_calls */ }
 case "response.apply_patch_call.delta":        { /* provisional native apply_patch support */ }
 case "response.apply_patch_call_input.delta":  { /* provisional native apply_patch support */ }
@@ -54,7 +54,7 @@ case "response.apply_patch_call_input.delta":  { /* provisional native apply_pat
 **Non-streaming mapper** — handle custom tool items fully; native apply_patch has a case but remains provisional because the documented item shape uses `operation`, not `input`:
 
 ```js
-// api/azure-openai.js — mapResponsesToOpenAI()
+// lib/azure-openai.js — mapResponsesToOpenAI()
 } else if (item.type === "custom_tool_call") { /* map to tool_calls */ }
 } else if (item.type === "apply_patch_call") { /* provisional: native item.operation is not faithfully bridged yet */ }
 ```
@@ -175,11 +175,11 @@ The tool normalization whitelist (`AZURE_OPENAI_RESPONSES_TOOL_TYPES`) includes 
 
 | Tag | Source | What it tells you |
 |---|---|---|
-| `TOOLS_SHAPE` | `api/azure-openai.js` | Raw tool format before conversion: total count, format breakdown, knownType count |
-| `APPLY_PATCH_TOOL_SHAPE` | `api/azure-openai.js` | Emits only when the request includes an apply-patch-shaped tool; counts custom, native, and function variants |
-| `TOOLS_FIXED` | `api/azure-openai.js` | Post-normalization: kept, dropped, native count |
+| `TOOLS_SHAPE` | `lib/azure-openai.js` | Raw tool format before conversion: total count, format breakdown, knownType count |
+| `APPLY_PATCH_TOOL_SHAPE` | `lib/azure-openai.js` | Emits only when the request includes an apply-patch-shaped tool; counts custom, native, and function variants |
+| `TOOLS_FIXED` | `lib/azure-openai.js` | Post-normalization: kept, dropped, native count |
 | `AZURE_STREAM_SUMMARY` | `api/proxy.js` | Per-stream event type counts — look for custom_tool_call events |
-| `AZURE_INPUT_SHAPE` | `api/azure-openai.js` | Input item types before/after normalization |
+| `AZURE_INPUT_SHAPE` | `lib/azure-openai.js` | Input item types before/after normalization |
 | `STREAM_AZ_RESP_ID` | `api/proxy.js` | Response ID captured from `response.created` |
 | `CACHE_AZ_RESP_ID` | `api/proxy.js` | Response ID written to KV |
 | `PREV_RESP_ID_FOUND` | `api/proxy.js` | KV hit for previous_response_id chaining |

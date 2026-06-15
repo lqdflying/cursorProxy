@@ -1,6 +1,6 @@
 ---
 description: EdgeOne Pages deployment patterns — Cloud Functions, KV bindings, cold starts, and build requirements.
-globs: cloud-functions/**,api/edgeone.js,api/kv.js,edgeone.json
+globs: cloud-functions/**,lib/edgeone.js,lib/kv.js,edgeone.json
 alwaysApply: false
 ---
 
@@ -78,7 +78,7 @@ The sibling project at `/home/opc/cliProxy` is the tested, working reference for
 
 ## Architecture isolation from Vercel
 
-EdgeOne-specific code (`cloud-functions/`, `api/edgeone.js`) is never imported on Vercel. Vercel routes through `vercel.json` → `api/proxy.js` directly. Changes to EdgeOne deployment files do not affect Vercel. The KV backend selection in `api/kv.js` is gated: EdgeOne KV only activates when a binding is detected; Vercel's Upstash path is separate. The stream timeout is also gated (`EDGEONE_CLOUD_FUNCTION === "true"` → 110s; Vercel → 280s).
+EdgeOne-specific code (`cloud-functions/`, `lib/edgeone.js`) is never imported on Vercel. Vercel routes through `vercel.json` → `api/proxy.js` directly. Changes to EdgeOne deployment files do not affect Vercel. The KV backend selection in `lib/kv.js` is gated: EdgeOne KV only activates when a binding is detected; Vercel's Upstash path is separate. The stream timeout is also gated (`EDGEONE_CLOUD_FUNCTION === "true"` → 110s; Vercel → 280s).
 
 ## `edgeone.json`
 

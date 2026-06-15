@@ -1,6 +1,6 @@
 import http from "node:http";
 import handler from "./api/proxy.js";
-import { kvBackendStatus, setKvDriver } from "./api/kv.js";
+import { kvBackendStatus, setKvDriver } from "./lib/kv.js";
 
 const DEBUG = process.env.DEBUG === "true";
 

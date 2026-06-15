@@ -119,8 +119,8 @@ The proxy also sanitizes Kimi K2.x requests before forwarding:
 
 `kimi-latest` is discontinued; the Kimi provider default is now `kimi-k2.7-code`.
 
-Sanitization and reasoning injection live in shared `api/` modules (`api/kimi.js`,
-`api/proxy.js`, `api/reasoning.js`), so **Vercel Edge**, **EdgeOne Pages**, and
+Sanitization and reasoning injection live in shared modules (`lib/kimi.js`,
+`api/proxy.js`, `lib/reasoning.js`), so **Vercel Edge**, **EdgeOne Pages**, and
 **Docker** all get the same K2.7 Code behavior with no platform-specific config.
 
 ### GLM-5.2 Coding Plan: `cursorproxy/GLM-5.2`

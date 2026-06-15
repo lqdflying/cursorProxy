@@ -1,31 +1,31 @@
 ---
-description: "Edge Runtime safety rules for api/*.js — no Node.js APIs allowed"
-globs: api/**/*.js
+description: "Edge Runtime safety rules for api/proxy.js and shared lib/*.js — no Node.js APIs allowed"
+globs: api/proxy.js,lib/**/*.js
 alwaysApply: false
 ---
 
-# Edge Runtime Safety (api/)
+# Edge Runtime Safety (api/proxy.js and lib/)
 
-All files in `api/` run on **Vercel Edge Runtime** and **EdgeOne Pages** — Node.js APIs are unavailable. This applies to **every** file in `api/`: `proxy.js`, `auth.js`, `models.js`, `cache.js`, `reasoning.js`, `azure-openai.js`, `azure-anthropic.js`, `vision.js`, `vision-bridge.js`, `kv.js`, `logger.js`.
+`api/proxy.js` runs on **Vercel Edge Runtime** and imports shared helpers from `lib/`. EdgeOne and Docker use the same shared proxy stack, so Node.js APIs are unavailable in `api/proxy.js` and `lib/*.js`.
 
 ## Hard rules
 
-1. **Never import `ioredis`** in `api/`. KV access goes through `api/kv.js` only (`kvGet`/`kvSet`).
+1. **Never import `ioredis`** in `api/proxy.js` or `lib/`. KV access goes through `lib/kv.js` only (`kvGet`/`kvSet`).
 2. **Never import `node:*`** built-ins (no `node:http`, `node:crypto`, `node:buffer`, etc.).
 3. **No Buffer-only APIs.** Use `TextEncoder`/`TextDecoder`, `crypto.subtle`, `Request`/`Response`.
 4. **Top-level `await` is OK** (Edge Runtime and Node 18+ both support it).
 5. **`export const config = { runtime: "edge" }`** in `api/proxy.js` is required for Vercel — do NOT remove it. (Only `proxy.js` carries this — it's the entry point. Helper modules don't need it.)
 6. **Default export of `proxy.js`** (`handler(req)`) is the public surface consumed by Vercel, `server.js` (Docker), and `edge-functions/_shared/proxy.js`. Do NOT rename or change its signature.
 
-## KV backends (api/kv.js)
+## KV backends (lib/kv.js)
 
-`api/kv.js` supports three backends auto-detected in this order:
+`lib/kv.js` supports three backends auto-detected in this order:
 1. Local Redis (Docker) — injected via `setKvDriver(ioredisClient)` from `server.js`
 2. Upstash REST (Vercel) — `KV_URL` + `KV_TOKEN` env vars
 3. EdgeOne Pages KV — global namespace binding, TTL simulated with `{v, e}` wrapper
 
 - `kvGet`/`kvSet` must **never throw** — both backends swallow errors silently
-- Cache key prefixes (all defined in `api/cache.js`):
+- Cache key prefixes (all defined in `lib/cache.js`):
   - `conv:<sha…>` — reasoning bridge (`conversationHash`, raw `JSON.stringify(messages.slice(0, upTo))`). Used by DeepSeek/Kimi/MiniMax/MiMo reasoning re-injection.
   - `asst:<sha…>` — Claude adaptive-thinking cache (`normalizedConversationHash`, typed-canonical content). Distinct prefix prevents collisions with the reasoning-bridge `conv:` key.
   - `azresp:conv:<sha…>` — Azure OpenAI `previous_response_id` chaining (set in `proxy.js` as `"azresp:" + conversationHash(...)` before forwarding the response ID).

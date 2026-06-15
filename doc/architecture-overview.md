@@ -151,17 +151,17 @@ flowchart LR
 | `cloud-functions/v1/[[default]].js` | EdgeOne Cloud Function unified `/v1/*` entry point with KV binding support |
 | `cloud-functions/v0/[[default]].js` | EdgeOne Cloud Function legacy unified `/v0/*` entry point |
 | `cloud-functions/health.js` | EdgeOne health probe exposing KV backend status |
-| `api/models.js` | Model ID parsing, alias resolution, `/v1/models` |
-| `api/auth.js` | Proxy auth, timing-safe key comparison |
-| `api/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
-| `api/azure-anthropic.js` | Azure Anthropic Messages API ↔ OpenAI Chat Completions |
-| `api/glm.js` | GLM request sanitization for ZHIPU/Z.AI Chat Completions |
-| `api/reasoning.js` | Reasoning block caching and injection |
-| `api/vision-bridge.js` | Batch image-to-text conversion |
-| `api/vision.js` | Vision API calls (MiniMax VL-01 / GPT-4o-mini) |
-| `api/cache.js` | Conversation and image hashing |
-| `api/kv.js` | KV abstraction (Redis / Upstash / EdgeOne) |
-| `api/logger.js` | Debug logging utility |
+| `lib/models.js` | Model ID parsing, alias resolution, `/v1/models` |
+| `lib/auth.js` | Proxy auth, timing-safe key comparison |
+| `lib/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
+| `lib/azure-anthropic.js` | Azure Anthropic Messages API ↔ OpenAI Chat Completions |
+| `lib/glm.js` | GLM request sanitization for ZHIPU/Z.AI Chat Completions |
+| `lib/reasoning.js` | Reasoning block caching and injection |
+| `lib/vision-bridge.js` | Batch image-to-text conversion |
+| `lib/vision.js` | Vision API calls (MiniMax VL-01 / GPT-4o-mini) |
+| `lib/cache.js` | Conversation and image hashing |
+| `lib/kv.js` | KV abstraction (Redis / Upstash / EdgeOne) |
+| `lib/logger.js` | Debug logging utility |
 
 ## Key Environment Variables (All Providers)
 

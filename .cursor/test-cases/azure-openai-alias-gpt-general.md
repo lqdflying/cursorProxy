@@ -94,7 +94,7 @@ None — the test does not create files or persistent state. Restore `AZURE_OPEN
 - Reasoning-effort precedence (highest first): alias env (`AZURE_OPENAI_GENERAL_REASONING_EFFORT`) > global env (`AZURE_OPENAI_REASONING_EFFORT`) > client value, all gated on `isAzureReasoningModel(<resolvedDeployment>)`.
 - If `AZURE_OPENAI_GENERAL_ALIAS_TARGET` points at a non-reasoning deployment (e.g. `gpt-4o`), `AZURE_OPENAI_GENERAL_REASONING_EFFORT` is silently ignored — same gating as the existing global knob.
 - `previous_response_id` chaining is keyed by user, not by model, so switching the alias target mid-conversation can produce `previous_response_not_found` (existing behavior; not unique to aliasing).
-- Implementation entrypoints: `resolveAzureAlias()` in `api/models.js`, alias block in `api/proxy.js` after the initial `normalizeParsedBodyModel(...)`, `aliasInfo` plumbed into `sanitizeAzureOpenAIBody()` in `api/azure-openai.js`, `forceAlias` arg in `withPublicResponseModel()` in `api/models.js`.
+- Implementation entrypoints: `resolveAzureAlias()` in `lib/models.js`, alias block in `api/proxy.js` after the initial `normalizeParsedBodyModel(...)`, `aliasInfo` plumbed into `sanitizeAzureOpenAIBody()` in `lib/azure-openai.js`, `forceAlias` arg in `withPublicResponseModel()` in `lib/models.js`.
 
 ## apply_patch Caveat
 
