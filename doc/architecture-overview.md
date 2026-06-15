@@ -15,8 +15,8 @@ flowchart TD
         ALIAS["Alias resolution\ngpt-general → real deployment"]
         TOOLS["Tool normalization\n(apply_patch, function, custom)"]
         FMT["Format conversion\n(Chat Completions ↔ provider API)"]
-        VB["Vision bridge\n(DeepSeek/MiniMax M2.x;\nMiMo text-only models)"]
-        RSN["Reasoning injection\n(DeepSeek/Kimi/MiniMax/MiMo)"]
+        VB["Vision bridge\n(DeepSeek/MiniMax M2.x;\nMiMo text-only models;\nGLM-5.2)"]
+        RSN["Reasoning injection\n(DeepSeek/Kimi/MiniMax/MiMo/GLM)"]
     end
 
     subgraph "KV Store (shared)"
@@ -28,6 +28,7 @@ flowchart TD
         KI["Kimi\napi.moonshot.ai"]
         MM["MiniMax\napi.minimax.io"]
         MI["MiMo\napi.xiaomimimo.com"]
+        GLM["GLM\nopen.bigmodel.cn"]
         AO["Azure OpenAI\nResponses API"]
         AA["Azure Anthropic\nMessages API"]
     end
@@ -43,6 +44,7 @@ flowchart TD
     RSN -->|kimi-*| KI
     RSN -->|minimax-*| MM
     RSN -->|mimo-*| MI
+    RSN -->|glm-*| GLM
     ALIAS -->|gpt-* / o-series| AO
     ALIAS -->|claude-*| AA
 
@@ -50,6 +52,7 @@ flowchart TD
     KI -->|reasoning_content| FMT
     MM -->|reasoning_details| FMT
     MI -->|reasoning_content| FMT
+    GLM -->|reasoning_content| FMT
     AO -->|Responses API SSE| FMT
     AA -->|Messages API SSE| FMT
 
@@ -96,9 +99,9 @@ flowchart TD
     E{"Provider\nresolved?"}
     F{"API key\nconfigured?"}
 
-    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax / MiMo)"]
+    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax / MiMo / GLM)"]
     THINK["Claude thinking injection\n(azureanthropic only)"]
-    VISION["Vision bridge\n(DeepSeek / MiniMax M2.x;\nMiMo text-only models)"]
+    VISION["Vision bridge\n(DeepSeek / MiniMax M2.x;\nMiMo text-only models;\nGLM-5.2)"]
     UPSTREAM["Forward to upstream\n(with connect timeout)"]
     STREAM{"Streaming?"}
     NONSTR["Buffer response\nconvert format\ncache reasoning/ID/thinking\nreturn JSON"]
@@ -133,6 +136,7 @@ flowchart LR
     M -->|"gpt-general (alias)"| AO2["azureopenai"]
     M -->|"gpt-* or o\\d*"| AO2
     M -->|"minimax-*"| MM2["minimax"]
+    M -->|"glm-*"| GLM2["glm"]
     M -->|"kimi-*"| KI2["kimi"]
     M -->|"deepseek-*"| DS2["deepseek"]
     M -->|"(anything else)"| DS2
@@ -151,6 +155,7 @@ flowchart LR
 | `api/auth.js` | Proxy auth, timing-safe key comparison |
 | `api/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
 | `api/azure-anthropic.js` | Azure Anthropic Messages API ↔ OpenAI Chat Completions |
+| `api/glm.js` | GLM request sanitization for ZHIPU/Z.AI Chat Completions |
 | `api/reasoning.js` | Reasoning block caching and injection |
 | `api/vision-bridge.js` | Batch image-to-text conversion |
 | `api/vision.js` | Vision API calls (MiniMax VL-01 / GPT-4o-mini) |
@@ -175,6 +180,9 @@ flowchart LR
 | **MiMo (Xiaomi)** | |
 | `MIMO_API_KEY` | MiMo auth |
 | `UPSTREAM_MIMO` | Optional base URL override (Token Plan, etc.); `Host` header follows this URL |
+| **GLM (ZHIPU AI / Z.AI)** | |
+| `GLM_API_KEY` | GLM auth |
+| `UPSTREAM_GLM` | Optional Coding Plan base URL override. Default China endpoint: `https://open.bigmodel.cn/api/coding/paas/v4`; global endpoint: `https://api.z.ai/api/coding/paas/v4` |
 | **Azure (shared)** | |
 | `AZURE_FOUNDRY_API_KEY` | Shared key for Azure OpenAI and Azure Anthropic |
 | `AZURE_FOUNDRY_RESOURCE` | Azure resource name (used to build default endpoint URLs) |

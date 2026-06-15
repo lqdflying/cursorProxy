@@ -34,6 +34,7 @@ const ROUTES = [
   { pattern: /^\/kimi\/v1\/(.+)$/, provider: "kimi" },
   { pattern: /^\/minimax\/v1\/(.+)$/, provider: "minimax" },
   { pattern: /^\/mimo\/v1\/(.+)$/, provider: "mimo" },
+  { pattern: /^\/glm\/v1\/(.+)$/, provider: "glm" },
   { pattern: /^\/azure-openai\/v1\/(.+)$/, provider: "azureopenai" },
   { pattern: /^\/azure-anthropic\/v1\/(.+)$/, provider: "azureanthropic" },
   { pattern: /^\/v1\/(.+)$/, provider: null },

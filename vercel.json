@@ -7,6 +7,7 @@
     { "source": "/kimi/v1/:path*", "destination": "/api/proxy?provider=kimi&path=:path*" },
     { "source": "/minimax/v1/:path*", "destination": "/api/proxy?provider=minimax&path=:path*" },
     { "source": "/mimo/v1/:path*", "destination": "/api/proxy?provider=mimo&path=:path*" },
+    { "source": "/glm/v1/:path*", "destination": "/api/proxy?provider=glm&path=:path*" },
     { "source": "/azure-openai/v1/:path*", "destination": "/api/proxy?provider=azureopenai&path=:path*" },
     { "source": "/azure-anthropic/v1/:path*", "destination": "/api/proxy?provider=azureanthropic&path=:path*" },
     { "source": "/v1/:path*", "destination": "/api/proxy?path=:path*" },

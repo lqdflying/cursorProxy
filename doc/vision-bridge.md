@@ -10,8 +10,9 @@ validation.
 
 The proxy vision bridge applies to providers that cannot accept `image_url`
 parts on every model: **DeepSeek**, **MiniMax M2.x** (text-only chat models),
-and **MiMo** text-only models (`mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, etc.).
-**MiniMax M3** and **MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`) skip the bridge.
+**MiMo** text-only models (`mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, etc.),
+and **GLM-5.2** on the ZHIPU/Z.AI Coding Plan.
+**MiniMax M3**, **MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`), and allowlisted visual GLM models skip the bridge.
 All other providers — including Kimi and `gpt-general` — receive images natively.
 
 Gate: `requiresVisionBridge(providerKey, bareModel)` in `api/proxy.js`.
@@ -22,7 +23,7 @@ flowchart TD
     M{"Which model?"}
 
     %% ── Path A: DeepSeek / MiniMax M2.x ─────────────────────────────────────
-    A_MODEL["deepseek-* / MiniMax-M2.*\n(no native vision support)"]
+    A_MODEL["deepseek-* / MiniMax-M2.* / glm-5.2\n(no native vision support)"]
     A_CURSOR["Cursor routes to custom base URL ✅\n(non-GPT name — no BYOK validation)"]
     A_GATE["cursorProxy:\nrequiresVisionBridge() → true\n→ Vision Bridge runs"]
     A_KV["KV cache check (img:<sha256>)"]
@@ -73,7 +74,7 @@ flowchart TD
     E_ABORT["Request aborted ❌\ncursorProxy never reached"]
 
     U --> M
-    M -->|"deepseek / MiniMax-M2.x / mimo text-only"| A_MODEL --> A_CURSOR --> A_GATE --> A_KV
+    M -->|"deepseek / MiniMax-M2.x / mimo text-only / glm-5.2"| A_MODEL --> A_CURSOR --> A_GATE --> A_KV
     A_KV -->|cache hit| A_TEXT
     A_KV -->|cache miss| A_VIS --> A_TEXT
     A_TEXT --> A_DS --> A_OK
@@ -94,6 +95,8 @@ flowchart TD
 | MiniMax M3 | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
 | MiMo `mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, … | ❌ No (text API) | ✅ Yes — image → text | Custom base URL (direct) | ✅ Works via bridge |
 | MiMo `mimo-v2.5`, `mimo-v2-omni` | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
+| GLM-5.2 | ❌ No (Coding Plan text model) | ✅ Yes — image → text | Custom base URL (direct) | ✅ Works via bridge |
+| GLM visual allowlist (`glm-5v-turbo`) | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
 | Kimi | ✅ Yes | ❌ No | Custom base URL (direct) | ✅ Works natively |
 | Azure Anthropic (Claude) | ✅ Yes | ❌ No | Anthropic key path | ✅ Works natively |
 | `gpt-general` (alias) | ✅ Yes | ❌ No | Custom base URL — alias name skips BYOK validation | ✅ Works natively |
@@ -106,14 +109,15 @@ flowchart TD
 
 ---
 
-## Vision Bridge Detail (DeepSeek / MiniMax M2.x / MiMo text-only)
+## Vision Bridge Detail (DeepSeek / MiniMax M2.x / MiMo text-only / GLM-5.2)
 
 Providers (or models) that only accept text cannot handle `image_url` content
 parts. The vision bridge intercepts those messages, describes every image via a
 vision-capable API, and replaces the image parts with text before the request is
 forwarded. MiniMax M3 is natively multimodal and skips the bridge. For MiMo,
 multimodal model IDs are allowlisted in `MIMO_MULTIMODAL`; all other `mimo-*`
-models use the bridge.
+models use the bridge. For GLM, visual model IDs are allowlisted in
+`GLM_MULTIMODAL`; `glm-5.2` uses the bridge.
 
 ## When the Bridge Activates
 
@@ -125,6 +129,8 @@ flowchart LR
     MM_CHK{"Model is\nMiniMax-M3?"}
     MIMO["mimo"]
     MIMO_CHK{"Model in\nMIMO_MULTIMODAL?"}
+    GLM["glm"]
+    GLM_CHK{"Model in\nGLM_MULTIMODAL?"}
     SKIP["Skip — native vision\n(Kimi, Azure, gpt-general, …)"]
     VB["Vision Bridge runs"]
 
@@ -135,6 +141,9 @@ flowchart LR
     P -->|mimo| MIMO --> MIMO_CHK
     MIMO_CHK -->|yes mimo-v2.5 / mimo-v2-omni| SKIP
     MIMO_CHK -->|no pro / flash / …| VB
+    P -->|glm| GLM --> GLM_CHK
+    GLM_CHK -->|yes visual GLM| SKIP
+    GLM_CHK -->|no glm-5.2| VB
     P -->|other| SKIP
 ```
 

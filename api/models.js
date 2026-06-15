@@ -160,6 +160,7 @@ export function providerFromModel(model) {
     return "azureopenai";
   }
   if (m.startsWith("gpt-") || /^o\d/i.test(m)) return "azureopenai";
+  if (m.startsWith("glm")) return "glm";
   if (m.startsWith("minimax")) return "minimax";
   if (m.startsWith("mimo")) return "mimo";
   if (m.startsWith("kimi")) return "kimi";

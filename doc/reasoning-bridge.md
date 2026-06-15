@@ -1,6 +1,6 @@
 # Reasoning Bridge
 
-DeepSeek, Kimi, and MiniMax are reasoning models that expose their chain-of-thought
+DeepSeek, Kimi, MiniMax, and GLM are reasoning models that expose their chain-of-thought
 as a sibling field alongside the answer. The proxy caches this field after each turn
 and injects it back into prior assistant messages on subsequent turns — satisfying
 the providers' requirement that every prior assistant turn carry its original reasoning.
@@ -9,7 +9,7 @@ the providers' requirement that every prior assistant turn carry its original re
 
 ```mermaid
 flowchart LR
-    subgraph "DeepSeek & Kimi"
+    subgraph "DeepSeek, Kimi, GLM"
         DS_FIELD["Field: reasoning_content\nType: string\nAccumulation: concatenate deltas\nKV: stored as plain string"]
     end
 
@@ -29,7 +29,7 @@ sequenceDiagram
     participant C as Cursor
     participant P as cursorProxy
     participant KV as KV Store
-    participant UP as Provider<br/>(DeepSeek / Kimi / MiniMax)
+    participant UP as Provider<br/>(DeepSeek / Kimi / MiniMax / GLM)
 
     Note over C,UP: Turn 1 — no prior reasoning
 
@@ -60,11 +60,11 @@ sequenceDiagram
     P-->>C: content only
 ```
 
-## Reasoning Accumulation: DeepSeek/Kimi vs MiniMax
+## Reasoning Accumulation: DeepSeek/Kimi/GLM vs MiniMax
 
 ```mermaid
 flowchart TD
-    subgraph "DeepSeek / Kimi — concatenate"
+    subgraph "DeepSeek / Kimi / GLM — concatenate"
         DC1["chunk 1: delta = 'First part'"]
         DC2["chunk 2: delta = ' of reasoning'"]
         DC3["chunk 3: delta = ' continues'"]
@@ -89,7 +89,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph "Write (serialize)"
-        DSW["DeepSeek / Kimi\nString(reasoning_content)"]
+        DSW["DeepSeek / Kimi / GLM\nString(reasoning_content)"]
         MMW["MiniMax\nJSON.stringify(reasoning_details)"]
         KVW["KV value\n(always a string)"]
         DSW --> KVW
@@ -98,7 +98,7 @@ flowchart LR
 
     subgraph "Read (deserialize)"
         KVR["KV value\n(string)"]
-        DSR["DeepSeek / Kimi\nuse as-is (string)"]
+        DSR["DeepSeek / Kimi / GLM\nuse as-is (string)"]
         MMR["MiniMax\nJSON.parse(value)\n→ object / array"]
         KVR --> DSR
         KVR --> MMR
@@ -113,11 +113,13 @@ flowchart TD
 
     DS_PH["DeepSeek / Kimi\nreasoning_content:\n'(prior reasoning unavailable)'"]
     MM_PH["MiniMax\nreasoning_details:\n[{type:'text', text:'(prior reasoning unavailable)'}]"]
+    GLM_MISS["GLM\nleave assistant message unchanged\n(no fabricated reasoning)"]
 
     WHY["Provider requires non-empty\nreasoning field on ALL prior\nassistant turns — empty string\nfails validation"]
 
     MISS --> DS_PH
     MISS --> MM_PH
+    MISS --> GLM_MISS
     WHY -.->|explains| MISS
 
     NOTE["Placeholder is never shown\nto Cursor — reasoning fields\nare stripped before responding"]
@@ -125,13 +127,19 @@ flowchart TD
     MM_PH --> NOTE
 ```
 
+GLM/Z.AI preserved thinking is stricter than the other `reasoning_content`
+providers: historical reasoning must be returned complete and unmodified. When
+the proxy cannot recover a GLM assistant turn from KV, it logs the miss, does not
+inject placeholder text, and clears preserved thinking for that request by
+setting `thinking.clear_thinking: true`.
+
 ## Snapshot Write Strategy
 
 ```mermaid
 flowchart LR
     DELTA["Reasoning delta\narrives in chunk"]
     SIZE{"New total size ≥\nlast cached + threshold?"}
-    DS_T["Threshold:\n256 chars\n(DeepSeek / Kimi)"]
+    DS_T["Threshold:\n256 chars\n(DeepSeek / Kimi / GLM)"]
     MM_T["Threshold:\n1 char\n(MiniMax — any update)"]
     SNAP["Fire-and-forget KV write\n(does NOT block SSE forward path)"]
     SKIP["Skip — not enough\nnew content yet"]
@@ -159,7 +167,8 @@ and the final write hasn't landed yet.
 Retry delays (KV_RETRY_DELAYS_MS, default): 40 ms → 120 ms → 240 ms → 400 ms
 Max attempts: 5 (1 immediate + 4 retries)
 Total max wait: ~800 ms
-On all misses: inject placeholder text
+On DeepSeek/Kimi/MiniMax misses: inject placeholder text
+On GLM misses: leave reasoning absent
 ```
 
 ## Key Environment Variables

@@ -132,18 +132,23 @@ async function injectStoredReasoning({
 }) {
   // Inject stored reasoning into ALL prior assistant messages by position.
   //
-  // DeepSeek thinking mode REQUIRES reasoning_content on every prior assistant
-  // turn (including tool-calling ones) — otherwise it returns:
+  // DeepSeek/Kimi thinking mode REQUIRES reasoning_content on every prior
+  // assistant turn (including tool-calling ones) - otherwise it returns:
   //   "The `reasoning_content` in the thinking mode must be passed back to the API."
   // When KV has nothing for a given turn (e.g. trivial greeting that produced no
   // thinking, or a turn not proxied through us, or KV race), we still inject a
   // placeholder so the field is present and the provider accepts the request.
   //
+  // GLM/Z.AI Coding Plan also supports preserved reasoning_content, but its docs
+  // require prior reasoning to be returned complete and unmodified. On KV miss,
+  // leave the assistant message unchanged instead of fabricating a placeholder.
+  //
   // Skip for providers that don't support reasoning fields:
   // - Anthropic's Messages API rejects `reasoning_content` (Extra inputs not permitted)
   // - Azure OpenAI's Chat Completions API may also reject it on certain models
-  const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo"]);
+  const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm"]);
   let injectedCount = 0;
+  let missedCount = 0;
   if (originalMessages && reasoningProviders.has(providerKey)) {
     const messages = parsedBody.messages;
     const assistantIndices = messages
@@ -161,7 +166,6 @@ async function injectStoredReasoning({
       })
     );
 
-    let missedCount = 0;
     let recoveredCount = 0;
     for (const { i, stored, key, waitedMs, attempts } of fetched) {
       if (stored != null) {
@@ -172,6 +176,10 @@ async function injectStoredReasoning({
           log("INJECT_RECOVERED", "idx:", i, "key:", key, "waitedMs:", waitedMs, "attempts:", attempts);
         }
       } else {
+        if (providerKey === "glm") {
+          missedCount++;
+          continue;
+        }
         // Inject a non-empty placeholder so the reasoning field is present.
         // DeepSeek/Kimi thinking mode require reasoning_content on every prior
         // assistant turn (including tool-call turns) and treat empty strings as
@@ -197,7 +205,7 @@ async function injectStoredReasoning({
     if (missedCount > 0) proxyDiag("INJECT_MISS", "missed:", missedCount, "of:", fetched.length);
   }
 
-  return { parsedBody, injectedCount };
+  return { parsedBody, injectedCount, missedCount };
 }
 
 // Extract thinking blocks from a non-streaming Azure Claude response.

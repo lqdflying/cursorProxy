@@ -44,7 +44,8 @@ export function rewriteEdgeOneProxyUrl(req, provider) {
   //                /kimi/v1/chat/completions -> chat/completions
   //                /minimax/v1/chat/completions -> chat/completions
   //                /mimo/v1/chat/completions -> chat/completions
-  const pathMatch = url.pathname.match(/^(?:\/(?:azure-(?:openai|anthropic)|deepseek|kimi|minimax|mimo))?\/v[01]\/(.+)$/);
+  //                /glm/v1/chat/completions -> chat/completions
+  const pathMatch = url.pathname.match(/^(?:\/(?:azure-(?:openai|anthropic)|deepseek|kimi|minimax|mimo|glm))?\/v[01]\/(.+)$/);
   const path = pathMatch ? pathMatch[1] : "";
 
   url.pathname = "/api/proxy";

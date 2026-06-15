@@ -1,11 +1,11 @@
 # cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
+A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **GLM / ZHIPU AI**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
-- **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
+- **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo/GLM `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so subsequent turns use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly.
 - **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (typed-canonical hash) so multi-turn conversations reuse prior reasoning instead of re-thinking from scratch.
-- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax M2.x, MiMo Pro/Flash/TTS). MiniMax M3, MiMo `mimo-v2.5`, and `mimo-v2-omni` accept images natively.
+- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax M2.x, MiMo Pro/Flash/TTS, GLM-5.2). MiniMax M3, MiMo `mimo-v2.5`, `mimo-v2-omni`, and allowlisted visual GLM models accept images natively.
 - **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates request bodies and SSE streams to/from Azure OpenAI Responses and Azure Anthropic Messages.
 - **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 
@@ -20,6 +20,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, an
 - [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY` (for Azure Foundry Kimi, see the `UPSTREAM_KIMI` reminder below)
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
 - [Xiaomi MiMo](https://platform.xiaomimimo.com) → `MIMO_API_KEY`
+- [ZHIPU AI / Z.AI](https://open.bigmodel.cn) → `GLM_API_KEY`
 - [Azure Foundry](https://ai.azure.com) → `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_RESOURCE`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
 
@@ -80,6 +81,8 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 | `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
 | `MIMO_API_KEY` | For MiMo | Upstream Xiaomi MiMo API key ([platform.xiaomimimo.com](https://platform.xiaomimimo.com)) |
 | `UPSTREAM_MIMO` | Optional | MiMo upstream base URL. Default: `https://api.xiaomimimo.com`. Token Plan subscribers can set `https://token-plan-cn.xiaomimimo.com` |
+| `GLM_API_KEY` | For GLM | Upstream ZHIPU AI / Z.AI API key |
+| `UPSTREAM_GLM` | Optional | GLM Coding Plan base URL. Default: ZHIPU China `https://open.bigmodel.cn/api/coding/paas/v4`. For global Z.AI, set `https://api.z.ai/api/coding/paas/v4` |
 | `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key (used as `api-key` for OpenAI, `x-api-key` for Anthropic) |
 | `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
 | `AZURE_OPENAI_API_VERSION` | For Azure Foundry | Azure OpenAI Responses API version (default `2025-04-01-preview`) |
@@ -119,6 +122,33 @@ The proxy also sanitizes Kimi K2.x requests before forwarding:
 Sanitization and reasoning injection live in shared `api/` modules (`api/kimi.js`,
 `api/proxy.js`, `api/reasoning.js`), so **Vercel Edge**, **EdgeOne Pages**, and
 **Docker** all get the same K2.7 Code behavior with no platform-specific config.
+
+### GLM-5.2 Coding Plan: `cursorproxy/GLM-5.2`
+
+The GLM provider routes `glm*` / `GLM*` model IDs to ZHIPU AI's OpenAI-compatible
+Chat Completions API. The default upstream is the China Coding Plan endpoint:
+
+```env
+GLM_API_KEY=<your-zhipu-key>
+CURSORPROXY_MODELS=GLM-5.2
+```
+
+To use the global Z.AI Coding Plan endpoint instead, set:
+
+```env
+UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4
+```
+
+The proxy forwards to `/chat/completions` without adding a `/v1` segment, remaps
+`max_completion_tokens` to `max_tokens`, coerces unsupported forced-tool choices
+to `auto`, preserves `tool_choice: "none"` by removing tools, enables streamed
+tool calls with `tool_stream: true`, and injects
+`thinking: { type: "enabled", clear_thinking: false }` when the client omits GLM
+thinking config. GLM-5.2 has 1M context and supports up to 131072 output tokens
+in Z.AI's coding-plan examples. `reasoning_content` is cached and replayed when
+available; on cache miss the proxy does not fabricate GLM reasoning and clears
+preserved thinking for that request because Z.AI requires prior reasoning to be
+returned complete and unmodified.
 
 ### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`
 

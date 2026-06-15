@@ -37,6 +37,7 @@ import {
   stripResponseChunk,
   updateStreamReasoning,
 } from "./reasoning.js";
+import { sanitizeGlmBody } from "./glm.js";
 import { sanitizeKimiBody } from "./kimi.js";
 import { convertImagesToText } from "./vision-bridge.js";
 
@@ -86,6 +87,19 @@ const PROVIDERS = {
     apiKeyEnv: "MIMO_API_KEY",
     authHeaderName: "authorization",
     authHeaderPrefix: "Bearer ",
+  },
+  glm: {
+    url: process.env.UPSTREAM_GLM || "https://open.bigmodel.cn/api/coding/paas/v4",
+    host: "open.bigmodel.cn",
+    apiKeyEnv: "GLM_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
+    buildUrl(_model, pathParam, queryString) {
+      const base = (process.env.UPSTREAM_GLM || "https://open.bigmodel.cn/api/coding/paas/v4")
+        .replace(/\/+$/, "");
+      const path = String(pathParam || "").replace(/^\/+/, "");
+      return `${base}/${path}${queryString || ""}`;
+    },
   },
   azureopenai: {
     apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
@@ -139,6 +153,7 @@ function isAzureFoundryKimiEndpoint(base) {
 }
 
 const MIMO_MULTIMODAL = new Set(["mimo-v2.5", "mimo-v2-omni"]);
+const GLM_MULTIMODAL = new Set(["glm-5v-turbo"]);
 
 function requiresVisionBridge(providerKey, bareModel) {
   if (providerKey === "deepseek") return true;
@@ -150,6 +165,10 @@ function requiresVisionBridge(providerKey, bareModel) {
   if (providerKey === "mimo") {
     const m = (bareModel || "").toLowerCase();
     return !MIMO_MULTIMODAL.has(m);
+  }
+  if (providerKey === "glm") {
+    const m = (bareModel || "").toLowerCase();
+    return !GLM_MULTIMODAL.has(m);
   }
   return false;
 }
@@ -659,7 +678,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6 or claude-sonnet-4-6).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, claude-sonnet-4-6, or cursorproxy/glm-5.2).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -678,7 +697,7 @@ export default async function handler(req) {
 
   // Inject a default model when missing from the request body
   if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k2.7-code", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", azureanthropic: "claude-sonnet-4-6" };
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k2.7-code", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "model:", parsedBody.model);
@@ -762,6 +781,12 @@ export default async function handler(req) {
     }
   }
 
+  if (providerKey === "glm" && parsedBody) {
+    if (sanitizeGlmBody(parsedBody, upstreamModelName)) {
+      bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
   const originalMessages = parsedBody?.messages ? structuredClone(parsedBody.messages) : null;
 
   const scopeUser = await cacheScopeUserId(req);
@@ -781,6 +806,15 @@ export default async function handler(req) {
     });
     parsedBody = injected.parsedBody;
     injectedCount = injected.injectedCount;
+    if (
+      providerKey === "glm" &&
+      injected.missedCount > 0 &&
+      parsedBody?.thinking?.type !== "disabled" &&
+      parsedBody?.thinking?.clear_thinking !== true
+    ) {
+      parsedBody.thinking = { ...parsedBody.thinking, clear_thinking: true };
+      diag("GLM_THINKING_CLEARED", "misses:", injected.missedCount, "reason:", "missing_prior_reasoning");
+    }
     bodyText = JSON.stringify(parsedBody);
   }
   log("INJECTED", injectedCount, "/", originalMessages?.filter((m) => m.role === "assistant").length || 0);
@@ -788,7 +822,7 @@ export default async function handler(req) {
   // --- Claude thinking block injection (azureanthropic only) ---
   // Inject cached thinking blocks into prior assistant messages so Claude
   // doesn't re-reason from scratch on every turn when thinking.type === "adaptive".
-  // The existing reasoning bridge (DeepSeek/Kimi/MiniMax/MiMo) uses reasoning_content
+  // The existing reasoning bridge (DeepSeek/Kimi/MiniMax/MiMo/GLM) uses reasoning_content
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
   if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled") {
     const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash);
@@ -802,8 +836,10 @@ export default async function handler(req) {
   // DeepSeek and MiniMax M2.x chat endpoints do not accept inline image_url content.
   // MiniMax M3 is natively multimodal and accepts image_url/video_url directly.
   // MiMo Pro/Flash/TTS variants are text-only; mimo-v2.5 and mimo-v2-omni accept
-  // image_url natively. The vision API (MiniMax VL-01 by default) describes images
-  // and injects text before forwarding when requiresVisionBridge() is true.
+  // image_url natively. GLM-5.2 is text-only in Z.AI Coding Plan examples; visual
+  // GLM models are allowlisted above. The vision API (MiniMax VL-01 by default)
+  // describes images and injects text before forwarding when requiresVisionBridge()
+  // is true.
   if (requiresVisionBridge(providerKey, upstreamModelName) && parsedBody?.messages) {
     const visionT0 = Date.now();
     const {
@@ -1053,7 +1089,7 @@ export default async function handler(req) {
       }
     }
 
-    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo));
+    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm");
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {
@@ -1453,8 +1489,8 @@ export default async function handler(req) {
             const delta = json.choices?.[0]?.delta;
             const chunkReasoning = readReasoning(providerKey, delta);
             accReasoning = updateStreamReasoning(providerKey, accReasoning, chunkReasoning);
-            // Soft cap: DeepSeek/Kimi accumulate reasoning as a single growing
-            // string; MiniMax replaces the object wholesale so already bounded.
+            // Soft cap: DeepSeek/Kimi/GLM accumulate reasoning as a single
+            // growing string; MiniMax replaces the object wholesale so already bounded.
             // We truncate the stored string but keep forwarding the SSE chunk
             // unchanged so clients still receive every token from upstream.
             if (typeof accReasoning === "string" && accReasoning.length > ACC_REASONING_CAP) {
@@ -1473,7 +1509,7 @@ export default async function handler(req) {
                 () => { contentCapHit = true; },
               );
             }
-            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo));
+            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm");
             await writer.write(
               encoder.encode(
                 "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"
