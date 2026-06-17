@@ -17,7 +17,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 
 ### 1. Get API keys
 - [DeepSeek](https://platform.deepseek.com) → `DEEPSEEK_API_KEY`
-- [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY` (for Azure Foundry Kimi, see the `UPSTREAM_KIMI` reminder below)
+- [Kimi](https://platform.moonshot.ai) → `KIMI_API_KEY` (for Azure Foundry Kimi, see the [Azure wiki](https://github.com/lqdflying/cursorProxy/wiki/Azure))
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
 - [Xiaomi MiMo](https://platform.xiaomimimo.com) → `MIMO_API_KEY`
 - [ZHIPU AI / Z.AI](https://open.bigmodel.cn) → `GLM_API_KEY`
@@ -70,140 +70,33 @@ The proxy exposes configured model IDs with a `cursorproxy/` prefix (for example
 
 ## Essential Environment Variables
 
-| Variable | Required | Description |
+Keep this table to values you must set for the deployment and providers you actually use. Optional tuning, upstream overrides, aliases, model discovery, and vision-provider switches are documented in the [Environment Variables](https://github.com/lqdflying/cursorProxy/wiki/Environment-Variables) wiki page.
+
+| Variable | Required when | Description |
 |---|---|---|
-| `CURSORPROXY_API_KEY` | Recommended | Client auth secret |
-| `CURSORPROXY_MODELS` | Optional | Comma- or newline-separated bare model IDs. `GET /v1/models` returns them as `cursorproxy/<model>` |
-| `DEEPSEEK_REASONING_EFFORT` | Optional | DeepSeek thinking effort: `high` (default) or `max` |
-| `DEEPSEEK_API_KEY` | For DeepSeek | Upstream API key |
-| `KIMI_API_KEY` | For Kimi | Upstream Kimi API key. For Azure Foundry Kimi routed through the `kimi` provider, set this to the Azure Foundry key |
-| `UPSTREAM_KIMI` | Optional | Kimi upstream base URL. Defaults to Moonshot (`https://api.moonshot.ai`). **Current-code Azure Foundry Kimi workaround:** set this to `https://<resource>.services.ai.azure.com/openai` (without trailing `/v1/`) because the proxy appends `/v1/<path>` itself |
-| `MINIMAX_API_KEY` | For MiniMax | Upstream API key (also used for vision) |
-| `MIMO_API_KEY` | For MiMo | Upstream Xiaomi MiMo API key ([platform.xiaomimimo.com](https://platform.xiaomimimo.com)) |
-| `UPSTREAM_MIMO` | Optional | MiMo upstream base URL. Default: `https://api.xiaomimimo.com`. Token Plan subscribers can set `https://token-plan-cn.xiaomimimo.com` |
-| `GLM_API_KEY` | For GLM | Upstream ZHIPU AI / Z.AI API key |
-| `UPSTREAM_GLM` | Optional | GLM Coding Plan base URL. Default: ZHIPU China `https://open.bigmodel.cn/api/coding/paas/v4`. For global Z.AI, set `https://api.z.ai/api/coding/paas/v4` |
-| `AZURE_FOUNDRY_API_KEY` | For Azure Foundry | Upstream API key (used as `api-key` for OpenAI, `x-api-key` for Anthropic) |
-| `AZURE_FOUNDRY_RESOURCE` | For Azure Foundry | Resource name (e.g. `quand-mos8to0k-eastus2`) |
-| `AZURE_OPENAI_API_VERSION` | For Azure Foundry | Azure OpenAI Responses API version (default `2025-04-01-preview`) |
-| `AZURE_OPENAI_ENDPOINT` | Optional | Override Azure OpenAI base URL (Responses API: `/openai/responses`) |
-| `AZURE_ANTHROPIC_ENDPOINT` | Optional | Override Azure Anthropic base URL |
-| `AZURE_OPENAI_REASONING_EFFORT` | Optional | Force `reasoning.effort` for Azure OpenAI reasoning models, overriding client values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` (model support varies) |
-| `AZURE_OPENAI_GENERAL_ALIAS_TARGET` | Optional | Real Azure OpenAI deployment that the public alias `cursorproxy/gpt-general` resolves to (e.g. `gpt-5.5-mini`). Required when clients use the alias |
-| `AZURE_OPENAI_GENERAL_REASONING_EFFORT` | Optional | Alias-only override of `reasoning.effort` when clients route through `cursorproxy/gpt-general`. Precedence: alias env > `AZURE_OPENAI_REASONING_EFFORT` > client value |
-| `AZURE_ANTHROPIC_THINKING` | Optional | Default Claude thinking mode when request omits it: `adaptive` or `disabled`. **Unset:** the proxy adds no `thinking` field and Azure Anthropic applies its own default. |
-| `AZURE_ANTHROPIC_EFFORT` | Optional | Default Claude effort when request omits it: `low`, `medium`, `high`, or `max`. **Unset:** no `output_config.effort` is injected and the upstream default applies. |
-| `VISION_API_KEY` | Required when `VISION_API_PROVIDER=openai` | Vision provider API key. For the default `minimax_vl` provider, `MINIMAX_API_KEY` is reused — no separate var needed. |
-| `KV_URL` / `KV_TOKEN` | Vercel: yes | Upstash Redis REST credentials |
-| `REDIS_URL` | Docker: recommended | Local Redis URL |
-| `EDGEONE_KV_BINDING` | EdgeOne: no | KV namespace binding variable name (default `cursorproxy_kv`) |
-| `KV_FETCH_TIMEOUT_MS` | Optional | Upstash REST request timeout in ms. Defaults to `UPSTREAM_CONNECT_TIMEOUT_MS`, or 8000 if neither is set. Set 0 to disable. |
-| `KV_IMAGE_TTL_SECONDS` | Optional | TTL for the vision/image-description cache (`img:*` keys). Default 7 days. Conversation entries continue to use `KV_TTL_SECONDS` (default 2h). |
-| `STREAM_TIMEOUT_SECONDS` | Optional | Stream wall-clock cap. Defaults: 280 on Vercel; 110 on EdgeOne Cloud Functions (under the 120s maxDuration); disabled on Docker. Negative or non-numeric values are rejected with a log warning and the platform default applies. |
-| `PRESTREAM_BUDGET_MS` | Optional (Vercel only) | If pre-stream work (reasoning injection + vision conversion) exceeds this, return `504 prestream_timeout` rather than be killed by the platform at ~25s. Default 22000. |
+| `CURSORPROXY_API_KEY` | Production use | Client auth secret. Use this in Cursor's API key field. |
+| `DEEPSEEK_API_KEY` | Using DeepSeek models | Upstream DeepSeek API key. |
+| `KIMI_API_KEY` | Using Kimi models | Upstream Moonshot/Kimi API key. |
+| `MINIMAX_API_KEY` | Using MiniMax models or default vision bridge | Upstream MiniMax API key; also reused by the default MiniMax VL vision backend. |
+| `MIMO_API_KEY` | Using Xiaomi MiMo models | Upstream MiMo API key. |
+| `GLM_API_KEY` | Using GLM / ZHIPU / Z.AI models | Upstream GLM API key. |
+| `AZURE_FOUNDRY_API_KEY` | Using Azure OpenAI or Azure Anthropic | Azure Foundry API key. |
+| `AZURE_FOUNDRY_RESOURCE` | Using Azure OpenAI or Azure Anthropic | Azure Foundry resource name. |
+| `KV_URL` + `KV_TOKEN` | Vercel deployment | Upstash Redis REST credentials for reasoning, response-id, and image caches. |
+| `REDIS_URL` | Docker with local Redis | Local Redis URL, usually `redis://redis:6379`. |
+| EdgeOne KV binding | EdgeOne Pages deployment | Bind a KV namespace as `cursorproxy_kv` in the EdgeOne console. |
 
-### Kimi K2.7 Code: `cursorproxy/kimi-k2.7-code`
+Common optional settings:
 
-Moonshot's coding-focused `kimi-k2.7-code` model always runs in thinking mode and
-requires `reasoning_content` on prior assistant turns (including multi-step tool
-calls). cursorProxy caches and re-injects that field via the reasoning bridge, so
-configure KV for multi-turn quality.
+- `CURSORPROXY_MODELS` advertises model IDs from `GET /v1/models`.
+- `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4` switches GLM from the default China Coding Plan endpoint to global Z.AI.
+- `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
 
-The proxy also sanitizes Kimi K2.x requests before forwarding:
+Full references:
 
-- Strips Cursor sampling params (`temperature`, `top_p`, penalties) that Kimi rejects
-- Coerces unsupported `tool_choice` values to `auto`
-- Floors low `max_tokens` / remaps `max_completion_tokens` to at least 16k when set
-- Omits the `thinking` parameter for `kimi-k2.7-code` (always-on upstream)
-- Injects `thinking: { type: "enabled", keep: "all" }` for `kimi-k2.6` when thinking is on
-
-`kimi-latest` is discontinued; the Kimi provider default is now `kimi-k2.7-code`.
-
-Sanitization and reasoning injection live in shared modules (`lib/kimi.js`,
-`api/proxy.js`, `lib/reasoning.js`), so **Vercel Edge**, **EdgeOne Pages**, and
-**Docker** all get the same K2.7 Code behavior with no platform-specific config.
-
-### GLM-5.2 Coding Plan: `cursorproxy/GLM-5.2`
-
-The GLM provider routes `glm*` / `GLM*` model IDs to ZHIPU AI's OpenAI-compatible
-Chat Completions API. The default upstream is the China Coding Plan endpoint:
-
-```env
-GLM_API_KEY=<your-zhipu-key>
-CURSORPROXY_MODELS=GLM-5.2
-```
-
-To use the global Z.AI Coding Plan endpoint instead, set:
-
-```env
-UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4
-```
-
-The proxy forwards to `/chat/completions` without adding a `/v1` segment, remaps
-`max_completion_tokens` to `max_tokens`, coerces unsupported forced-tool choices
-to `auto`, preserves `tool_choice: "none"` by removing tools, enables streamed
-tool calls with `tool_stream: true`, and injects
-`thinking: { type: "enabled", clear_thinking: false }` when the client omits GLM
-thinking config. GLM-5.2 has 1M context and supports up to 131072 output tokens
-in Z.AI's coding-plan examples. `reasoning_content` is cached and replayed when
-available; on cache miss the proxy does not fabricate GLM reasoning and clears
-preserved thinking for that request because Z.AI requires prior reasoning to be
-returned complete and unmodified.
-
-### Azure Foundry Kimi reminder: `cursorproxy/Kimi-K2.6`
-
-Azure Foundry's official Kimi sample shows the OpenAI-compatible base URL as
-`https://<resource>.services.ai.azure.com/openai/v1/`. With the current generic
-Kimi provider code, `UPSTREAM_KIMI` is treated as the base before the proxy adds
-`/v1/chat/completions`, so configure it without the final `/v1/`:
-
-```env
-UPSTREAM_KIMI=https://<resource>.services.ai.azure.com/openai
-KIMI_API_KEY=<your-azure-foundry-key>
-CURSORPROXY_MODELS=Kimi-K2.6
-```
-
-Do **not** set `UPSTREAM_KIMI` to the full official `/openai/v1/` base unless the
-proxy URL builder is changed; otherwise the upstream URL becomes
-`/openai/v1/v1/chat/completions` (or `/openai/v1//v1/chat/completions`) and Azure
-returns `404 Resource not found`. Use the exact Azure deployment name/case, such
-as `Kimi-K2.6`.
-
-This URL setting avoids the duplicated `/v1` path. The proxy also isolates
-outgoing headers for Azure Foundry Kimi, so EdgeOne/CDN/Cookie headers are not
-forwarded upstream and the `Host` header is the Azure hostname. If you still see
-HTTP `431`, redeploy the header-isolation fix and verify `UPSTREAM_REQUEST_DUMP`
-shows only the minimal upstream headers.
-
-### Azure OpenAI alias: `cursorproxy/gpt-general`
-
-`cursorproxy/gpt-general` is a fixed public alias that routes to a real Azure
-OpenAI deployment chosen via `AZURE_OPENAI_GENERAL_ALIAS_TARGET`. The proxy
-rewrites `parsedBody.model` to the resolved deployment before forwarding, but
-the response `model` field stays as `cursorproxy/gpt-general` so clients see
-the alias they asked for. `AZURE_OPENAI_GENERAL_REASONING_EFFORT`, when set,
-overrides the global `AZURE_OPENAI_REASONING_EFFORT` for requests that route
-through this alias only. To advertise the alias via `GET /v1/models`, also
-add `gpt-general` (or `cursorproxy/gpt-general`) to `CURSORPROXY_MODELS`.
-
-### MiniMax M3
-
-MiniMax M3 is a natively multimodal model with 1M context window. Unlike M2.x models, it accepts images and videos directly — the vision bridge is automatically bypassed.
-
-**Model IDs are case-sensitive.** Use `MiniMax-M3` (not `minimax-m3` or `MINIMAX-M3`). The proxy forwards the model name exactly as provided to the MiniMax API.
-
-```env
-CURSORPROXY_MODELS=MiniMax-M3
-```
-
-The proxy automatically injects `thinking: { type: "adaptive" }` when the client omits it, enabling the model's reasoning capabilities. If the client explicitly sends a `thinking` parameter, the proxy preserves it.
-
-**Key differences from M2.x:**
-- **Native vision:** Images and videos are forwarded directly to MiniMax (no conversion to text)
-- **Thinking mode:** Supports `adaptive` (default) or `disabled`
-- **Context window:** 1M tokens (vs 204K for M2.x)
-
-Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration).
+- [Environment Variables](https://github.com/lqdflying/cursorProxy/wiki/Environment-Variables)
+- [Provider Behavior](https://github.com/lqdflying/cursorProxy/wiki/Provider-Behavior)
+- [Azure](https://github.com/lqdflying/cursorProxy/wiki/Azure)
 
 ---
 
@@ -220,8 +113,8 @@ Full reference: [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Co
 - [doc/known-issues.md](doc/known-issues.md) — Cursor-side bugs and workarounds (vision, apply_patch, etc.)
 - [doc/architecture-overview.md](doc/architecture-overview.md) — Request flow at a glance
 - [doc/kv-caching.md](doc/kv-caching.md) — What is cached, how invalidation works
-- [doc/reasoning-bridge.md](doc/reasoning-bridge.md) — DeepSeek / Kimi / MiniMax reasoning injection
-- [doc/vision-bridge.md](doc/vision-bridge.md) — Image-to-text conversion for non-vision providers
+- [doc/reasoning-bridge.md](doc/reasoning-bridge.md) — DeepSeek / Kimi / MiniMax / MiMo / GLM reasoning injection
+- [doc/vision-bridge.md](doc/vision-bridge.md) — Image-to-text conversion for text-only providers
 
 ---
 
