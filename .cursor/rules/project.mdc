@@ -22,16 +22,16 @@ alwaysApply: true
 - Keep `README.md` minimal and quick-start focused. Put optional configuration, provider-specific details, troubleshooting, tuning knobs, and long explanations in the wiki, then link from the README instead of expanding it.
 - **Release process — TWO PHASES, never auto-advance across the gap**:
 
-  - **Phase A (always do): commit locally.** Make edits, write tests, update wiki and rules, then `git commit` to the local working branch (main repo and `wiki/` as appropriate). Do NOT `git push`, do NOT tag, do NOT `gh release create`. Stop here and wait.
+  - **Phase A (default for everything): commit AND push the branch.** Make edits, write tests, update wiki and rules, then `git commit` and `git push origin <branch>` (main repo) and `git push origin master` inside `wiki/`. Branch pushes are the normal dev workflow — Vercel, EdgeOne, and Docker auto-reploy on commit/push, so any code change you want deployed goes through here. This includes review feedback, fixes, follow-up work, docs, etc. Do NOT tag, do NOT `gh release create`. Stop and wait after the push.
 
-  - **Phase B (only on explicit user command).** A separate review tool always runs between Phase A and Phase B. The agent must NOT cross this gap on its own. Wait for an explicit user instruction — either "GA", "go ahead", "push and release", review feedback that requires more changes, or any equivalent clear command. On that command, run the full GA sequence in one turn:
+  - **Phase B (ONLY on the literal command "GA"): tag and release.** A separate review tool always runs between Phase A and Phase B. The agent must NOT cross this gap on its own. Treat anything that is not the exact word "GA" (review feedback, "go ahead", "push and release", "next step", silence, etc.) as Phase A work — commit and push, then wait again. Only an explicit "GA" from the user triggers Phase B. On "GA", run the full sequence in one turn:
     1. Find the previous tag: `git tag --sort=-v:refname | head -5`.
     2. Determine the bump from `code-conventions.mdc` (patch = fixes/docs; minor = new provider or operator-facing feature; major = breaking).
-    3. Push the branch: `git push origin <branch>` (main repo) and `git push origin master` inside `wiki/`.
+    3. Confirm the target commit is already pushed (Phase A handles this; if not, push now).
     4. Create the annotated tag with NO description body, using the commit's date as tagger date so tags sort chronologically on GitHub:
        `GIT_COMMITTER_DATE="<commit-date>" git tag -a vX.Y.Z <commit> -m "vX.Y.Z"`.
     5. Push the tag: `git push origin vX.Y.Z`.
     6. Create the GitHub release with full changelog comparing against the previous tag:
        `gh release create vX.Y.Z --notes "..."` (notes via heredoc).
 
-  Tags must never carry descriptions; descriptions belong only on GitHub Releases. If the user gives review feedback instead of GA, address it in Phase A again (new local commit) and wait for the next command. Never assume GA from silence.
+  Tags must never carry descriptions; descriptions belong only on GitHub Releases. Never assume GA from silence or from any phrase other than "GA".
