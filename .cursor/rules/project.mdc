@@ -10,7 +10,7 @@ alwaysApply: true
 - `lib/models.js` handles model parsing, public/private model IDs, and provider routing.
 - Azure adapters live in `lib/azure-openai.js` and `lib/azure-anthropic.js`.
 - Kimi K2.x request sanitization lives in `lib/kimi.js` (`sanitizeKimiBody`); default Kimi model is `kimi-k2.7-code`.
-- GLM request sanitization lives in `lib/glm.js` (`sanitizeGlmBody`); default GLM model is `glm-5.2`, default upstream is `https://open.bigmodel.cn/api/coding/paas/v4`, and global Z.AI uses `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4`.
+- GLM request sanitization lives in `lib/glm.js` (`sanitizeGlmBody`); default GLM model is `glm-5.2`, default upstream is `https://open.bigmodel.cn/api/coding/paas/v4`, and global Z.AI uses `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4`. GLM-5.2+ supports `reasoning_effort` (default `max`), overridable via the `GLM_REASONING_EFFORT` env var (precedence: env > client > default `max`); older GLM models have it stripped automatically.
 - Reasoning and cache helpers live in `lib/reasoning.js`, `lib/cache.js`, and `lib/kv.js`.
 - `api/proxy.js` and all `lib/*.js` files are shared edge-safe modules. Do not introduce `node:*` imports or `ioredis` there.
 - `server.js` is the Docker-only wrapper around the shared proxy logic.

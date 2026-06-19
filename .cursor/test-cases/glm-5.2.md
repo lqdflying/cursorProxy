@@ -41,7 +41,7 @@ Expected Vercel logs (same `requestId` group, always-on):
 
 ```text
 [cursorProxy:proxy] REQ POST /v1/chat/completions provider: infer
-[cursorProxy:proxy] GLM_BODY_SANITIZED model: glm-5.2 thinkingType: enabled clearThinking: false ...
+[cursorProxy:proxy] GLM_BODY_SANITIZED model: glm-5.2 thinkingType: enabled clearThinking: false reasoningEffort: max effortSource: default ...
 [cursorProxy:proxy] RES 200 provider: glm ms: <number>
 ```
 
@@ -71,6 +71,29 @@ For tool streaming coverage, use an agent prompt that requires a local file read
 ```text
 [cursorProxy:proxy] GLM_BODY_SANITIZED ... toolStream: true ...
 ```
+
+For `reasoning_effort` client-override coverage, replay a request with `reasoning_effort: "high"`. Expected logs should include:
+
+```text
+[cursorProxy:proxy] GLM_BODY_SANITIZED ... reasoningEffort: high effortSource: client ...
+```
+
+For `GLM_REASONING_EFFORT` env-override coverage, set `GLM_REASONING_EFFORT=medium` and replay the same prompt. Expected logs should include:
+
+```text
+[cursorProxy:proxy] GLM_BODY_SANITIZED ... reasoningEffort: medium effortSource: env ...
+```
+
+The forwarded body must use `medium` even when the client sends a different value (env wins).
+
+For invalid-value coverage, replay with `reasoning_effort: "turbo"` (typo). Expected logs should include:
+
+```text
+[cursorProxy:proxy] GLM_INVALID_EFFORT model: glm-5.2 raw: turbo fallback: max valid: [max|xhigh|high|medium|low|minimal|none]
+[cursorProxy:proxy] GLM_BODY_SANITIZED ... reasoningEffort: max effortSource: default ...
+```
+
+For older-GLM coverage (e.g. `glm-4.7`), replay a request that includes `reasoning_effort`. The forwarded body must omit `reasoning_effort` entirely and the diag should show `effortSource: (n/a) reasoningEffort: (unset)` so the upstream does not 400.
 
 For `tool_choice: "none"` coverage, replay a request with tools plus `tool_choice: "none"`. Expected upstream body should omit `tools`, `tool_choice`, and `tool_stream`; `tool_choice: "none"` must not become `auto`.
 
