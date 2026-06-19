@@ -776,7 +776,7 @@ export default async function handler(req) {
   }
 
   if (providerKey === "kimi" && parsedBody) {
-    if (sanitizeKimiBody(parsedBody, upstreamModelName)) {
+    if (sanitizeKimiBody(parsedBody, upstreamModelName, providerKey)) {
       bodyText = JSON.stringify(parsedBody);
     }
   }
