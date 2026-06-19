@@ -20,4 +20,18 @@ alwaysApply: true
 - `wiki/` is a separate git clone for the GitHub wiki. Do not commit wiki changes in the main repo.
 - For every new feature, provider, behavior change, env var, deployment change, or operator-facing fix, explicitly evaluate whether the GitHub wiki needs updating. If it does, update `wiki/` in the same work so docs ship with the code change; if it does not, be ready to state why.
 - Keep `README.md` minimal and quick-start focused. Put optional configuration, provider-specific details, troubleshooting, tuning knobs, and long explanations in the wiki, then link from the README instead of expanding it.
-- **Release process**: "tag and release" means TWO steps — (1) `GIT_COMMITTER_DATE="<commit-date>" git tag -a vX.Y.Z <commit> -m "vX.Y.Z"` to create an annotated tag with NO description body, using the commit's date as tagger date so tags sort chronologically on GitHub, then (2) `gh release create vX.Y.Z --notes "..."` with the full changelog/description. Tags must never carry descriptions; descriptions belong only on GitHub Releases. Push the tag and create the release in the same turn. **Version bumps** follow semver in `code-conventions.mdc` (patch = fixes/docs; minor = new provider or operator-facing feature; major = breaking).
+- **Release process — TWO PHASES, never auto-advance across the gap**:
+
+  - **Phase A (always do): commit locally.** Make edits, write tests, update wiki and rules, then `git commit` to the local working branch (main repo and `wiki/` as appropriate). Do NOT `git push`, do NOT tag, do NOT `gh release create`. Stop here and wait.
+
+  - **Phase B (only on explicit user command).** A separate review tool always runs between Phase A and Phase B. The agent must NOT cross this gap on its own. Wait for an explicit user instruction — either "GA", "go ahead", "push and release", review feedback that requires more changes, or any equivalent clear command. On that command, run the full GA sequence in one turn:
+    1. Find the previous tag: `git tag --sort=-v:refname | head -5`.
+    2. Determine the bump from `code-conventions.mdc` (patch = fixes/docs; minor = new provider or operator-facing feature; major = breaking).
+    3. Push the branch: `git push origin <branch>` (main repo) and `git push origin master` inside `wiki/`.
+    4. Create the annotated tag with NO description body, using the commit's date as tagger date so tags sort chronologically on GitHub:
+       `GIT_COMMITTER_DATE="<commit-date>" git tag -a vX.Y.Z <commit> -m "vX.Y.Z"`.
+    5. Push the tag: `git push origin vX.Y.Z`.
+    6. Create the GitHub release with full changelog comparing against the previous tag:
+       `gh release create vX.Y.Z --notes "..."` (notes via heredoc).
+
+  Tags must never carry descriptions; descriptions belong only on GitHub Releases. If the user gives review feedback instead of GA, address it in Phase A again (new local commit) and wait for the next command. Never assume GA from silence.
