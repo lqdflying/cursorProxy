@@ -39,6 +39,7 @@ import {
   updateStreamReasoning,
 } from "../lib/reasoning.js";
 import { sanitizeGlmBody } from "../lib/glm.js";
+import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
 import { sanitizeKimiBody } from "../lib/kimi.js";
 import { convertImagesToText } from "../lib/vision-bridge.js";
 
@@ -907,6 +908,15 @@ export default async function handler(req) {
 
   if (providerKey === "glm" && parsedBody) {
     if (sanitizeGlmBody(parsedBody, upstreamModelName)) {
+      bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
+  // Fireworks-hosted GLM 5.2+ supports reasoning_effort (DeepSeek-V4 mechanism).
+  // Resolve it here — before the enableReasoning gate below — so an injected
+  // default (max) or a client "none" is honored by that gate's effort checks.
+  if (providerKey === "fireworks" && parsedBody) {
+    if (resolveFireworksGlmReasoningEffort(parsedBody, upstreamModelName)) {
       bodyText = JSON.stringify(parsedBody);
     }
   }
