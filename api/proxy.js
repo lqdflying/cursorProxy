@@ -912,7 +912,7 @@ export default async function handler(req) {
     }
   }
 
-  // Fireworks-hosted GLM 5.2 supports reasoning_effort (DeepSeek-V4 mechanism).
+  // Fireworks-hosted GLM 5.2 supports graded reasoning via reasoning_effort.
   // Resolve it here — before the enableReasoning gate below — so an injected
   // default (max) or a client "none" is honored by that gate's effort checks.
   if (providerKey === "fireworks" && parsedBody) {

@@ -204,21 +204,26 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
     return { url: capturedUrl, body: JSON.parse(capturedBody) };
   }
 
-  it("provider-path /fireworks/v1/chat/completions injects reasoning_effort: max", async () => {
+  // These tests invoke the shared handler directly with the internal rewrite
+  // URL shape (/api/proxy?provider=fireworks&path=chat/completions). They
+  // exercise the request transformation but do NOT test server.js, vercel.json,
+  // or the EdgeOne rewrite adapters. Rewrite adapter coverage belongs in
+  // platform-specific integration tests.
+  it("provider-path rewrite shape injects reasoning_effort: max", async () => {
     const { url, body } = await captureOutbound({
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
-    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    }, {}, "http://localhost/api/proxy?provider=fireworks&path=chat/completions");
     assert.ok(url.endsWith("/v1/chat/completions"), `unexpected upstream URL: ${url}`);
     assert.equal(body.model, "accounts/fireworks/models/glm-5p2");
     assert.equal(body.reasoning_effort, "max");
   });
 
-  it("unified /v1/chat/completions injects reasoning_effort: max", async () => {
+  it("unified rewrite shape injects reasoning_effort: max", async () => {
     const { url, body } = await captureOutbound({
       model: "fireworks/glm-5p2",
       messages: [{ role: "user", content: "hi" }],
-    }, {}, "http://localhost/v1/chat/completions?path=chat/completions");
+    }, {}, "http://localhost/api/proxy?path=chat/completions");
     assert.ok(url.endsWith("/v1/chat/completions"), `unexpected upstream URL: ${url}`);
     assert.equal(body.model, "accounts/fireworks/models/glm-5p2");
     assert.equal(body.reasoning_effort, "max");
@@ -229,7 +234,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "none",
-    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    }, {}, "http://localhost/api/proxy?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, "none");
   });
 
@@ -238,7 +243,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: false,
-    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    }, {}, "http://localhost/api/proxy?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, "none");
   });
 
@@ -247,7 +252,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: true,
-    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    }, {}, "http://localhost/api/proxy?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, "medium");
   });
 
@@ -256,7 +261,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: 4096,
-    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    }, {}, "http://localhost/api/proxy?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, 4096);
   });
 
@@ -268,7 +273,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
         reasoning_effort: "high",
       },
       { FIREWORKS_GLM_REASONING_EFFORT: "low" },
-      "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions",
+      "http://localhost/api/proxy?provider=fireworks&path=chat/completions",
     );
     assert.equal(body.reasoning_effort, "low");
   });
@@ -278,7 +283,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
       model: "deepseek-v4-pro",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "high",
-    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    }, {}, "http://localhost/api/proxy?provider=fireworks&path=chat/completions");
     assert.equal(body.model, "accounts/fireworks/models/deepseek-v4-pro");
     assert.equal(body.reasoning_effort, "high");
   });
