@@ -179,20 +179,23 @@ On GLM misses: leave reasoning absent
 | `KV_TTL_SECONDS` | 7 200 | Cache TTL for all reasoning entries |
 | `DEEPSEEK_REASONING_EFFORT` | `high` | DeepSeek thinking effort (`high` or `max`) |
 | `GLM_REASONING_EFFORT` | `max` | Native GLM (provider `glm`) effort: `max`, `xhigh`, `high`, `medium`, `low`, `minimal`, `none`. GLM-5.2+ only; stripped for older GLM. |
-| `FIREWORKS_GLM_REASONING_EFFORT` | `max` | Fireworks-hosted GLM 5.2 effort: `max`, `xhigh`, `high`, `medium`, `low`, `none`. Independent of `GLM_REASONING_EFFORT`. |
+| `FIREWORKS_GLM_REASONING_EFFORT` | `max` | Fireworks-hosted GLM 5.2 effort. Effective levels are `max` (default, deep reasoning) and `high` (enhanced reasoning); `xhigh`/`low`/`medium` are accepted but collapsed upstream, and `none` disables thinking. Independent of `GLM_REASONING_EFFORT`. |
 
 ## Fireworks GLM 5.2 Reasoning Effort
 
-Fireworks-hosted GLM 5.2 (`accounts/fireworks/models/glm-5p2`) supports graded
-reasoning via `reasoning_effort`. The proxy resolves the effort on the outbound
-request with precedence `FIREWORKS_GLM_REASONING_EFFORT` env → valid client value →
-default `max` (matching the native GLM provider).
+Fireworks-hosted GLM 5.2 (`accounts/fireworks/models/glm-5p2`) has two effective
+reasoning tiers: `max` (default, deep reasoning) and `high` (enhanced reasoning).
+The Fireworks API accepts compatibility values that collapse upstream — `xhigh`
+and `max` both select Max, `low` and `medium` both collapse to `high`, and `none`
+or `false` disables thinking. The proxy resolves the effort on the outbound request
+with precedence `FIREWORKS_GLM_REASONING_EFFORT` env → valid client value → default
+`max` (matching the native GLM provider).
 
 Accepted client values:
 
 - String: `max`, `xhigh`, `high`, `medium`, `low`, `none`.
 - Boolean: `false` is normalized to `none` (disable reasoning); `true` is normalized
-  to `medium`.
+  to `medium` (which collapses to `high` upstream).
 - Positive integer: preserved as a hard token budget.
 
 Invalid client values fall back to `max` and are logged as
