@@ -13,11 +13,8 @@ afterEach(() => {
 });
 
 describe("isFireworksGlm52Model", () => {
-  it("detects the documented Fireworks GLM 5.2 IDs", () => {
+  it("detects the documented Fireworks GLM 5.2 ID", () => {
     assert.equal(isFireworksGlm52Model("accounts/fireworks/models/glm-5p2"), true);
-    assert.equal(isFireworksGlm52Model("accounts/fireworks/models/glm-5.2"), true);
-    assert.equal(isFireworksGlm52Model("glm-5p2"), true);
-    assert.equal(isFireworksGlm52Model("glm-5.2"), true);
   });
 
   it("rejects undocumented/custom-account GLM 5.2 IDs", () => {
@@ -129,7 +126,7 @@ describe("resolveFireworksGlmReasoningEffort", () => {
     assert.equal(resolveFireworksGlmReasoningEffort(null, GLM_52), false);
   });
 
-  it("always logs the resolved effort for GLM 5.2+, and never for no-ops", () => {
+  it("always logs the resolved effort for GLM 5.2, and never for no-ops", () => {
     const lines = [];
     const orig = console.log;
     console.log = (...args) => lines.push(args.join(" "));
@@ -167,14 +164,16 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
     }
   });
 
-  async function captureOutboundBody(requestBody, envVars = {}) {
+  async function captureOutbound(requestBody, envVars = {}, reqUrl) {
     process.env.FIREWORKS_API_KEY = "fw-test-key";
     for (const [k, v] of Object.entries(envVars)) {
       process.env[k] = v;
     }
 
+    let capturedUrl = null;
     let capturedBody = null;
-    global.fetch = async (_url, init) => {
+    global.fetch = async (url, init) => {
+      capturedUrl = url;
       capturedBody = init.body;
       return new Response(
         JSON.stringify({
@@ -193,7 +192,7 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
       );
     };
 
-    const req = new Request("http://localhost/fireworks/v1/chat/completions?provider=fireworks", {
+    const req = new Request(reqUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(requestBody),
@@ -201,72 +200,85 @@ describe("handler outbound body for Fireworks GLM 5.2", () => {
 
     const res = await handler(req);
     assert.equal(res.status, 200);
-    return JSON.parse(capturedBody);
+    assert.ok(capturedUrl, "upstream fetch should have been captured");
+    return { url: capturedUrl, body: JSON.parse(capturedBody) };
   }
 
-  it("injects reasoning_effort: max when omitted", async () => {
-    const body = await captureOutboundBody({
+  it("provider-path /fireworks/v1/chat/completions injects reasoning_effort: max", async () => {
+    const { url, body } = await captureOutbound({
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
-    });
+    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
+    assert.ok(url.endsWith("/v1/chat/completions"), `unexpected upstream URL: ${url}`);
+    assert.equal(body.model, "accounts/fireworks/models/glm-5p2");
+    assert.equal(body.reasoning_effort, "max");
+  });
+
+  it("unified /v1/chat/completions injects reasoning_effort: max", async () => {
+    const { url, body } = await captureOutbound({
+      model: "fireworks/glm-5p2",
+      messages: [{ role: "user", content: "hi" }],
+    }, {}, "http://localhost/v1/chat/completions?path=chat/completions");
+    assert.ok(url.endsWith("/v1/chat/completions"), `unexpected upstream URL: ${url}`);
     assert.equal(body.model, "accounts/fireworks/models/glm-5p2");
     assert.equal(body.reasoning_effort, "max");
   });
 
   it("preserves client-sent 'none'", async () => {
-    const body = await captureOutboundBody({
+    const { body } = await captureOutbound({
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "none",
-    });
+    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, "none");
   });
 
   it("converts client false to 'none'", async () => {
-    const body = await captureOutboundBody({
+    const { body } = await captureOutbound({
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: false,
-    });
+    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, "none");
   });
 
   it("converts client true to 'medium'", async () => {
-    const body = await captureOutboundBody({
+    const { body } = await captureOutbound({
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: true,
-    });
+    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, "medium");
   });
 
   it("preserves positive integer budgets", async () => {
-    const body = await captureOutboundBody({
+    const { body } = await captureOutbound({
       model: "glm-5p2",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: 4096,
-    });
+    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
     assert.equal(body.reasoning_effort, 4096);
   });
 
   it("applies env override", async () => {
-    const body = await captureOutboundBody(
+    const { body } = await captureOutbound(
       {
         model: "glm-5p2",
         messages: [{ role: "user", content: "hi" }],
         reasoning_effort: "high",
       },
       { FIREWORKS_GLM_REASONING_EFFORT: "low" },
+      "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions",
     );
     assert.equal(body.reasoning_effort, "low");
   });
 
   it("leaves non-target Fireworks models untouched", async () => {
-    const body = await captureOutboundBody({
+    const { body } = await captureOutbound({
       model: "deepseek-v4-pro",
       messages: [{ role: "user", content: "hi" }],
       reasoning_effort: "high",
-    });
+    }, {}, "http://localhost/fireworks/v1/chat/completions?provider=fireworks&path=chat/completions");
     assert.equal(body.model, "accounts/fireworks/models/deepseek-v4-pro");
     assert.equal(body.reasoning_effort, "high");
   });
