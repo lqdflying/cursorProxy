@@ -24,6 +24,7 @@ import {
   providerFromModel,
   publicModelId,
   resolveAzureAlias,
+  resolveFireworksModel,
   withPublicResponseModel,
 } from "../lib/models.js";
 import {
@@ -176,6 +177,13 @@ const PROVIDERS = {
       const path = String(pathParam || "").replace(/^\/+/, "");
       return `${base}/${path}${queryString || ""}`;
     },
+  },
+  fireworks: {
+    url: process.env.UPSTREAM_FIREWORKS || "https://api.fireworks.ai/inference",
+    host: "api.fireworks.ai",
+    apiKeyEnv: "FIREWORKS_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
   },
   azureopenai: {
     apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
@@ -403,6 +411,36 @@ export default async function handler(req) {
       diag("AZURE_ALIAS_RESOLVED",
         "alias:", aliasResult.aliasName,
         "target:", aliasResult.target);
+    }
+  }
+
+  // Fireworks model ID mapping: cursorproxy/fireworks/<model> →
+  // accounts/fireworks/models/<model>.  The client-visible response model stays
+  // as cursorproxy/fireworks/<model> (no rewind needed — responseModelName
+  // already holds the correct public id from normalizeParsedBodyModel).
+  // Bare model names without the fireworks/ prefix (e.g. model: "kimi-k2.7-code"
+  // sent to /fireworks/v1) are also wrapped so Fireworks receives a valid
+  // accounts/fireworks/models/... id.
+  let fireworksPublicId = "";
+  if (providerKey === "fireworks") {
+    let fireworksModel = resolveFireworksModel(upstreamModelName);
+    if (!fireworksModel && upstreamModelName) {
+      // Preserve already-qualified IDs — any accounts/<account>/models/<model>
+      // (including Fireworks-hosted models and custom uploaded models) — to
+      // avoid double-prefixing into accounts/fireworks/models/accounts/.../...
+      const alreadyQualified = /^accounts\/.+\/models\//i.test(upstreamModelName);
+      fireworksModel = alreadyQualified
+        ? upstreamModelName
+        : "accounts/fireworks/models/" + upstreamModelName;
+    }
+    if (fireworksModel) {
+      fireworksPublicId = responseModelName;
+      parsedBody.model = fireworksModel;
+      upstreamModelName = fireworksModel;
+      bodyText = JSON.stringify(parsedBody);
+      diag("FIREWORKS_MODEL_RESOLVED",
+        "bare:", modelNames.bare,
+        "upstream:", fireworksModel);
     }
   }
 
@@ -757,7 +795,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, claude-sonnet-4-6, or cursorproxy/glm-5.2).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, claude-sonnet-4-6, cursorproxy/fireworks/kimi-k2p7-code, or cursorproxy/glm-5.2).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -774,8 +812,10 @@ export default async function handler(req) {
     );
   }
 
-  // Inject a default model when missing from the request body
-  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai") {
+  // Inject a default model when missing from the request body.
+  // Azure OpenAI and Fireworks are excluded: Azure resolves deployment
+  // names server-side; Fireworks hosts 200+ models with no single default.
+  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai" && providerKey !== "fireworks") {
     const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k2.7-code", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
@@ -796,6 +836,11 @@ export default async function handler(req) {
   // which would leak the underlying deployment back to clients.
   if (azureAliasPublicId) {
     responseModelName = azureAliasPublicId;
+  }
+  // Same for Fireworks: the second normalize overwrites responseModelName
+  // with cursorproxy/accounts/fireworks/models/..., restore the original.
+  if (fireworksPublicId) {
+    responseModelName = fireworksPublicId;
   }
   // Set azureModelName unconditionally after model normalization.
   // Previously this was a lazy-init that could read a stale value.
@@ -869,19 +914,79 @@ export default async function handler(req) {
   const originalMessages = parsedBody?.messages ? structuredClone(parsedBody.messages) : null;
 
   const scopeUser = await cacheScopeUserId(req);
-  const scope = providerKey + ":" + scopeUser;
+  // For Fireworks the scope must include the upstream model name so reasoning
+  // caches are isolated per model.  Without this, a Qwen reasoning trace could
+  // be re-injected into a DeepSeek request (same provider + user scope).
+  const scope = providerKey === "fireworks"
+    ? providerKey + ":" + upstreamModelName + ":" + scopeUser
+    : providerKey + ":" + scopeUser;
   const replyReasoningKey = originalMessages
     ? await conversationHash(originalMessages, originalMessages.length, scope)
     : null;
 
   let injectedCount = 0;
-  if (originalMessages) {
+  // Fireworks hosts 200+ models; only a subset (DeepSeek, Kimi, GLM, MiniMax,
+  // Qwen, GPT-OSS families) support reasoning_content.  Skip reasoning injection
+  // for ordinary models (Llama, Gemma, Nemotron, etc.) to avoid injecting
+  // synthetic placeholders that those models would reject or misinterpret.
+  const enableReasoning = providerKey !== "fireworks" ||
+    ((/^(?:accounts\/[^/]+\/models\/)?(deepseek|kimi|glm|minimax|qwen|gpt-oss)/i.test(upstreamModelName) ||
+      // When the client explicitly opts into preserved or interleaved
+      // reasoning, bypass the family-prefix check — custom-named reasoning
+      // models should still receive cached reasoning.  (User-ending
+      // interleaved requests are already skipped by the isInterleaved gate
+      // below; tool-ending interleaved requests need injection for turns
+      // after the last user message as Fireworks preserves reasoning
+      // through tool calls.)
+      parsedBody?.reasoning_history === "preserved" ||
+      parsedBody?.reasoning_history === "interleaved" ||
+      (parsedBody?.thinking?.keep === "all" && parsedBody?.thinking?.type === "enabled")) &&
+      // Skip when the client has explicitly disabled reasoning.
+      // Cache hits would inject reasoning despite disabling; misses add ~800 ms
+      // of KV retry latency for a feature the client doesn't want.
+      parsedBody?.reasoning_history !== "disabled" &&
+      parsedBody?.reasoning_effort !== "none" &&
+      parsedBody?.reasoning_effort !== false &&
+      parsedBody?.thinking?.type !== "disabled" &&
+      !/-(?:no-thinking|non-thinking)$/i.test(upstreamModelName));
+
+  // Interleaved mode: Fireworks strips reasoning through the last user message
+  // but preserves it through tool calls.  Explicit "interleaved" or models that
+  // default to it (Kimi K2p0–K2p6, GLM 4.x, MiniMax M2, DeepSeek V4) skip
+  // injection on user-ending requests.  Tool-ending requests still receive it.
+  //
+  // thinking.keep: "all" with thinking.type: "enabled" is equivalent to
+  // reasoning_history: "preserved" per Fireworks docs — it overrides any model
+  // default interleaved and enables full reasoning restoration.
+  const isInterleaved = parsedBody?.reasoning_history === "interleaved" ||
+    (parsedBody?.reasoning_history == null &&
+      !(parsedBody?.thinking?.keep === "all" && parsedBody?.thinking?.type === "enabled") &&
+      /kimi-k2[.p][0-6](?:[^a-z0-9]|$)|glm-[0-4][.p]|minimax-m2|deepseek-v4/i.test(upstreamModelName));
+  const userEndingInterleaved = isInterleaved &&
+    originalMessages?.length > 0 &&
+    originalMessages[originalMessages.length - 1]?.role === "user";
+
+  // When interleaved and tool-ending, only process assistant messages after the
+  // last user message — turns before it would be stripped by upstream anyway,
+  // and fetching them from KV adds unnecessary latency (up to ~800 ms on miss).
+  let minAssistantIndex = 0;
+  if (isInterleaved && !userEndingInterleaved && originalMessages) {
+    for (let i = originalMessages.length - 1; i >= 0; i--) {
+      if (originalMessages[i]?.role === "user") {
+        minAssistantIndex = i + 1;
+        break;
+      }
+    }
+  }
+
+  if (originalMessages && enableReasoning && !userEndingInterleaved) {
     const injected = await injectStoredReasoning({
       providerKey,
       parsedBody,
       originalMessages,
       scope,
       conversationHash,
+      minAssistantIndex,
     });
     parsedBody = injected.parsedBody;
     injectedCount = injected.injectedCount;
@@ -1168,7 +1273,7 @@ export default async function handler(req) {
       }
     }
 
-    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm");
+    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {
@@ -1588,7 +1693,7 @@ export default async function handler(req) {
                 () => { contentCapHit = true; },
               );
             }
-            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm");
+            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
             await writer.write(
               encoder.encode(
                 "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"

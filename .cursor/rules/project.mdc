@@ -37,3 +37,26 @@ alwaysApply: true
        `gh release create vX.Y.Z --notes "..."` (notes via heredoc).
 
   Tags must never carry descriptions; descriptions belong only on GitHub Releases. Never assume advancement from silence or from any phrase that isn't the explicit trigger for the next step.
+
+- **Provider implementation checklist — lessons from Fireworks integration** (these apply to every new provider):
+
+  - **0 — Read upstream docs before writing any code.** See the global rule in `/home/opc/AGENTS.md` ("Verify Before You Implement"). For every new provider, fetch the official API reference, model catalog, and any reasoning/streaming/auth docs *before* touching `api/proxy.js` or `lib/models.js`. Do not assume endpoint URLs, model ID formats, or parameter semantics from "it's OpenAI-compatible."
+
+  - **Model ID routing: map ALL ID variants.** When a provider uses non-standard model IDs (e.g. `accounts/<account>/models/<id>`), update `providerFromModel()` in `lib/models.js` to recognize: (a) the proxy's own prefix for disambiguation, (b) the provider's native fully-qualified format, (c) bare model names sent via the provider's route path. All three must route to the provider.
+
+  - **Test fixture IDs must match the upstream catalog.** The proxy does not translate model names — it prefixes them. If tests and docs use made-up model IDs, they pass locally but produce nonexistent upstream IDs. Always validate test fixture model names against the provider's published model catalog before finalizing tests.
+
+  - **Reasoning injection gates: always provide an explicit bypass.** Model-name heuristics (family regexes, `-no-thinking` suffixes) will miss edge cases. Always allow the client to override via `reasoning_history` (`"preserved"`, `"interleaved"`, `"disabled"`) and `thinking.keep` / `thinking.type`. When the client sets these explicitly, honor them regardless of what the model-name regex says.
+
+  - **New providers that host heterogeneous models should default to hit-only reasoning restoration.** Never fabricate `"(prior reasoning unavailable)"` placeholders for providers where some hosted models lack reasoning support. The hit-only path (restore cached reasoning, skip on miss) is always safe; placeholders are only safe when every model the provider hosts unconditionally requires the reasoning field.
+
+  - **Reasoning scope isolation: include the upstream model name.** When reasoning caches are shared across models (e.g. a provider hosting 200+ models), scope KV keys by `provider:upstreamModelName:user` rather than just `provider:user`. A reasoning trace from one model family injected into another family's request will be silently wrong.
+
+  - **Interleaved reasoning has three distinct paths, not one:**
+    1. `reasoning_history: "disabled"` → skip injection entirely.
+    2. `reasoning_history` explicitly `"interleaved"` or model-default interleaved + user-ending → skip injection (upstream discards reasoning before the last user message).
+    3. `reasoning_history: "interleaved"` + tool-ending → inject, but only for assistant turns after the last user message (older turns are stripped by upstream anyway).
+
+  - **Model-default behavior detection must handle canonical name variants.** Providers may use dotted (`kimi-k2.6`) or `p`-separated (`kimi-k2p6`) canonical form depending on context. Default-behavior detection regexes must match both. Use `== null` (not `=== undefined`) to catch both `undefined` and `null` for optional fields. Include all model families that share the default, not just the first one found.
+
+  - **Response model aliasing: always force for providers with internal ID mapping.** If the proxy rewrites `parsedBody.model` to a different upstream ID, call `withPublicResponseModel(json, responseModelName, forceAlias=true)` so the response `model` field reflects the client-requested ID. The upstream's `model` field in the response will NOT match what the client sent.

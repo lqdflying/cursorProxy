@@ -1,6 +1,6 @@
 # cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **GLM / ZHIPU AI**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
+A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **GLM / ZHIPU AI**, **Fireworks AI**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
 - **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo/GLM `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so subsequent turns use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly.
@@ -21,6 +21,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 - [MiniMax](https://platform.minimax.io) → `MINIMAX_API_KEY`
 - [Xiaomi MiMo](https://platform.xiaomimimo.com) → `MIMO_API_KEY`
 - [ZHIPU AI / Z.AI](https://open.bigmodel.cn) → `GLM_API_KEY`
+- [Fireworks AI](https://fireworks.ai) → `FIREWORKS_API_KEY` (open-source model hosting)
 - [Azure Foundry](https://ai.azure.com) → `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_RESOURCE`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
 
@@ -80,6 +81,7 @@ Keep this table to values you must set for the deployment and providers you actu
 | `MINIMAX_API_KEY` | Using MiniMax models or default vision bridge | Upstream MiniMax API key; also reused by the default MiniMax VL vision backend. |
 | `MIMO_API_KEY` | Using Xiaomi MiMo models | Upstream MiMo API key. |
 | `GLM_API_KEY` | Using GLM / ZHIPU / Z.AI models | Upstream GLM API key. |
+| `FIREWORKS_API_KEY` | Using Fireworks AI models | Upstream Fireworks API key. |
 | `AZURE_FOUNDRY_API_KEY` | Using Azure OpenAI or Azure Anthropic | Azure Foundry API key. |
 | `AZURE_FOUNDRY_RESOURCE` | Using Azure OpenAI or Azure Anthropic | Azure Foundry resource name. |
 | `KV_URL` + `KV_TOKEN` | Vercel deployment | Upstash Redis REST credentials for reasoning, response-id, and image caches. |
@@ -90,7 +92,7 @@ Common optional settings:
 
 - `CURSORPROXY_MODELS` advertises model IDs from `GET /v1/models`.
 - `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4` switches GLM from the default China Coding Plan endpoint to global Z.AI.
-- `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
+- `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, `UPSTREAM_FIREWORKS`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
 
 Full references:
 
