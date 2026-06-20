@@ -111,4 +111,28 @@ describe("resolveFireworksGlmReasoningEffort", () => {
   it("returns false for empty body", () => {
     assert.equal(resolveFireworksGlmReasoningEffort(null, GLM_52), false);
   });
+
+  it("always logs the resolved effort for GLM 5.2+, and never for no-ops", () => {
+    const lines = [];
+    const orig = console.log;
+    console.log = (...args) => lines.push(args.join(" "));
+    try {
+      // Valid client value: body unchanged (returns false) but still logged.
+      resolveFireworksGlmReasoningEffort({ reasoning_effort: "high" }, GLM_52);
+      // Env matching the existing value: also unchanged but still logged.
+      process.env.FIREWORKS_GLM_REASONING_EFFORT = "high";
+      resolveFireworksGlmReasoningEffort({ reasoning_effort: "high" }, GLM_52);
+      delete process.env.FIREWORKS_GLM_REASONING_EFFORT;
+      // No-op model: must not emit an effort line.
+      resolveFireworksGlmReasoningEffort(
+        { reasoning_effort: "high" },
+        "accounts/fireworks/models/llama-v3p1-70b",
+      );
+    } finally {
+      console.log = orig;
+    }
+    const effortLines = lines.filter((l) => l.includes("FIREWORKS_GLM_EFFORT"));
+    assert.equal(effortLines.length, 2);
+    assert.ok(effortLines.every((l) => l.includes("reasoningEffort: high")));
+  });
 });
