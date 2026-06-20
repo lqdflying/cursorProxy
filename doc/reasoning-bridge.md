@@ -179,16 +179,24 @@ On GLM misses: leave reasoning absent
 | `KV_TTL_SECONDS` | 7 200 | Cache TTL for all reasoning entries |
 | `DEEPSEEK_REASONING_EFFORT` | `high` | DeepSeek thinking effort (`high` or `max`) |
 | `GLM_REASONING_EFFORT` | `max` | Native GLM (provider `glm`) effort: `max`, `xhigh`, `high`, `medium`, `low`, `minimal`, `none`. GLM-5.2+ only; stripped for older GLM. |
-| `FIREWORKS_GLM_REASONING_EFFORT` | `max` | Fireworks-hosted GLM 5.2+ effort: `max`, `xhigh`, `high`, `medium`, `low`, `none`. Independent of `GLM_REASONING_EFFORT`. |
+| `FIREWORKS_GLM_REASONING_EFFORT` | `max` | Fireworks-hosted GLM 5.2 effort: `max`, `xhigh`, `high`, `medium`, `low`, `none`. Independent of `GLM_REASONING_EFFORT`. |
 
 ## Fireworks GLM 5.2 Reasoning Effort
 
-Fireworks-hosted GLM 5.2+ (`accounts/fireworks/models/glm-5p2`) supports graded
-reasoning via `reasoning_effort` (the DeepSeek-V4 mechanism: `high`/`max`, with
-`xhigh`→max and `low`/`medium`→high). The proxy resolves the effort on the outbound
+Fireworks-hosted GLM 5.2 (`accounts/fireworks/models/glm-5p2`) supports graded
+reasoning via `reasoning_effort`. The proxy resolves the effort on the outbound
 request with precedence `FIREWORKS_GLM_REASONING_EFFORT` env → valid client value →
-default `max` (matching the native GLM provider). Invalid client values fall back to
-`max` and are logged as `FIREWORKS_GLM_INVALID_EFFORT`. The handling is scoped to GLM
-5.2+ on Fireworks; older Fireworks GLM and non-GLM Fireworks models pass through
-unchanged. The reasoning-restoration bridge is unchanged — it already applies to the
-GLM family regardless of account prefix.
+default `max` (matching the native GLM provider).
+
+Accepted client values:
+
+- String: `max`, `xhigh`, `high`, `medium`, `low`, `none`.
+- Boolean: `false` is normalized to `none` (disable reasoning); `true` is normalized
+  to `medium`.
+- Positive integer: preserved as a hard token budget.
+
+Invalid client values fall back to `max` and are logged as
+`FIREWORKS_GLM_INVALID_EFFORT`. The handling is scoped to the documented Fireworks
+GLM 5.2 IDs only; older Fireworks GLM, non-GLM Fireworks models, and future/unverified
+GLM versions pass through unchanged. The reasoning-restoration bridge is unchanged —
+it already applies to the GLM family regardless of account prefix.
