@@ -1044,8 +1044,13 @@ export default async function handler(req) {
   const scope = providerKey === "fireworks"
     ? providerKey + ":" + upstreamModelName + ":" + scopeUser
     : providerKey + ":" + scopeUser;
+  // openaicompat uses Cursor-shaped Chat Completions requests that may be
+  // normalized differently between turns (string vs array content, etc.).
+  // Use the canonicalized hash so cache keys stay stable across turns.
   const replyReasoningKey = originalMessages
-    ? await conversationHash(originalMessages, originalMessages.length, scope)
+    ? (providerKey === "openaicompat"
+      ? await normalizedConversationHash(originalMessages, originalMessages.length, scope, "conv:")
+      : await conversationHash(originalMessages, originalMessages.length, scope))
     : null;
 
   let injectedCount = 0;
@@ -1109,7 +1114,9 @@ export default async function handler(req) {
       parsedBody,
       originalMessages,
       scope,
-      conversationHash,
+      conversationHash: providerKey === "openaicompat"
+        ? (messages, upTo, scope) => normalizedConversationHash(messages, upTo, scope, "conv:")
+        : conversationHash,
       minAssistantIndex,
     });
     parsedBody = injected.parsedBody;
