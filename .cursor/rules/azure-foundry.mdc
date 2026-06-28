@@ -126,7 +126,10 @@ metadata, thinking, output_config
 The proxy's reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into assistant messages) is required by DeepSeek/Kimi/MiniMax/MiMo/GLM but is **skipped** for Azure providers. Anthropic's API rejects `reasoning_content` as "Extra inputs are not permitted." The gating set lives in `injectStoredReasoning()` inside `lib/reasoning.js`:
 
 ```javascript
-const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm"]);
+const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm", "fireworks"]);
+if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
+  reasoningProviders.add("openaicompat"); // hit-only on miss
+}
 ```
 
 ## Query String Construction
@@ -194,7 +197,10 @@ The reasoning bridge (re-injecting `reasoning_content`/`reasoning_details` into 
 
 The gating set lives in `injectStoredReasoning()` inside `lib/reasoning.js`:
 ```javascript
-const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm"]);
+const reasoningProviders = new Set(["deepseek", "kimi", "minimax", "mimo", "glm", "fireworks"]);
+if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
+  reasoningProviders.add("openaicompat"); // hit-only on miss
+}
 ```
 
 ### Diagnostics

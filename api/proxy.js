@@ -266,6 +266,11 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
+// Confirm at cold start that the opt-in cache flag was honored.
+if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
+  diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
+}
+
 function isAzureFoundryKimiEndpoint(base) {
   try {
     const url = new URL(base || "");
@@ -332,9 +337,12 @@ function isUnsafeUpstreamPath(pathParam) {
 }
 
 // Canonicalized conversation hash for openaicompat. Cursor may send tool_calls
-// inside assistant messages in Anthropic format ({name, input_schema}) on some
-// turns and OpenAI format ({type, function: {name, arguments}}) on others, so
-// normalize to OpenAI format before hashing for stable keys.
+// inside assistant messages in Anthropic format ({type:"tool_use", name, input})
+// on some turns and OpenAI format ({type:"function", function:{name, arguments}})
+// on others, so normalize to OpenAI format before hashing for stable keys.
+// Anthropic tool_use blocks carry call arguments in `input` (the args actually
+// invoked), not in schema fields — map `input`→`arguments` so the cache key
+// reflects what was actually called, not just the tool name.
 async function openaicompatConversationHash(messages, upTo, scope) {
   const normalized = messages.slice(0, upTo).map((m) => {
     if (m.role !== "assistant" || !Array.isArray(m.tool_calls)) return m;
@@ -342,13 +350,12 @@ async function openaicompatConversationHash(messages, upTo, scope) {
       ...m,
       tool_calls: m.tool_calls.map((tc) => {
         if (tc.function) return tc;
+        const args = tc.input != null
+          ? (typeof tc.input === "string" ? tc.input : JSON.stringify(tc.input))
+          : (tc.arguments != null ? String(tc.arguments) : "");
         return {
           type: "function",
-          function: {
-            name: tc.name || "",
-            ...(tc.description != null ? { description: tc.description } : {}),
-            ...(tc.input_schema != null ? { parameters: tc.input_schema } : tc.parameters != null ? { parameters: tc.parameters } : {}),
-          },
+          function: { name: tc.name || "", arguments: args },
         };
       }),
     };
@@ -884,14 +891,16 @@ export default async function handler(req) {
     }
   }
 
-  // Normalize tools for openaicompat: Cursor may send Anthropic-format tools
-  // ({name, description, input_schema}) which lack the {type:"function", function:{...}}
-  // wrapper that the OpenAI Chat Completions API requires.
+  // Normalize tools for openaicompat: any tool that lacks the {type:"function",
+  // function:{...}} wrapper must be wrapped, since the OpenAI Chat Completions
+  // API requires it. This catches both Anthropic-flat ({name, description,
+  // input_schema}) and inline OpenAI/Responses ({type:"function", name,
+  // parameters}) shapes — both are missing the required `function` object.
   if (providerKey === "openaicompat" && Array.isArray(parsedBody?.tools)) {
     let toolsFixed = false;
     for (let i = 0; i < parsedBody.tools.length; i++) {
       const t = parsedBody.tools[i];
-      if (t.name && !t.function && t.type !== "function") {
+      if (t.name && !t.function) {
         parsedBody.tools[i] = {
           type: "function",
           function: {
@@ -1075,7 +1084,13 @@ export default async function handler(req) {
   // turns. Tool calls inside messages are normalized to OpenAI Chat Completions
   // format before hashing so Anthropic-format tool_calls don't produce empty
   // identities.
-  const replyReasoningKey = originalMessages
+  // When the openaicompat opt-in cache is OFF, skip key derivation entirely so
+  // neither the inject side nor the store side touches KV — matches how
+  // ANTHROPICCOMPAT_THINKING_CACHE gates both sides, and avoids orphaned KV
+  // writes for a provider whose inject path is gated off.
+  const reasoningCacheDisabled = providerKey === "openaicompat"
+    && process.env.OPENAICOMPAT_REASONING_CACHE !== "true";
+  const replyReasoningKey = (originalMessages && !reasoningCacheDisabled)
     ? (providerKey === "openaicompat"
       ? await openaicompatConversationHash(originalMessages, originalMessages.length, scope)
       : await conversationHash(originalMessages, originalMessages.length, scope))
