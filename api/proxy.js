@@ -859,6 +859,31 @@ export default async function handler(req) {
     }
   }
 
+  // Normalize tools for openaicompat: Cursor may send Anthropic-format tools
+  // ({name, description, input_schema}) which lack the {type:"function", function:{...}}
+  // wrapper that the OpenAI Chat Completions API requires.
+  if (providerKey === "openaicompat" && Array.isArray(parsedBody?.tools)) {
+    let toolsFixed = false;
+    for (let i = 0; i < parsedBody.tools.length; i++) {
+      const t = parsedBody.tools[i];
+      if (t.name && !t.function && t.type !== "function") {
+        parsedBody.tools[i] = {
+          type: "function",
+          function: {
+            name: t.name,
+            ...(t.description != null ? { description: t.description } : {}),
+            ...(t.input_schema != null ? { parameters: t.input_schema } : t.parameters != null ? { parameters: t.parameters } : {}),
+          },
+        };
+        toolsFixed = true;
+      }
+    }
+    if (toolsFixed) {
+      bodyText = JSON.stringify(parsedBody);
+      diag("OPENAICOMPAT_TOOLS_FIXED", "provider:", providerKey, "count:", parsedBody.tools.length);
+    }
+  }
+
   let azureModelName = upstreamModelName;
 
   {
