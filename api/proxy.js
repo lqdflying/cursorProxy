@@ -331,6 +331,31 @@ function isUnsafeUpstreamPath(pathParam) {
   return false;
 }
 
+// Canonicalized conversation hash for openaicompat. Cursor may send tool_calls
+// inside assistant messages in Anthropic format ({name, input_schema}) on some
+// turns and OpenAI format ({type, function: {name, arguments}}) on others, so
+// normalize to OpenAI format before hashing for stable keys.
+async function openaicompatConversationHash(messages, upTo, scope) {
+  const normalized = messages.slice(0, upTo).map((m) => {
+    if (m.role !== "assistant" || !Array.isArray(m.tool_calls)) return m;
+    return {
+      ...m,
+      tool_calls: m.tool_calls.map((tc) => {
+        if (tc.function) return tc;
+        return {
+          type: "function",
+          function: {
+            name: tc.name || "",
+            ...(tc.description != null ? { description: tc.description } : {}),
+            ...(tc.input_schema != null ? { parameters: tc.input_schema } : tc.parameters != null ? { parameters: tc.parameters } : {}),
+          },
+        };
+      }),
+    };
+  });
+  return normalizedConversationHash(normalized, normalized.length, scope, "conv:");
+}
+
 function upstreamApiKey(providerKey) {
   const meta = PROVIDERS[providerKey] ?? PROVIDERS.deepseek;
   return process.env[meta.apiKeyEnv] || "";
@@ -1045,11 +1070,14 @@ export default async function handler(req) {
     ? providerKey + ":" + upstreamModelName + ":" + scopeUser
     : providerKey + ":" + scopeUser;
   // openaicompat uses Cursor-shaped Chat Completions requests that may be
-  // normalized differently between turns (string vs array content, etc.).
-  // Use the canonicalized hash so cache keys stay stable across turns.
+  // normalized differently between turns (string vs array content, tool call
+  // shape, etc.). Use a canonicalized hash so cache keys stay stable across
+  // turns. Tool calls inside messages are normalized to OpenAI Chat Completions
+  // format before hashing so Anthropic-format tool_calls don't produce empty
+  // identities.
   const replyReasoningKey = originalMessages
     ? (providerKey === "openaicompat"
-      ? await normalizedConversationHash(originalMessages, originalMessages.length, scope, "conv:")
+      ? await openaicompatConversationHash(originalMessages, originalMessages.length, scope)
       : await conversationHash(originalMessages, originalMessages.length, scope))
     : null;
 
@@ -1115,7 +1143,7 @@ export default async function handler(req) {
       originalMessages,
       scope,
       conversationHash: providerKey === "openaicompat"
-        ? (messages, upTo, scope) => normalizedConversationHash(messages, upTo, scope, "conv:")
+        ? openaicompatConversationHash
         : conversationHash,
       minAssistantIndex,
     });
