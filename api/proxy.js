@@ -24,6 +24,7 @@ import {
   providerFromModel,
   publicModelId,
   resolveAzureAlias,
+  resolveCompatibleAlias,
   resolveFireworksModel,
   withPublicResponseModel,
 } from "../lib/models.js";
@@ -185,6 +186,44 @@ const PROVIDERS = {
     apiKeyEnv: "FIREWORKS_API_KEY",
     authHeaderName: "authorization",
     authHeaderPrefix: "Bearer ",
+  },
+  openaicompat: {
+    url: process.env.UPSTREAM_OPENAICOMPAT || "https://api.openai.com",
+    get host() {
+      try { return new URL(process.env.UPSTREAM_OPENAICOMPAT || "https://api.openai.com").hostname; }
+      catch { return "api.openai.com"; }
+    },
+    apiKeyEnv: "OPENAICOMPAT_API_KEY",
+    authHeaderName: "authorization",
+    authHeaderPrefix: "Bearer ",
+  },
+  anthropiccompat: {
+    get url() {
+      return process.env.UPSTREAM_ANTHROPICCOMPAT || "https://api.anthropic.com";
+    },
+    get host() {
+      try { return new URL(process.env.UPSTREAM_ANTHROPICCOMPAT || "https://api.anthropic.com").hostname; }
+      catch { return "api.anthropic.com"; }
+    },
+    apiKeyEnv: "ANTHROPICCOMPAT_API_KEY",
+    get authHeaderName() {
+      const mode = (process.env.ANTHROPICCOMPAT_AUTH_MODE || "api-key").trim().toLowerCase();
+      return mode === "bearer" ? "authorization" : "x-api-key";
+    },
+    get authHeaderPrefix() {
+      const mode = (process.env.ANTHROPICCOMPAT_AUTH_MODE || "api-key").trim().toLowerCase();
+      return mode === "bearer" ? "Bearer " : "";
+    },
+    get extraHeaders() {
+      const mode = (process.env.ANTHROPICCOMPAT_AUTH_MODE || "api-key").trim().toLowerCase();
+      return mode === "bearer" ? {} : { "anthropic-version": "2023-06-01" };
+    },
+    buildUrl(_model, pathParam, queryString) {
+      const base = (process.env.UPSTREAM_ANTHROPICCOMPAT || "https://api.anthropic.com")
+        .replace(/\/+$/, "");
+      const remapped = pathParam === "chat/completions" ? "messages" : pathParam;
+      return `${base}/v1/${remapped}${queryString || ""}`;
+    },
   },
   azureopenai: {
     apiKeyEnv: "AZURE_FOUNDRY_API_KEY",
@@ -442,6 +481,52 @@ export default async function handler(req) {
       diag("FIREWORKS_MODEL_RESOLVED",
         "bare:", modelNames.bare,
         "upstream:", fireworksModel);
+    }
+  }
+
+  // Compatible-provider alias resolution. Maps "compatible-<name>" model ids
+  // to upstream model names (e.g. compatible-gpt-5.5 → gpt-5.5).
+  let compatAliasInfo = null;
+  let compatAliasPublicId = "";
+  if (providerKey === "openaicompat" || providerKey === "anthropiccompat") {
+    const aliasResult = resolveCompatibleAlias(upstreamModelName);
+    if (aliasResult) {
+      if (aliasResult.provider !== providerKey) {
+        diag("COMPATIBLE_ALIAS_MISMATCH",
+          "alias:", aliasResult.aliasName,
+          "aliasProvider:", aliasResult.provider,
+          "routeProvider:", providerKey);
+        return jsonErrorResponse(
+          400,
+          `Model "${upstreamModelName}" is a ${aliasResult.provider} alias but was sent to the ${providerKey} route. Use the /${aliasResult.provider}/v1/ route or the unified /v1/ endpoint instead.`,
+          "compatible_alias_mismatch",
+          "invalid_request_error"
+        );
+      }
+      compatAliasInfo = aliasResult;
+      compatAliasPublicId = publicModelId(aliasResult.aliasName);
+      parsedBody.model = aliasResult.upstream;
+      upstreamModelName = aliasResult.upstream;
+      responseModelName = compatAliasPublicId;
+      bodyText = JSON.stringify(parsedBody);
+      diag("COMPATIBLE_ALIAS_RESOLVED",
+        "alias:", aliasResult.aliasName,
+        "upstream:", aliasResult.upstream);
+    }
+  }
+
+  // Default model injection for compatible providers when client omits model.
+  if ((providerKey === "openaicompat" || providerKey === "anthropiccompat") && parsedBody && !parsedBody.model) {
+    const defaultModel = providerKey === "openaicompat"
+      ? (process.env.OPENAICOMPAT_DEFAULT_MODEL || "").trim()
+      : (process.env.ANTHROPICCOMPAT_DEFAULT_MODEL || "").trim();
+    if (defaultModel) {
+      parsedBody.model = defaultModel;
+      upstreamModelName = defaultModel;
+      bodyText = JSON.stringify(parsedBody);
+      diag("COMPATIBLE_DEFAULT_MODEL", "provider:", providerKey, "model:", defaultModel);
+    } else {
+      diag("COMPATIBLE_NO_MODEL", "provider:", providerKey);
     }
   }
 
@@ -796,7 +881,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, azureopenai, or azureanthropic (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, claude-sonnet-4-6, cursorproxy/fireworks/kimi-k2p7-code, or cursorproxy/glm-5.2).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, azureopenai, azureanthropic, openaicompat, or anthropiccompat (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, cursorproxy/compatible-gpt-5.5, or cursorproxy/fireworks/kimi-k2p7-code).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -842,6 +927,10 @@ export default async function handler(req) {
   // with cursorproxy/accounts/fireworks/models/..., restore the original.
   if (fireworksPublicId) {
     responseModelName = fireworksPublicId;
+  }
+  // Same for compatible-provider aliases: restore the alias public id.
+  if (compatAliasPublicId) {
+    responseModelName = compatAliasPublicId;
   }
   // Set azureModelName unconditionally after model normalization.
   // Previously this was a lazy-init that could read a stale value.
@@ -1018,7 +1107,9 @@ export default async function handler(req) {
   // doesn't re-reason from scratch on every turn when thinking.type === "adaptive".
   // The existing reasoning bridge (DeepSeek/Kimi/MiniMax/MiMo/GLM) uses reasoning_content
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
-  if (providerKey === "azureanthropic" && parsedBody?.messages && parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled") {
+  if ((providerKey === "azureanthropic" ||
+    (providerKey === "anthropiccompat" && process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true")) &&
+    parsedBody?.messages && parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled") {
     const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash);
     if (claudeInjected > 0) {
       bodyText = JSON.stringify(parsedBody);
@@ -1100,8 +1191,9 @@ export default async function handler(req) {
   // has the same header sensitivity: EdgeOne may add large platform headers,
   // and Azure rejects those with HTTP 431 if we forward them upstream.
   const isAzureProvider = providerKey === "azureopenai" || providerKey === "azureanthropic";
+  const isAnthropicCompat = providerKey === "anthropiccompat";
   const isAzureFoundryKimi = providerKey === "kimi" && isAzureFoundryKimiEndpoint(provider.url);
-  const usesAzureHeaderIsolation = isAzureProvider || isAzureFoundryKimi;
+  const usesAzureHeaderIsolation = isAzureProvider || isAnthropicCompat || isAzureFoundryKimi;
   const headers = usesAzureHeaderIsolation ? new Headers() : new Headers(req.headers);
 
   // Build dynamic host header. Prefer the hostname from provider.url so
@@ -1244,8 +1336,10 @@ export default async function handler(req) {
     // Convert Anthropic non-streaming response to OpenAI format.
     // Extract and cache thinking blocks BEFORE mapping, since the mapper
     // discards them (only text/tool_use blocks survive the conversion).
-    if (providerKey === "azureanthropic") {
-      if (parsedBody?.thinking?.type === "adaptive" && originalMessages) {
+    if (providerKey === "azureanthropic" || providerKey === "anthropiccompat") {
+      const anthropicThinkingEnabled = providerKey === "azureanthropic"
+        || (providerKey === "anthropiccompat" && process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true");
+      if (anthropicThinkingEnabled && parsedBody?.thinking?.type === "adaptive" && originalMessages) {
         const claudeThinkKey = "claude_thinking:" + await normalizedConversationHash(
           originalMessages, originalMessages.length, scope
         );
@@ -1283,7 +1377,7 @@ export default async function handler(req) {
       }
     }
 
-    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
+    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {
@@ -1400,7 +1494,8 @@ export default async function handler(req) {
     // exact shape including empty-string fields (e.g. thinking: "" for omitted
     // thinking) so the cached block round-trips unchanged.
     const claudeThinkBlocks = new Map(); // index -> content_block object
-    const claudeThinkActive = providerKey === "azureanthropic" &&
+    const claudeThinkActive = (providerKey === "azureanthropic" ||
+      (providerKey === "anthropiccompat" && process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true")) &&
       parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled";
     let claudeThinkingCached = false;
     let azureRespCached = false;
@@ -1527,7 +1622,7 @@ export default async function handler(req) {
             continue;
           }
           if (!line.startsWith("data: ")) {
-            if (!(providerKey === "azureanthropic" || providerKey === "azureopenai")) {
+            if (!(providerKey === "azureanthropic" || providerKey === "anthropiccompat" || providerKey === "azureopenai")) {
               if (line.trim()) await writer.write(encoder.encode(line + "\n"));
             }
             continue;
@@ -1558,7 +1653,7 @@ export default async function handler(req) {
             // Transform Anthropic SSE events into OpenAI-compatible format.
             // Anthropic uses events like content_block_delta with delta.text_delta,
             // but the proxy and Cursor expect choices[0].delta.content.
-            if (providerKey === "azureanthropic") {
+            if (providerKey === "azureanthropic" || providerKey === "anthropiccompat") {
               // Count ALL events per stream BEFORE any suppression branches,
               // so thinking_delta / signature_delta / content_block_start for
               // thinking / redacted_thinking are included in the aggregated log.
@@ -1703,7 +1798,7 @@ export default async function handler(req) {
                 () => { contentCapHit = true; },
               );
             }
-            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
+            json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
             await writer.write(
               encoder.encode(
                 "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"
@@ -1777,7 +1872,7 @@ export default async function handler(req) {
         await cacheAzResponseId();
         await cacheClaudeThinking();
       }
-      if (providerKey === "azureanthropic" && anthropicEventCounts.total > 0) {
+      if ((providerKey === "azureanthropic" || providerKey === "anthropiccompat") && anthropicEventCounts.total > 0) {
         log("ANTHROPIC_EVENTS", anthropicEventCounts);
       }
       logAzureStreamSummary(timedOut ? "timeout" : "finally");

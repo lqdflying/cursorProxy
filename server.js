@@ -38,6 +38,8 @@ const ROUTES = [
   { pattern: /^\/fireworks\/v1\/(.+)$/, provider: "fireworks" },
   { pattern: /^\/azure-openai\/v1\/(.+)$/, provider: "azureopenai" },
   { pattern: /^\/azure-anthropic\/v1\/(.+)$/, provider: "azureanthropic" },
+  { pattern: /^\/openaicompat\/v1\/(.+)$/, provider: "openaicompat" },
+  { pattern: /^\/anthropiccompat\/v1\/(.+)$/, provider: "anthropiccompat" },
   { pattern: /^\/v1\/(.+)$/, provider: null },
   { pattern: /^\/v0\/(.+)$/, provider: null },
 ];

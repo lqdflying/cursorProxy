@@ -5,7 +5,7 @@ alwaysApply: true
 
 # cursorProxy Core Context
 
-- `cursorProxy` is an edge-compatible multi-provider AI proxy for DeepSeek, Kimi, MiniMax, Xiaomi MiMo, GLM / ZHIPU AI, and Azure Foundry.
+- `cursorProxy` is an edge-compatible multi-provider AI proxy for DeepSeek, Kimi, MiniMax, Xiaomi MiMo, GLM / ZHIPU AI, Azure Foundry, and generic OpenAI/Anthropic-compatible endpoints.
 - `api/proxy.js` is the main entrypoint and holds the provider orchestration.
 - `lib/models.js` handles model parsing, public/private model IDs, and provider routing.
 - Azure adapters live in `lib/azure-openai.js` and `lib/azure-anthropic.js`.

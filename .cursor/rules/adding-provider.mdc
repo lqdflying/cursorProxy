@@ -60,3 +60,16 @@ If the new provider is an Azure Foundry deployment:
 - Response/SSE mappers live in the same files (`mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `mapAnthropicResponseToOpenAI`, `mapAnthropicSSEToOpenAI`)
 - Add provider-specific URL construction via `buildUrl()` inside the `PROVIDERS` map in `api/proxy.js`
 - Reasoning model detection logic lives in `isAzureReasoningModel()` in `lib/azure-openai.js`
+
+## Compatible providers (openaicompat, anthropiccompat)
+
+These are generic passthrough providers for any OpenAI- or Anthropic-compatible endpoint.
+
+- **Route-only + alias routing**: `openaicompat` and `anthropiccompat` route via URL path (`/openaicompat/v1/...`, `/anthropiccompat/v1/...`) AND via `compatible-` model prefix aliases (`compatible-gpt-5.5` → `openaicompat`, `compatible-claude-sonnet-4-6` → `anthropiccompat`).
+- **Model aliases**: defined in `COMPATIBLE_MODEL_ALIASES` in `lib/models.js`. To add new aliases, add entries to the map and they'll automatically route and resolve.
+- **Anthropic response mapping**: `anthropiccompat` reuses `mapAnthropicResponseToOpenAI` / `mapAnthropicSSEToOpenAI` from `lib/azure-anthropic.js`. The `ANTHROPIC_PROVIDERS` set in that file gates `remapAnthropicInput` and `normalizeAnthropicContentTypes`.
+- **No body sanitization**: compatible providers pass requests through as-is (no `sanitizeAzureAnthropicBody`).
+- **Opt-in caching**: `OPENAICOMPAT_REASONING_CACHE=true` adds `openaicompat` to `reasoningProviders` in `lib/reasoning.js`. `ANTHROPICCOMPAT_THINKING_CACHE=true` enables Claude thinking cache for `anthropiccompat` in `api/proxy.js`.
+- **Header isolation**: `anthropiccompat` uses clean `Headers()` (same as Azure providers) to prevent leaking client auth upstream.
+- **Auth mode**: `anthropiccompat` supports `api-key` (default, `x-api-key`) or `bearer` (`Authorization: Bearer`) via `ANTHROPICCOMPAT_AUTH_MODE`.
+- **Default model**: `OPENAICOMPAT_DEFAULT_MODEL` / `ANTHROPICCOMPAT_DEFAULT_MODEL` inject a model when the client omits it.
