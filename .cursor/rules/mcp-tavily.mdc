@@ -1,0 +1,95 @@
+---
+description: "MCP tool arguments for tavily — use when calling any tavily tool"
+alwaysApply: false
+---
+
+# MCP Tools: tavily
+
+ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
+
+### tavily_research
+Perform comprehensive research on a topic or question. Rate limit: 20 requests/minute.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| input | string | Yes | - | Comprehensive description of the research task |
+| model | string | No | auto | Depth: mini, pro, auto |
+
+Example:
+CallMcpTool({ server: "tavily", toolName: "tavily_research", arguments: { input: "Latest advancements in quantum computing 2026", model: "pro" } })
+
+### tavily_map
+Map a website's structure starting from a base URL.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | Root URL to begin mapping |
+| max_depth | integer | No | 1 | Max depth to explore |
+| max_breadth | integer | No | 20 | Max links to follow per page |
+| limit | integer | No | 50 | Total links to process |
+| instructions | string | No | "" | Natural language instructions for the crawler |
+| select_paths | array | No | [] | Regex patterns to select URL paths |
+| select_domains | array | No | [] | Regex patterns to restrict domains |
+| allow_external | boolean | No | true | Whether to return external links |
+
+Example:
+CallMcpTool({ server: "tavily", toolName: "tavily_map", arguments: { url: "https://example.com", max_depth: 2, limit: 100 } })
+
+### tavily_crawl
+Crawl a website starting from a URL and extract page content.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | Root URL to begin crawl |
+| max_depth | integer | No | 1 | Max depth to explore |
+| max_breadth | integer | No | 20 | Max links to follow per page |
+| limit | integer | No | 50 | Total links to process |
+| instructions | string | No | "" | Natural language instructions |
+| select_paths | array | No | [] | Regex patterns to select URL paths |
+| select_domains | array | No | [] | Regex patterns to restrict domains |
+| allow_external | boolean | No | true | Whether to return external links |
+| extract_depth | string | No | basic | basic or advanced |
+| format | string | No | markdown | markdown or text |
+| include_favicon | boolean | No | false | Include favicon URL per result |
+
+Example:
+CallMcpTool({ server: "tavily", toolName: "tavily_crawl", arguments: { url: "https://example.com/docs", extract_depth: "advanced", format: "markdown" } })
+
+### tavily_extract
+Extract content from URLs in markdown or text format.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| urls | array | Yes | - | List of URLs to extract |
+| extract_depth | string | No | basic | basic or advanced |
+| include_images | boolean | No | false | Include images from pages |
+| format | string | No | markdown | markdown or text |
+| include_favicon | boolean | No | false | Include favicon URLs |
+| query | string | No | "" | Query to rerank content chunks |
+
+Example:
+CallMcpTool({ server: "tavily", toolName: "tavily_extract", arguments: { urls: ["https://example.com/article"], extract_depth: "advanced" } })
+
+### tavily_search
+Search the web for current information.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string | Yes | - | Search query |
+| max_results | integer | No | 5 | Maximum results to return |
+| search_depth | string | No | basic | basic, advanced, fast, ultra-fast |
+| topic | string | No | general | Always general |
+| time_range | string\|null | No | null | day, week, month, year |
+| include_images | boolean | No | false | Include query-related images |
+| include_image_descriptions | boolean | No | false | Include images with descriptions |
+| include_raw_content | boolean | No | false | Include cleaned HTML per result |
+| include_domains | array | No | [] | Domains to specifically include |
+| exclude_domains | array | No | [] | Domains to specifically exclude |
+| country | string | No | "" | Full country name to boost results |
+| include_favicon | boolean | No | false | Include favicon URL per result |
+| start_date | string | No | "" | YYYY-MM-DD |
+| end_date | string | No | "" | YYYY-MM-DD |
+| exact_match | boolean\|null | No | null | Only return exact phrase matches |
+
+Example:
+CallMcpTool({ server: "tavily", toolName: "tavily_search", arguments: { query: "latest AI news", max_results: 10, search_depth: "advanced" } })

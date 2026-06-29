@@ -1,0 +1,180 @@
+---
+description: "MCP tool arguments for githubmcp read/inspect tools"
+alwaysApply: false
+---
+
+# MCP Tools: githubmcp (Inspect)
+
+ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
+
+### get_repo_info
+Get metadata and overview information about a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_repo_info", arguments: { owner: "octocat", repo: "Hello-World" } })
+
+### get_repo_structure
+Get the file/folder tree structure of a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+| max_depth | integer\|null | No | null | Maximum depth of tree |
+| path_filter | string\|null | No | null | Glob pattern to filter paths |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_repo_structure", arguments: { owner: "octocat", repo: "Hello-World", max_depth: 2 } })
+
+### get_languages
+Get the programming language breakdown of a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_languages", arguments: { owner: "octocat", repo: "Hello-World" } })
+
+### get_commits
+Get commit history for a repository or file.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+| path | string\|null | No | null | Filter by file path |
+| limit | integer | No | 20 | Maximum commits |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_commits", arguments: { owner: "octocat", repo: "Hello-World", limit: 10 } })
+
+### list_branches
+List all branches in a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "list_branches", arguments: { owner: "octocat", repo: "Hello-World" } })
+
+### get_file_history
+Get the commit history for a specific file.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| path | string | Yes | - | File path |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+| limit | integer | No | 20 | Maximum commits |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_file_history", arguments: { owner: "octocat", repo: "Hello-World", path: "README.md" } })
+
+### get_blame
+Get blame information for a file.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| path | string | Yes | - | File path |
+| ref | string | No | HEAD | Branch, tag, or SHA |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_blame", arguments: { owner: "octocat", repo: "Hello-World", path: "src/index.js" } })
+
+### get_file_summary
+Get an overview of a file including size, line count, and preview.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| path | string | Yes | - | File path |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+| preview_lines | integer | No | 20 | Lines to preview |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_file_summary", arguments: { owner: "octocat", repo: "Hello-World", path: "README.md" } })
+
+### read_file
+Read file contents from a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| path | string | Yes | - | File path |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+| start_line | integer\|null | No | null | First line (1-based) |
+| end_line | integer\|null | No | null | Last line (1-based) |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "read_file", arguments: { owner: "octocat", repo: "Hello-World", path: "README.md" } })
+
+### search_code
+Search for text or regex patterns across files.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| query | string | Yes | - | Search string or regex pattern |
+| is_regexp | boolean | No | false | Treat query as Python regex |
+| include_pattern | string\|null | No | null | Glob pattern for files |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+| max_results | integer | No | 50 | Maximum matching lines |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "search_code", arguments: { owner: "octocat", repo: "Hello-World", query: "function main" } })
+
+### find_files
+Search for files matching a glob pattern.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| pattern | string | Yes | - | Glob pattern |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "find_files", arguments: { owner: "octocat", repo: "Hello-World", pattern: "**/*.js" } })
+
+### list_directory
+List contents of a directory in a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| path | string | No | "" | Directory path ("" for root) |
+| ref | string\|null | No | null | Branch, tag, or SHA |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "list_directory", arguments: { owner: "octocat", repo: "Hello-World", path: "src" } })
+
+### get_diff
+Compare two branches, tags, or commits.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| base | string | Yes | - | Base ref |
+| head | string | Yes | - | Head ref |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_diff", arguments: { owner: "octocat", repo: "Hello-World", base: "main", head: "feature" } })

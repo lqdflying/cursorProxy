@@ -1,0 +1,236 @@
+---
+description: "MCP tool arguments for vercel — use when calling any vercel tool"
+alwaysApply: false
+---
+
+# MCP Tools: vercel
+
+ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
+
+### add_toolbar_reaction
+Add an emoji reaction to a message in a toolbar thread.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| threadId | string | Yes | - | Thread ID containing the message |
+| messageId | string | Yes | - | Message ID to react to |
+| teamId | string | Yes | - | Team ID or slug |
+| emoji | string | Yes | - | Emoji reaction |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "add_toolbar_reaction", arguments: { threadId: "thread_123", messageId: "msg_456", teamId: "team_abc", emoji: "👍" } })
+
+### edit_toolbar_message
+Edit an existing message in a toolbar thread.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| threadId | string | Yes | - | Thread ID containing the message |
+| messageId | string | Yes | - | Message ID to edit |
+| teamId | string | Yes | - | Team ID or slug |
+| markdown | string | Yes | - | Updated message content |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "edit_toolbar_message", arguments: { threadId: "thread_123", messageId: "msg_456", teamId: "team_abc", markdown: "Updated comment" } })
+
+### reply_to_toolbar_thread
+Add a reply message to an existing toolbar thread.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| threadId | string | Yes | - | Thread ID to reply to |
+| teamId | string | Yes | - | Team ID or slug |
+| markdown | string | Yes | - | Reply content |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "reply_to_toolbar_thread", arguments: { threadId: "thread_123", teamId: "team_abc", markdown: "Thanks for the feedback" } })
+
+### change_toolbar_thread_resolve_status
+Mark a toolbar thread as resolved or unresolved.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| threadId | string | Yes | - | Thread ID to update |
+| teamId | string | Yes | - | Team ID or slug |
+| resolved | boolean | Yes | - | true to resolve, false to unresolve |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "change_toolbar_thread_resolve_status", arguments: { threadId: "thread_123", teamId: "team_abc", resolved: true } })
+
+### get_toolbar_thread
+Get a specific toolbar thread by ID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| threadId | string | Yes | - | Thread ID to retrieve |
+| teamId | string | Yes | - | Team ID or slug |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_toolbar_thread", arguments: { threadId: "thread_123", teamId: "team_abc" } })
+
+### list_toolbar_threads
+List Vercel toolbar comment threads for a team.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| teamId | string | Yes | - | Team ID or slug |
+| projectId | string | No | - | Filter by project ID |
+| branch | string | No | - | Filter by branch name |
+| status | string | No | - | resolved or unresolved |
+| page | string | No | - | Page path or glob |
+| search | string | No | - | Search text in comments |
+| limit | number | No | - | Maximum results (default 20) |
+| offset | number | No | - | Pagination offset |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "list_toolbar_threads", arguments: { teamId: "team_abc", projectId: "prj_123", status: "unresolved" } })
+
+### check_domain_availability_and_price
+Check if domain names are available and get pricing.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| names | array | Yes | - | Domain names to check (1-10) |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "check_domain_availability_and_price", arguments: { names: ["example.com", "myapp.dev"] } })
+
+### import-claude-design-from-url
+Import a design into Vercel from a publicly fetchable URL.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | Public HTTPS URL to the design file |
+| title | string | No | - | Suggested design title |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "import-claude-design-from-url", arguments: { url: "https://example.com/design.html", title: "Landing page" } })
+
+### web_fetch_vercel_url
+Fetch a Vercel deployment URL that requires Vercel Authentication.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | Full Vercel deployment URL |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "web_fetch_vercel_url", arguments: { url: "https://myapp.vercel.app/my-page" } })
+
+### get_access_to_vercel_url
+Create a temporary shareable link for a protected Vercel deployment.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | Full Vercel deployment URL |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_access_to_vercel_url", arguments: { url: "https://myapp.vercel.app" } })
+
+### get_runtime_errors
+Get grouped runtime error clusters for a project.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| projectId | string | Yes | - | Project ID |
+| teamId | string | Yes | - | Team ID or slug |
+| since | string | No | - | Start time (ISO or relative) |
+| until | string | No | - | End time (ISO or relative) |
+| routes | string | No | - | Comma-separated route paths |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_runtime_errors", arguments: { projectId: "prj_123", teamId: "team_abc", since: "24h" } })
+
+### get_runtime_logs
+Get runtime logs for a project or deployment.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| projectId | string | Yes | - | Project ID |
+| teamId | string | Yes | - | Team ID or slug |
+| deploymentId | string | No | - | Filter by deployment ID or URL |
+| environment | string | No | - | production or preview |
+| level | array | No | - | error, warning, info, fatal |
+| statusCode | string | No | - | HTTP status code filter |
+| source | array | No | - | serverless, edge-function, edge-middleware, static |
+| since | string | No | - | Start time (ISO or relative) |
+| until | string | No | - | End time (ISO or relative) |
+| limit | number | No | - | Maximum entries (max 100) |
+| query | string | No | - | Full-text search query |
+| requestId | string | No | - | Filter by request ID |
+| group_by | string | No | - | statusCode, requestPath, route, level, source, deploymentId, branch |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_runtime_logs", arguments: { projectId: "prj_123", teamId: "team_abc", environment: "production", limit: 50 } })
+
+### get_deployment_build_logs
+Get build logs for a deployment.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| idOrUrl | string | Yes | - | Deployment ID or URL |
+| teamId | string | Yes | - | Team ID or slug |
+| direction | string | No | tail | tail or head |
+| errorsOnly | boolean | No | false | Return only error events |
+| limit | number | No | 100 | Maximum log lines |
+| since | string | No | - | Start time (ISO or relative) |
+| until | string | No | - | End time (ISO or relative) |
+| buildId | string | No | - | Specific build ID |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_deployment_build_logs", arguments: { idOrUrl: "https://myapp.vercel.app", teamId: "team_abc", errorsOnly: true } })
+
+### get_deployment
+Get a specific deployment by ID or URL.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| idOrUrl | string | Yes | - | Deployment ID or URL |
+| teamId | string | Yes | - | Team ID or slug |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_deployment", arguments: { idOrUrl: "https://myapp.vercel.app", teamId: "team_abc" } })
+
+### list_deployments
+List all deployments for a project.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| projectId | string | Yes | - | Project ID |
+| teamId | string | Yes | - | Team ID |
+| since | number | No | - | Deployments after this timestamp |
+| until | number | No | - | Deployments before this timestamp |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "list_deployments", arguments: { projectId: "prj_123", teamId: "team_abc" } })
+
+### get_project
+Get a specific Vercel project.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| projectId | string | Yes | - | Project ID or slug |
+| teamId | string | Yes | - | Team ID or slug |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "get_project", arguments: { projectId: "prj_123", teamId: "team_abc" } })
+
+### list_projects
+List all Vercel projects for a user (max 50).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| teamId | string | Yes | - | Team ID or slug |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "list_projects", arguments: { teamId: "team_abc" } })
+
+### search_vercel_documentation
+Search the Vercel documentation.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| topic | string | Yes | - | Topic to focus the search |
+| tokens | number | No | 2500 | Maximum tokens in result |
+
+Example:
+CallMcpTool({ server: "vercel", toolName: "search_vercel_documentation", arguments: { topic: "routing", tokens: 2500 } })

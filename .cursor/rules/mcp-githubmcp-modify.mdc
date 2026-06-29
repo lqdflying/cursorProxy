@@ -1,0 +1,196 @@
+---
+description: "MCP tool arguments for githubmcp write/modify tools"
+alwaysApply: false
+---
+
+# MCP Tools: githubmcp (Modify)
+
+ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
+
+### todo_write
+Update the in-session task list for tracking multi-step work.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| todos | array | Yes | - | List of task objects with content and status |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "todo_write", arguments: { todos: [{ content: "Review PR", status: "in_progress" }] } })
+
+### todo_update
+Update the status of a single todo item by its 0-based index.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| index | integer | Yes | - | 0-based position in the list |
+| status | string | Yes | - | pending, in_progress, or completed |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "todo_update", arguments: { index: 0, status: "completed" } })
+
+### create_branch
+Create a new branch in a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| branch | string | Yes | - | New branch name |
+| from_ref | string\|null | No | null | Branch, tag, or SHA to branch from |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "create_branch", arguments: { owner: "octocat", repo: "Hello-World", branch: "feature/new" } })
+
+### push_files
+Commit one or more files to a branch in a single atomic commit.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| branch | string | Yes | - | Target branch (must exist) |
+| files | array | Yes | - | File objects with path and content |
+| message | string | Yes | - | Commit message |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "push_files", arguments: { owner: "octocat", repo: "Hello-World", branch: "main", files: [{ path: "README.md", content: "# Hello" }], message: "Update README" } })
+
+### delete_file
+Delete a file from a repository branch.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| path | string | Yes | - | File path to delete |
+| message | string | Yes | - | Commit message |
+| branch | string | Yes | - | Branch to delete from |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "delete_file", arguments: { owner: "octocat", repo: "Hello-World", path: "old.txt", message: "Remove old file", branch: "main" } })
+
+### create_issue
+Create a new issue in a GitHub repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| title | string | Yes | - | Issue title |
+| body | string | No | "" | Issue body (Markdown) |
+| labels | array\|null | No | null | Label names to apply |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "create_issue", arguments: { owner: "octocat", repo: "Hello-World", title: "Bug report" } })
+
+### create_pull_request
+Create a new pull request.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| title | string | Yes | - | PR title |
+| head | string | Yes | - | Branch containing changes |
+| base | string | Yes | - | Branch to merge into |
+| body | string | No | "" | PR description |
+| draft | boolean | No | false | Open as draft |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "create_pull_request", arguments: { owner: "octocat", repo: "Hello-World", title: "Fix bug", head: "feature", base: "main" } })
+
+### get_pull_request
+Get details of a specific pull request.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| pull_number | integer | Yes | - | PR number |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_pull_request", arguments: { owner: "octocat", repo: "Hello-World", pull_number: 1 } })
+
+### list_pull_requests
+List pull requests in a repository.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| state | string | No | open | open, closed, or all |
+| head | string\|null | No | null | Filter by head branch |
+| base | string\|null | No | null | Filter by base branch |
+| limit | integer | No | 20 | Maximum PRs to return |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "list_pull_requests", arguments: { owner: "octocat", repo: "Hello-World", state: "open" } })
+
+### add_pr_comment
+Add a comment to a pull request.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| pull_number | integer | Yes | - | PR number |
+| body | string | Yes | - | Comment text (Markdown) |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "add_pr_comment", arguments: { owner: "octocat", repo: "Hello-World", pull_number: 1, body: "LGTM" } })
+
+### merge_pull_request
+Merge a pull request.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| pull_number | integer | Yes | - | PR number |
+| commit_title | string\|null | No | null | Custom commit title |
+| merge_method | string | No | merge | merge, squash, or rebase |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "merge_pull_request", arguments: { owner: "octocat", repo: "Hello-World", pull_number: 1, merge_method: "squash" } })
+
+### trigger_workflow
+Trigger a workflow_dispatch event for a CI/CD workflow.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| workflow_id | string | Yes | - | Workflow filename or numeric ID |
+| ref | string | Yes | - | Branch or tag to run on |
+| inputs | object\|null | No | null | Workflow dispatch inputs |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "trigger_workflow", arguments: { owner: "octocat", repo: "Hello-World", workflow_id: "ci.yml", ref: "main" } })
+
+### list_workflow_runs
+List recent CI/CD workflow runs.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| workflow_id | string\|null | No | null | Filter by workflow filename or ID |
+| branch | string\|null | No | null | Filter by branch |
+| status | string\|null | No | null | queued, in_progress, completed, etc. |
+| limit | integer | No | 10 | Maximum runs to return |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "list_workflow_runs", arguments: { owner: "octocat", repo: "Hello-World", limit: 5 } })
+
+### get_workflow_run_logs
+Get logs for a GitHub Actions workflow run.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| owner | string | Yes | - | Repository owner |
+| repo | string | Yes | - | Repository name |
+| run_id | integer | Yes | - | Workflow run ID |
+| max_chars | integer | No | 20000 | Maximum log characters |
+
+Example:
+CallMcpTool({ server: "githubmcp", toolName: "get_workflow_run_logs", arguments: { owner: "octocat", repo: "Hello-World", run_id: 123456789 } })

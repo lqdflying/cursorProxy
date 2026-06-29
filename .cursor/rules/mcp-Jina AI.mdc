@@ -1,0 +1,236 @@
+---
+description: "MCP tool arguments for Jina AI — use when calling any Jina AI tool"
+alwaysApply: false
+---
+
+# MCP Tools: Jina AI
+
+ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
+
+### extract_pdf
+Extract figures, tables, and equations from PDF documents using layout detection.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| id | string | No* | - | arXiv paper ID |
+| url | string | No* | - | Direct PDF URL |
+| max_edge | number | No | 1024 | Maximum image edge in pixels |
+| type | string | No | - | Filter by figure, table, equation |
+
+*Either id or url is required.
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "extract_pdf", arguments: { id: "2301.12345", type: "figure" } })
+
+### search_bibtex
+Search for academic papers and return BibTeX citations.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string | Yes | - | Paper title, topic, or keywords |
+| num | number | No | 10 | Maximum results (1-50) |
+| year | number | No | - | Minimum publication year |
+| author | string | No | - | Author name filter |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "search_bibtex", arguments: { query: "attention is all you need", num: 5 } })
+
+### deduplicate_images
+Get top-k semantically unique images using CLIP embeddings.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| images | array | Yes | - | Image URLs or base64 strings |
+| k | number | No | - | Number of unique images to return |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "deduplicate_images", arguments: { images: ["https://example.com/a.jpg"], k: 5 } })
+
+### deduplicate_strings
+Get top-k semantically unique strings using Jina embeddings.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| strings | array | Yes | - | Strings to deduplicate |
+| k | number | No | - | Number of unique strings to return |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "deduplicate_strings", arguments: { strings: ["a", "b"], k: 3 } })
+
+### sort_by_relevance
+Rerank documents by relevance to a query.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string | Yes | - | Query to rank against |
+| documents | array | Yes | - | Document texts |
+| top_n | number | No | - | Maximum top results |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "sort_by_relevance", arguments: { query: "machine learning", documents: ["doc1", "doc2"] } })
+
+### classify_text
+Classify texts into user-defined labels.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| texts | array | Yes | - | Texts to classify |
+| labels | array | Yes | - | Classification labels |
+| model | string | No | jina-embeddings-v5-text-small | Model to use |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "classify_text", arguments: { texts: ["great"], labels: ["positive", "negative"] } })
+
+### parallel_read_url
+Read multiple web pages in parallel (max 5 URLs).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| urls | array | Yes | - | URL configs with url, withAllLinks, withAllImages |
+| timeout | number | No | 30000 | Timeout in milliseconds |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "parallel_read_url", arguments: { urls: [{ url: "https://example.com" }], timeout: 30000 } })
+
+### parallel_search_ssrn
+Run multiple SSRN searches in parallel (max 5 searches).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| searches | array | Yes | - | Search configs with query, num, tbs |
+| timeout | number | No | 30000 | Timeout in milliseconds |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "parallel_search_ssrn", arguments: { searches: [{ query: "behavioral finance" }], timeout: 30000 } })
+
+### parallel_search_arxiv
+Run multiple arXiv searches in parallel (max 5 searches).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| searches | array | Yes | - | Search configs with query, num, tbs |
+| timeout | number | No | 30000 | Timeout in milliseconds |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "parallel_search_arxiv", arguments: { searches: [{ query: "transformer" }], timeout: 30000 } })
+
+### parallel_search_web
+Run multiple web searches in parallel (max 5 searches).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| searches | array | Yes | - | Search configs with query, num, tbs, location, gl, hl |
+| timeout | number | No | 30000 | Timeout in milliseconds |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "parallel_search_web", arguments: { searches: [{ query: "AI news" }], timeout: 30000 } })
+
+### search_images
+Search for images across the web.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string | Yes | - | Image search terms |
+| return_url | boolean | No | false | Return URLs and metadata instead of base64 |
+| tbs | string | No | - | Time-based search: qdr:h, qdr:d, qdr:w, qdr:m, qdr:y |
+| location | string | No | - | Location for results |
+| gl | string | No | - | Country code |
+| hl | string | No | - | Language code |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "search_images", arguments: { query: "mountain landscape", return_url: true } })
+
+### search_jina_blog
+Search Jina AI news and blog posts.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string\|array | Yes | - | Search terms |
+| num | number | No | 30 | Maximum results (1-100) |
+| tbs | string | No | - | Time-based search parameter |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "search_jina_blog", arguments: { query: "embeddings", num: 10 } })
+
+### search_ssrn
+Search academic papers on SSRN.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string\|array | Yes | - | Search terms |
+| num | number | No | 30 | Maximum results (1-100) |
+| tbs | string | No | - | Time-based search parameter |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "search_ssrn", arguments: { query: "corporate governance", num: 10 } })
+
+### search_arxiv
+Search academic papers on arXiv.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string\|array | Yes | - | Search terms |
+| num | number | No | 30 | Maximum results (1-100) |
+| tbs | string | No | - | Time-based search parameter |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "search_arxiv", arguments: { query: "transformer neural networks", num: 10 } })
+
+### expand_query
+Expand and rewrite a search query into multiple queries.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string | Yes | - | Initial search query |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "expand_query", arguments: { query: "machine learning" } })
+
+### search_web
+Search the entire web for current information.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| query | string\|array | Yes | - | Search terms |
+| num | number | No | 30 | Maximum results (1-100) |
+| tbs | string | No | - | Time-based search parameter |
+| location | string | No | - | Location for results |
+| gl | string | No | - | Country code |
+| hl | string | No | - | Language code |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "search_web", arguments: { query: "latest AI news", num: 10 } })
+
+### read_url
+Extract and convert web page content to markdown.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string\|array | Yes | - | URL(s) to read |
+| withAllLinks | boolean | No | - | Extract all hyperlinks |
+| withAllImages | boolean | No | - | Extract all images |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "read_url", arguments: { url: "https://example.com/article", withAllLinks: true } })
+
+### capture_screenshot_url
+Capture screenshots of web pages in base64 JPEG.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | URL to capture |
+| firstScreenOnly | boolean | No | false | Capture only first screen |
+| return_url | boolean | No | false | Return screenshot URLs instead of base64 |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "capture_screenshot_url", arguments: { url: "https://example.com", firstScreenOnly: true } })
+
+### guess_datetime_url
+Guess the last updated or published datetime of a web page.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| url | string | Yes | - | URL to analyze |
+
+Example:
+CallMcpTool({ server: "Jina AI", toolName: "guess_datetime_url", arguments: { url: "https://example.com/article" } })
