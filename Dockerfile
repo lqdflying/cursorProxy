@@ -6,6 +6,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY api/ ./api/
+COPY lib/ ./lib/
 COPY server.js .
 
 EXPOSE 3000
