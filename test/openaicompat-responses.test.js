@@ -17,8 +17,13 @@ const PROVIDER_URL = "http://localhost/api/proxy?provider=openaicompat&path=chat
 
 const ENV_KEYS = [
   "OPENAICOMPAT_WIRE_API",
+  "OPENAICOMPAT_REASONING_EFFORT",
   "OPENAICOMPAT_API_KEY",
   "UPSTREAM_OPENAICOMPAT",
+  "AZURE_OPENAI_REASONING_EFFORT",
+  "AZURE_FOUNDRY_API_KEY",
+  "AZURE_FOUNDRY_RESOURCE",
+  "AZURE_OPENAI_ENDPOINT",
   "CURSORPROXY_API_KEY",
 ];
 
@@ -216,6 +221,198 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.store, true, "store:true must be injected for chaining");
     // previous_response_id absent on first turn (no cache hit)
     assert.equal(captured.body.previous_response_id, undefined);
+  });
+
+  it("responses mode injects OPENAICOMPAT_REASONING_EFFORT as nested reasoning effort", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
+    process.env.AZURE_OPENAI_REASONING_EFFORT = "minimal";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-5.5", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const { logs } = await captureConsoleLogs(async () => {
+      await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }));
+    });
+
+    assert.deepEqual(captured.body.reasoning, { effort: "xhigh" });
+    assert.equal(captured.body.reasoning_effort, undefined);
+    assert.match(logs, /REASONING_EFFORT effort: xhigh provider: openaicompat source: openaicompat_env/);
+  });
+
+  it("responses mode OPENAICOMPAT_REASONING_EFFORT wins over flat and nested client effort", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "high";
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        id: `resp_${calls.length}`,
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "flat" }],
+        reasoning_effort: "low",
+      }),
+    }));
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "nested" }],
+        reasoning: { effort: "minimal" },
+      }),
+    }));
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].reasoning, { effort: "high" });
+    assert.equal(calls[0].reasoning_effort, undefined);
+    assert.deepEqual(calls[1].reasoning, { effort: "high" });
+  });
+
+  it("responses mode ignores invalid OPENAICOMPAT_REASONING_EFFORT once and preserves client effort", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "turbo";
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        id: `resp_${calls.length}`,
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const { logs } = await captureConsoleLogs(async () => {
+      await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "first" }],
+          reasoning_effort: "high",
+        }),
+      }));
+      await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "second" }],
+          reasoning_effort: "low",
+        }),
+      }));
+    });
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].reasoning, { effort: "high" });
+    assert.deepEqual(calls[1].reasoning, { effort: "low" });
+    assert.equal((logs.match(/OPENAICOMPAT_REASONING_EFFORT_INVALID/g) || []).length, 1);
+    assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
+  });
+
+  it("chat mode ignores OPENAICOMPAT_REASONING_EFFORT and remains passthrough", async () => {
+    delete process.env.OPENAICOMPAT_WIRE_API;
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
+    const captured = mockFetchResponses({
+      id: "chat_abc",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }));
+
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.equal(captured.body.reasoning, undefined);
+    assert.equal(captured.body.reasoning_effort, undefined);
+    assert.ok(captured.body.messages, "chat mode should keep messages array");
+  });
+
+  it("openaicompat Responses ignores Azure reasoning effort env", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.AZURE_OPENAI_REASONING_EFFORT = "xhigh";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-5.5", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }));
+
+    assert.equal(captured.body.reasoning, undefined,
+      "AZURE_OPENAI_REASONING_EFFORT must not leak into openaicompat");
+  });
+
+  it("Azure OpenAI ignores OPENAICOMPAT_REASONING_EFFORT", async () => {
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
+    process.env.AZURE_FOUNDRY_API_KEY = "azure-test-key";
+    process.env.AZURE_OPENAI_ENDPOINT = "https://azure.example.com";
+    let capturedBody = null;
+    global.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "resp_azure",
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await handler(new Request("http://localhost/api/proxy?provider=azureopenai&path=chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }));
+
+    assert.equal(capturedBody.reasoning, undefined,
+      "OPENAICOMPAT_REASONING_EFFORT must not leak into Azure OpenAI");
   });
 
   it("responses mode converts array text parts to input_text without changing string content", async () => {
