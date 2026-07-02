@@ -15,6 +15,7 @@ Before committing a fix, enumerate the distinct input shapes the code can receiv
 - Versioned Anthropic types like `{type:"bash_20250124", name:"bash", ...}` hit `type !== "function"` filters before conversion.
 - `{type:"tool", name:"x"}` was dropped because the filter only allowed `type:"function"`.
 - Chat Completions `{type:"function", function:{name}}` tool_choice wasn't handled because the normalizer only covered Anthropic shapes.
+- OpenAI-compatible Responses is not Azure Responses: `openaicompat` should preserve official string `EasyInputMessage` content unless a provider-specific probe proves otherwise. Do not treat a 200/502 status check as sufficient; assert the exact outbound body shape, especially `content` arrays vs string content and `input_text` vs plain text.
 
 To verify: run `node --input-type=module -e "import { fn } from './api/file.js'; ..."` with each input shape before committing.
 

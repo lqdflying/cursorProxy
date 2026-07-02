@@ -1,6 +1,7 @@
 import { describe, it, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import handler from "../api/proxy.js";
+import { normalizeAzureOpenAIInputContent } from "../lib/azure-openai.js";
 import { setKvDriver } from "../lib/kv.js";
 
 // These tests invoke the shared handler directly with the internal rewrite
@@ -189,6 +190,11 @@ describe("openaicompat Responses wire mode — integration", () => {
     // messages should be gone, replaced by input
     assert.equal(captured.body.messages, undefined, "messages should be deleted");
     assert.ok(Array.isArray(captured.body.input), "input should be an array");
+    assert.equal(captured.body.input[0].role, "user");
+    assert.equal(captured.body.input[0].content, "hello",
+      "openaicompat Responses must preserve string content for compatible gateways");
+    assert.equal(Array.isArray(captured.body.input[0].content), false,
+      "openaicompat Responses must not convert text into Azure input_text parts");
     assert.equal(captured.body.store, true, "store:true must be injected for chaining");
     // previous_response_id absent on first turn (no cache hit)
     assert.equal(captured.body.previous_response_id, undefined);
@@ -231,7 +237,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     });
 
     const nativeInput = [
-      { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+      { role: "user", content: "hello" },
     ];
 
     await handler(new Request(PROVIDER_URL, {
@@ -242,8 +248,35 @@ describe("openaicompat Responses wire mode — integration", () => {
 
     assert.ok(Array.isArray(captured.body.input), "native input should stay as input");
     assert.equal(captured.body.input.length, 1, "first-turn input should not be trimmed");
+    assert.deepEqual(captured.body.input, nativeInput,
+      "native openaicompat Responses input should not be Azure-normalized");
     assert.equal(captured.body.store, true);
     assert.equal(captured.body.previous_response_id, undefined);
+  });
+
+  // ─── Provider-specific content normalization guard ──────────────────────
+
+  it("does not Azure-normalize openaicompat Responses string content", () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const parsedBody = { input: [{ role: "user", content: "hello" }] };
+
+    const result = normalizeAzureOpenAIInputContent("openaicompat", parsedBody);
+
+    assert.equal(result.changed, false);
+    assert.deepEqual(parsedBody.input, [{ role: "user", content: "hello" }]);
+  });
+
+  it("still Azure-normalizes azureopenai string content to input_text", () => {
+    const parsedBody = { input: [{ role: "user", content: "hello" }] };
+
+    const result = normalizeAzureOpenAIInputContent("azureopenai", parsedBody);
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(parsedBody.input, [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "hello" }],
+    }]);
   });
 
   // ─── store:false opt-out ─────────────────────────────────────────────────
@@ -381,6 +414,8 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.ok(turn1Captured.url.endsWith("/v1/responses"), "turn 1 should hit /v1/responses");
     assert.ok(Array.isArray(turn1Captured.body.input), "turn 1 should send input array");
     assert.equal(turn1Captured.body.input.length, 1, "turn 1 sends full input (1 user msg)");
+    assert.equal(turn1Captured.body.input[0].content, "hi",
+      "turn 1 should preserve string content for openaicompat");
     assert.equal(turn1Captured.body.store, true, "store:true must be injected on turn 1");
     assert.equal(turn1Captured.body.previous_response_id, undefined, "turn 1 has no previous_response_id");
 
@@ -423,6 +458,8 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.ok(Array.isArray(turn2Captured.body.input), "turn 2 should send input array");
     assert.equal(turn2Captured.body.input.length, 1,
       "turn 2 input must be trimmed to only the new user message (1 item, not 3)");
+    assert.equal(turn2Captured.body.input[0].content, "bye",
+      "turn 2 trimmed input should preserve string content for openaicompat");
     assert.equal(turn2Captured.body.store, true, "store:true on turn 2");
   });
 });

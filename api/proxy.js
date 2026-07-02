@@ -935,15 +935,19 @@ export default async function handler(req) {
     }
   }
 
-  // Responses-target body normalizers (input content, tools, sanitizer) run
-  // for azureopenai (Responses-only by provider identity) and for openaicompat
-  // ONLY on the actual Responses target path (chat/completions → /v1/responses).
+  // Responses-target body normalizers run only where each provider needs them.
+  // Azure requires strict message content parts (input_text/output_text), but
+  // some OpenAI-compatible Responses gateways accept the official string
+  // EasyInputMessage shape and fail on Azure-style input_text blocks.
+  //
+  // Tool normalization and the sanitizer still run for openaicompat ONLY on
+  // the actual Responses target path (chat/completions → /v1/responses).
   // Gating openaicompat on `openaiCompatResponses` (path-aware) ensures
   // /embeddings, /models, and other paths pass through unmutated — without it
   // the Responses whitelist would strip encoding_format/dimensions and inject
   // store:false into non-Responses endpoints.
   {
-    const runInputNorm = providerKey === "azureopenai" || openaiCompatResponses;
+    const runInputNorm = providerKey === "azureopenai";
     const inputResult = runInputNorm
       ? normalizeAzureOpenAIInputContent(providerKey, parsedBody)
       : { parsedBody, changed: false };
