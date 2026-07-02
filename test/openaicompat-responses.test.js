@@ -1,7 +1,10 @@
 import { describe, it, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import handler from "../api/proxy.js";
-import { normalizeAzureOpenAIInputContent } from "../lib/azure-openai.js";
+import {
+  normalizeAzureOpenAIInputContent,
+  normalizeOpenAICompatResponsesInputContent,
+} from "../lib/azure-openai.js";
 import { setKvDriver } from "../lib/kv.js";
 
 // These tests invoke the shared handler directly with the internal rewrite
@@ -200,6 +203,32 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.previous_response_id, undefined);
   });
 
+  it("responses mode converts array text parts to input_text without changing string content", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-4o", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: "You are concise." },
+          { role: "assistant", content: [{ type: "text", text: "prior" }] },
+          { role: "user", content: [{ type: "text", text: "hello" }] },
+        ],
+      }),
+    }));
+
+    assert.equal(captured.body.input[0].content, "You are concise.",
+      "plain string content should stay string for compatible gateways");
+    assert.deepEqual(captured.body.input[1].content, [{ type: "output_text", text: "prior" }]);
+    assert.deepEqual(captured.body.input[2].content, [{ type: "input_text", text: "hello" }]);
+  });
+
   it("responses mode converts assistant.tool_calls and role:tool in messages", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const captured = mockFetchResponses({
@@ -326,6 +355,22 @@ describe("openaicompat Responses wire mode — integration", () => {
 
     assert.equal(result.changed, false);
     assert.deepEqual(parsedBody.input, [{ role: "user", content: "hello" }]);
+  });
+
+  it("openaicompat Responses normalizer preserves strings but fixes array text parts", () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const parsedBody = {
+      input: [
+        { role: "system", content: "keep string" },
+        { role: "user", content: [{ type: "text", text: "fix me" }] },
+      ],
+    };
+
+    const result = normalizeOpenAICompatResponsesInputContent("openaicompat", parsedBody);
+
+    assert.equal(result.changed, true);
+    assert.equal(parsedBody.input[0].content, "keep string");
+    assert.deepEqual(parsedBody.input[1].content, [{ type: "input_text", text: "fix me" }]);
   });
 
   it("still Azure-normalizes azureopenai string content to input_text", () => {

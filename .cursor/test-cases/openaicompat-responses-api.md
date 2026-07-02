@@ -129,11 +129,30 @@ RES 200 provider: openaicompat ms: <n>
 
 > The retry omits native `custom`/`apply_patch` tools only after the upstream rejects the richer mixed Responses tool request. Existing function tools are preserved.
 
+### Test 7 — Structured text content normalization
+
+Continue the same Cursor conversation after at least one assistant turn. Cursor may send prior assistant or user text as structured content arrays such as `[{ "type": "text", "text": "..." }]` instead of plain strings.
+
+Expected behavior:
+
+- Cursor receives a normal response.
+- The upstream stream must not return an `invalid_enum_value` error for `content[0].type = "text"`.
+
+Expected log when this path is exercised:
+
+```text
+OAI_INPUT_NORMALIZED provider: openaicompat textParts: <n>
+RES 200 provider: openaicompat ms: <n>
+```
+
+> Plain string content must remain a string for openaicompat Responses mode. Only existing structured `text` parts are rewritten to Responses-legal `input_text` / `output_text`.
+
 ## Negative signs
 
 ```text
 PREV_RESP_ID_FOUND count: 0 across multiple turns   # chaining never activated (branch never executed)
 UPSTREAM_ERROR_STATUS                                  # upstream rejected the request (check store/previous_response_id/tool fallback)
+OAI_STREAM_ERROR ... invalid_enum_value ... Invalid value: 'text'
 previous_response_not_found                            # stale or mismatched response ID replayed against wrong scope
 /v1/v1/responses                                       # URL normalization bug — trailing /v1 in UPSTREAM_OPENAICOMPAT not stripped
 ```

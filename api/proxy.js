@@ -12,6 +12,7 @@ import {
   mapResponsesSSEToOpenAI,
   mapResponsesToOpenAI,
   normalizeAzureOpenAIInputContent,
+  normalizeOpenAICompatResponsesInputContent,
   normalizeAzureOpenAITools,
   openAICompatResponsesToolFallback,
   sanitizeAzureOpenAIBody,
@@ -951,6 +952,16 @@ export default async function handler(req) {
     const runInputNorm = providerKey === "azureopenai";
     const inputResult = runInputNorm
       ? normalizeAzureOpenAIInputContent(providerKey, parsedBody)
+      : { parsedBody, changed: false };
+    parsedBody = inputResult.parsedBody;
+    if (inputResult.changed) {
+      bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
+  {
+    const inputResult = openaiCompatResponses
+      ? normalizeOpenAICompatResponsesInputContent(providerKey, parsedBody)
       : { parsedBody, changed: false };
     parsedBody = inputResult.parsedBody;
     if (inputResult.changed) {
