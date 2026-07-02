@@ -283,6 +283,51 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
+function safeLogToken(value, fallback = "(none)") {
+  if (value == null || value === "") return fallback;
+  return String(value).replace(/\s+/g, "_").slice(0, 80);
+}
+
+function summarizeJsonArgKeysForLog(rawArgs) {
+  const text = typeof rawArgs === "string" ? rawArgs.trim() : "";
+  if (!text) return "(none)";
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed == null) return "null";
+    if (Array.isArray(parsed)) return "array";
+    if (typeof parsed !== "object") return typeof parsed;
+    const keys = Object.keys(parsed);
+    if (keys.length === 0) return "(none)";
+    const shown = keys.slice(0, 12).map((key) => safeLogToken(key, "(empty)"));
+    if (keys.length > shown.length) shown.push(`+${keys.length - shown.length}`);
+    return shown.join(",");
+  } catch {
+    return "(unparseable)";
+  }
+}
+
+function responsesToolStateForLog(toolState, data) {
+  const idx = data?.output_index ?? 0;
+  return (data?.call_id && toolState.get(data.call_id))
+    || (data?.item_id && toolState.get(`item:${data.item_id}`))
+    || toolState.get(`index:${idx}`)
+    || null;
+}
+
+function isResponsesToolDoneEvent(eventName) {
+  return eventName === "response.function_call_arguments.done"
+    || eventName === "response.custom_tool_call_input.done"
+    || eventName === "response.apply_patch_call.done"
+    || eventName === "response.apply_patch_call_input.done";
+}
+
+function responsesToolArgsForLog(data, state) {
+  if (typeof data?.arguments === "string") return data.arguments;
+  if (typeof data?.input === "string") return data.input;
+  if (typeof data?.patch === "string") return data.patch;
+  return state?.partialJson || "";
+}
+
 // Confirm at cold start that the opt-in cache flag was honored.
 if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
   diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
@@ -2084,10 +2129,31 @@ export default async function handler(req) {
                 continue;
               }
 
+              if (isResponsesToolDoneEvent(responsesEvent)) {
+                const state = responsesToolStateForLog(responsesToolState, json);
+                const argsText = responsesToolArgsForLog(json, state);
+                diag(openaiCompatResponses ? "OAI_TOOL_CALL_DONE" : "AZURE_TOOL_CALL_DONE",
+                     "provider:", providerKey,
+                     "name:", safeLogToken(state?.name || json?.name || "(unknown)"),
+                     "toolIndex:", state?.toolIndex ?? "(none)",
+                     "responsesIndex:", json?.output_index ?? "(none)",
+                     "argChars:", argsText.length,
+                     "argKeys:", summarizeJsonArgKeysForLog(argsText));
+              }
+
               const mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
               if (mapped) {
-                if (mapped.choices?.[0]?.delta?.tool_calls) {
+                const mappedToolCalls = mapped.choices?.[0]?.delta?.tool_calls;
+                if (mappedToolCalls) {
                   responsesToolCallSeen = true;
+                  if (responsesEvent === "response.output_item.added") {
+                    const firstTool = mappedToolCalls[0] || {};
+                    diag(openaiCompatResponses ? "OAI_TOOL_CALL_START" : "AZURE_TOOL_CALL_START",
+                         "provider:", providerKey,
+                         "name:", safeLogToken(firstTool.function?.name || "(unknown)"),
+                         "toolIndex:", firstTool.index ?? "(none)",
+                         "responsesIndex:", json?.output_index ?? "(none)");
+                  }
                 }
                 json = mapped;
               } else {

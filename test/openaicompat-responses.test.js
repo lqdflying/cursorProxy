@@ -71,6 +71,20 @@ describe("openaicompat Responses wire mode — integration", () => {
     return captured;
   }
 
+  async function captureConsoleLogs(fn) {
+    const origLog = console.log;
+    const lines = [];
+    console.log = (...args) => {
+      lines.push(args.map((arg) => String(arg)).join(" "));
+    };
+    try {
+      const result = await fn();
+      return { result, logs: lines.join("\n") };
+    } finally {
+      console.log = origLog;
+    }
+  }
+
   // ─── Default (chat mode): no Responses remap ────────────────────────────
 
   it("default chat mode posts to /v1/chat/completions (no remap)", async () => {
@@ -496,14 +510,19 @@ describe("openaicompat Responses wire mode — integration", () => {
       headers: { "content-type": "text/event-stream" },
     });
 
-    const res = await handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "start subagent" }], stream: true }),
-    }));
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "start subagent" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
 
     assert.equal(res.status, 200);
-    const chunks = (await res.text())
+    const chunks = bodyText
       .split("\n")
       .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
       .map((line) => JSON.parse(line.slice(6)));
@@ -516,6 +535,9 @@ describe("openaicompat Responses wire mode — integration", () => {
       "argument deltas must keep the same dense Chat tool index");
     assert.ok(chunks.some((chunk) => chunk.choices?.[0]?.finish_reason === "tool_calls"),
       "stream must finish with finish_reason=tool_calls so Cursor runs the tool");
+    assert.match(logs, /OAI_TOOL_CALL_START .*name: start_subagent .*toolIndex: 0 .*responsesIndex: 2/);
+    assert.match(logs, /OAI_TOOL_CALL_DONE .*name: start_subagent .*toolIndex: 0 .*argChars: 18 .*argKeys: task/);
+    assert.doesNotMatch(logs, /inspect/, "tool-call diagnostics must not log argument values");
   });
 
   it("maps Responses output indexes to dense Chat tool indexes", () => {

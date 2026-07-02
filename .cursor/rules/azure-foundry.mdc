@@ -218,6 +218,7 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 | `CACHE_AZ_RESP_ID` | Response ID saved to KV (emitted per write, typically 2× per streaming request) |
 | `STREAM_AZ_RESP_ID` | Response ID captured from `response.created` SSE event |
 | `INPUT_HAS_LEGACY_TOOLS` | Probe fired — legacy tool items detected in native input (see `feature-verification.mdc`) |
+| `OAI_TOOL_CALL_START` / `OAI_TOOL_CALL_DONE` | OpenAI-compatible Responses tool-call diagnostics: tool name, dense tool index, Responses output index, argument char count, and top-level argument keys only. Use these to debug Cursor tool/subagent startup without logging argument values. |
 
 ### Pitfalls (lessons learned)
 
@@ -238,6 +239,8 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 8. **HTTP `previous_response_id` is not universal**: `api.pptoken.org` accepts first-turn POST `/v1/responses` with `store:true`, returns a `resp_*` ID, but rejects the second-turn HTTP replay with `previous_response_id is only supported on Responses WebSocket v2`. For openaicompat only, retry that exact error stateless with the full input array, disable response-ID writes for that retry, and mark only the affected upstream/model/user scope stateless-only in the current process. Azure must keep strict `previous_response_id` behavior, and other compatible gateways that accept HTTP `previous_response_id` must keep the normal cache-hit path.
 
 9. **Responses `output_index` is not Chat `tool_calls[].index`**: Responses streams can emit message/reasoning output items before function-call items, so a function call may arrive at `output_index: 2` while it must be exposed to Chat Completions clients as `tool_calls[0]`. The mapper must allocate dense tool-call indexes independent of Responses output indexes and keep argument deltas on the same dense index. When any Responses stream emits tool calls, write a final Chat chunk with `finish_reason:"tool_calls"` before `[DONE]`; Cursor may fail tool/subagent startup without that terminal reason.
+
+10. **Cursor subagent "Couldn't start" means the tool reached Cursor**: If the UI shows `New subagent` followed by `Couldn't start`, the stream mapping probably delivered a tool call and Cursor's local subagent executor rejected it. Inspect `OAI_TOOL_CALL_START` / `OAI_TOOL_CALL_DONE` first. A cloud-only argument key, missing Task tool access, run-mode/tool policy, hook policy, or subagent nesting limit can block spawning even when upstream returned 200 and `functionArgDeltas` is non-zero. Do not blindly strip subagent tools or arguments without proving the failing key from the safe diagnostics.
 
 ## Claude Thinking KV Caching (azureanthropic only)
 
