@@ -177,6 +177,17 @@ Implementation lives in `lib/reasoning.js` (helpers + `injectStoredReasoning` or
 - If KV miss: inject placeholder `"(prior reasoning unavailable)"` so DeepSeek/Kimi thinking mode doesn't reject the request
 - Provider gating set lives in `injectStoredReasoning()`: only `deepseek`, `kimi`, `minimax`, `mimo` get reasoning re-injected. Anthropic and Azure OpenAI are excluded.
 
+## OpenAI-compatible Responses cache-hit mode
+
+`OPENAICOMPAT_CACHE_HIT_MODE=sub2api` is an opt-in extension of `OPENAICOMPAT_WIRE_API=responses`. It must have no effect in default Chat Completions wire mode, and it must only run on the `chat/completions` path that is remapped to upstream `/v1/responses`.
+
+- Preserve default `oairesp:` behavior when the env var is unset or invalid. Do not change default cache scope shape, key version, or request mutation unless `OPENAICOMPAT_CACHE_HIT_MODE=sub2api` is active.
+- In sub2api mode, preserve explicit client `prompt_cache_key`; otherwise derive and forward `compat_cc_<hash>` only for GPT-5/Codex-like models.
+- Session anchors are scoped in priority order: `session_id` header, `conversation_id` header, `prompt_cache_key`, then content-derived `compat_cs_<hash>`. Include the anchor only in sub2api-mode `oairesp:` scope.
+- `store:false` remains the privacy opt-out: no prior response lookup, no `previous_response_id`, and no response-ID KV write.
+- Stale `previous_response_id` failures (`previous_response_not_found` / previous response not found) should delete the stale KV key and retry stateless so the successful retry can refresh the chain. Unsupported HTTP `previous_response_id` gateways should be suppressed for a TTL, not permanently.
+- Responses usage mapping should preserve `input_tokens_details.cached_tokens` as Chat Completions `usage.prompt_tokens_details.cached_tokens`; stream usage is emitted only when the client asks for `stream_options.include_usage`.
+
 ## GitHub Releases
 
 Release notes must **compare against the previous release tag**, not just describe the latest commit. A release accumulates all commits since the prior tag.
