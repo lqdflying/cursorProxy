@@ -109,11 +109,31 @@ RES 200 provider: openaicompat ms: <n>
 
 > None of the Responses-mode diagnostics (`MESSAGES_TO_INPUT`, `INPUT_CHAIN`, `STREAM_OAI_RESP_ID`, `PREV_RESP_ID_*`) should appear. The upstream URL must be `/v1/chat/completions`, not `/v1/responses`.
 
+### Test 6 — Mixed tool compatibility retry
+
+In Cursor agent mode, use a prompt that exposes the normal tool set. Some OpenAI-compatible Responses gateways reject requests that mix many function tools with a native Responses `custom` `apply_patch` tool.
+
+Expected behavior:
+
+- If the first upstream request succeeds, no fallback log is required.
+- If the first upstream request returns a 5xx for the mixed tool shape, the proxy retries once and Cursor should still receive a normal response.
+
+Expected fallback log when the retry path is exercised:
+
+```text
+TOOLS_SHAPE provider: openaicompat total: <n> ... chatCmplFmt: <n> ... knownType: 1
+APPLY_PATCH_TOOL_SHAPE provider: openaicompat custom: 1
+OAI_TOOL_FALLBACK_RETRY status: 502 droppedNative: 1 functionTools: <n>
+RES 200 provider: openaicompat ms: <n>
+```
+
+> The retry omits native `custom`/`apply_patch` tools only after the upstream rejects the richer mixed Responses tool request. Existing function tools are preserved.
+
 ## Negative signs
 
 ```text
 PREV_RESP_ID_FOUND count: 0 across multiple turns   # chaining never activated (branch never executed)
-UPSTREAM_ERROR_STATUS                                  # upstream rejected the request (check store/previous_response_id)
+UPSTREAM_ERROR_STATUS                                  # upstream rejected the request (check store/previous_response_id/tool fallback)
 previous_response_not_found                            # stale or mismatched response ID replayed against wrong scope
 /v1/v1/responses                                       # URL normalization bug — trailing /v1 in UPSTREAM_OPENAICOMPAT not stripped
 ```

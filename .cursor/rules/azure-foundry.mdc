@@ -233,6 +233,8 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 
 6. **OpenAI-compatible Responses shape is not necessarily Azure shape**: `OPENAICOMPAT_WIRE_API=responses` can share the URL remap, sanitizer, mappers, SSE conversion, and `previous_response_id` cache with Azure, but request content normalization is provider-specific. A real compatible gateway (`api.pptoken.org`) accepted `/v1/responses` with string `content` and `reasoning.effort:xhigh`, but timed out/returned 502 when the proxy sent Azure-style `content:[{type:"input_text", text:"..."}]`. Fixes in this area must include an outbound-body assertion that openaicompat preserves string content and a separate assertion that Azure still normalizes to `input_text`.
 
+7. **Mixed native/function tools can fail only on compatible gateways**: `api.pptoken.org` accepts 16 function tools alone and accepts a native `custom` `apply_patch` tool alone, but returns 502 when Cursor sends them together. The openaicompat Responses path retries once after an upstream 5xx with native `custom`/`apply_patch` tools omitted (`OAI_TOOL_FALLBACK_RETRY droppedNative: ...`). This is a compatibility degradation path, not the primary OpenAI Responses shape and not Azure behavior.
+
 ## Claude Thinking KV Caching (azureanthropic only)
 
 Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thinking/signature blocks in its content array. Without caching, Claude re-reasons from scratch on every turn, wasting tokens. The proxy caches these blocks in KV and re-injects them into prior assistant messages on subsequent turns.

@@ -13,6 +13,7 @@ import {
   mapResponsesToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeAzureOpenAITools,
+  openAICompatResponsesToolFallback,
   sanitizeAzureOpenAIBody,
 } from "../lib/azure-openai.js";
 import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "../lib/auth.js";
@@ -1430,7 +1431,6 @@ export default async function handler(req) {
     );
   }
 
-  let upstreamRes;
   // Connect-phase timeout (cleared as soon as headers arrive — never aborts the
   // streaming body). Safe to apply on Docker too; default 15s, override via
   // UPSTREAM_CONNECT_TIMEOUT_MS (set to 0 to disable).
@@ -1439,20 +1439,31 @@ export default async function handler(req) {
     if (Number.isFinite(raw) && raw >= 0) return raw;
     return 15000;
   })();
-  const connectController = connectTimeoutMs > 0 ? new AbortController() : null;
-  const connectTimer = connectController
-    ? setTimeout(() => connectController.abort(), connectTimeoutMs)
-    : null;
+
+  const fetchUpstream = async (requestBodyText) => {
+    const connectController = connectTimeoutMs > 0 ? new AbortController() : null;
+    const connectTimer = connectController
+      ? setTimeout(() => connectController.abort(), connectTimeoutMs)
+      : null;
+    try {
+      const res = await fetch(upstreamUrl, {
+        method: req.method,
+        headers,
+        body: requestBodyText || null,
+        ...(connectController ? { signal: connectController.signal } : {}),
+      });
+      if (connectTimer) clearTimeout(connectTimer);
+      return res;
+    } catch (err) {
+      if (connectTimer) clearTimeout(connectTimer);
+      throw err;
+    }
+  };
+
+  let upstreamRes;
   try {
-    upstreamRes = await fetch(upstreamUrl, {
-      method: req.method,
-      headers,
-      body: bodyText || null,
-      ...(connectController ? { signal: connectController.signal } : {}),
-    });
-    if (connectTimer) clearTimeout(connectTimer);
+    upstreamRes = await fetchUpstream(bodyText);
   } catch (err) {
-    if (connectTimer) clearTimeout(connectTimer);
     const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
     log("UPSTREAM_ERROR", err?.name, err?.message);
     return new Response(
@@ -1472,10 +1483,50 @@ export default async function handler(req) {
     );
   }
 
-  const contentType = upstreamRes.headers.get("content-type") || "";
-  const isStream = contentType.includes("text/event-stream");
+  let contentType = upstreamRes.headers.get("content-type") || "";
+  let isStream = contentType.includes("text/event-stream");
   log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
 
+  // Some OpenAI-compatible Responses gateways accept native custom tools and
+  // function tools separately, but 5xx when both appear in the same request.
+  // Retry once with the native custom/apply_patch tools omitted, preserving
+  // the function tools that Cursor also supplied.
+  if (openaiCompatResponses && upstreamRes.status >= 500) {
+    const fallback = openAICompatResponsesToolFallback(providerKey, parsedBody);
+    if (fallback.changed) {
+      const fallbackBodyText = JSON.stringify(fallback.parsedBody);
+      diag("OAI_TOOL_FALLBACK_RETRY",
+        "status:", upstreamRes.status,
+        "droppedNative:", fallback.droppedNative,
+        "functionTools:", fallback.functionTools);
+      try {
+        upstreamRes = await fetchUpstream(fallbackBodyText);
+        parsedBody = fallback.parsedBody;
+        bodyText = fallbackBodyText;
+        contentType = upstreamRes.headers.get("content-type") || "";
+        isStream = contentType.includes("text/event-stream");
+        log("UPSTREAM_STATUS_RETRY", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
+      } catch (err) {
+        const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+        log("UPSTREAM_RETRY_ERROR", err?.name, err?.message);
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: isTimeout
+                ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting) during compatibility retry`
+                : `Upstream compatibility retry failed: ${err?.message}`,
+              type: "upstream_error",
+              code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
+            },
+          }),
+          {
+            status: 504,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+    }
+  }
   // Log upstream errors with response body for debugging (always-on).
   // Cap the captured preview so a multi-MB Azure error payload doesn't
   // double memory pressure on the failing path or flood log lines.

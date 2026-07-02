@@ -227,6 +227,68 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.ok(types.includes("function_call_output"), `expected function_call_output in: ${JSON.stringify(types)}`);
   });
 
+  it("responses mode retries mixed function/custom tools without native custom tools after upstream 5xx", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const calls = [];
+    global.fetch = async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({
+          error: { message: "Upstream request failed", type: "upstream_error" },
+        }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: "resp_retry",
+        object: "response",
+        model: "gpt-4o",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "noop",
+              description: "No operation.",
+              parameters: { type: "object", properties: {}, additionalProperties: false },
+            },
+          },
+          {
+            type: "custom",
+            name: "apply_patch",
+            description: "Apply patch.",
+            format: { type: "text" },
+          },
+        ],
+      }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.equal(calls.length, 2, "mixed tool 5xx should be retried once");
+    assert.equal(calls[0].body.tools.filter((t) => t.type === "custom").length, 1,
+      "first request should preserve official mixed Responses tools");
+    assert.equal(calls[1].body.tools.filter((t) => t.type === "custom").length, 0,
+      "retry should not send native custom tools");
+    assert.equal(calls[1].body.tools.filter((t) => t.type === "function").length, 1,
+      "retry should preserve existing function tools");
+    assert.equal(calls[1].body.tools.some((t) => t.name === "apply_patch"), false,
+      "retry should drop apply_patch custom tool after the upstream rejects mixed tools");
+  });
+
   // ─── Native input branch (INPUT_CHAIN) ───────────────────────────────────
 
   it("responses mode preserves native input array as-is on first turn", async () => {
