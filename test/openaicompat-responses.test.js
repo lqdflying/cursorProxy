@@ -521,6 +521,110 @@ describe("openaicompat Responses wire mode — integration", () => {
 
   // ─── KV cache-hit chaining (two-turn end-to-end) ──────────────────────────
 
+  it("falls back to stateless mode when upstream rejects HTTP previous_response_id", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.UPSTREAM_OPENAICOMPAT = "https://api.openai.com/prev-unsupported";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    const model = "gpt-prev-unsupported-test";
+
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.previous_response_id, undefined, "turn 1 should be stateless");
+      return new Response(JSON.stringify({
+        id: "resp_abc",
+        object: "response",
+        model,
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    const oairespKeys = [...kv.store.keys()].filter((k) => k.startsWith("oairesp:"));
+    assert.equal(oairespKeys.length, 1, "turn 1 should cache resp_abc");
+    assert.equal(kv.store.get(oairespKeys[0]), "resp_abc");
+
+    const turn2Calls = [];
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      turn2Calls.push(body);
+      if (turn2Calls.length === 1) {
+        return new Response(JSON.stringify({
+          error: {
+            message: "previous_response_id is only supported on Responses WebSocket v2",
+            type: "invalid_request_error",
+          },
+        }), { status: 400, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        id: "resp_def",
+        object: "response",
+        model,
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "bye" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const turn2Messages = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: [{ type: "text", text: "bye" }] },
+    ];
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: turn2Messages }),
+    }));
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "bye");
+    assert.equal(turn2Calls.length, 2, "400 previous_response_id rejection should retry once");
+    assert.equal(turn2Calls[0].previous_response_id, "resp_abc",
+      "first turn 2 attempt should use the cached previous_response_id");
+    assert.equal(turn2Calls[0].input.length, 1,
+      "first turn 2 attempt should be trimmed");
+    assert.equal(turn2Calls[1].previous_response_id, undefined,
+      "retry must drop previous_response_id");
+    assert.equal(turn2Calls[1].input.length, 3,
+      "retry must restore the full input");
+    assert.deepEqual(turn2Calls[1].input[2].content, [{ type: "input_text", text: "bye" }],
+      "retry full input must still normalize existing text array parts");
+    assert.equal([...kv.store.values()].includes("resp_def"), false,
+      "stateless retry response IDs should not be cached for unsupported gateways");
+
+    const repeatCalls = [];
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      repeatCalls.push(body);
+      return new Response(JSON.stringify({
+        id: "resp_repeat",
+        object: "response",
+        model,
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "repeat" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: turn2Messages }),
+    }));
+
+    assert.equal(repeatCalls.length, 1, "unsupported scope should not retry every request");
+    assert.equal(repeatCalls[0].previous_response_id, undefined,
+      "unsupported scope should skip future previous_response_id lookup");
+    assert.equal(repeatCalls[0].input.length, 3,
+      "unsupported scope should stay stateless");
+  });
+
   it("two-turn flow: turn 1 caches response id, turn 2 sends previous_response_id with trimmed input", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const kv = makeInMemoryKv();

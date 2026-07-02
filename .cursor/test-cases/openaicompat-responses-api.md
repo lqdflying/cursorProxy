@@ -129,7 +129,34 @@ RES 200 provider: openaicompat ms: <n>
 
 > The retry omits native `custom`/`apply_patch` tools only after the upstream rejects the richer mixed Responses tool request. Existing function tools are preserved.
 
-### Test 7 — Structured text content normalization
+### Test 7 — HTTP previous_response_id unsupported fallback
+
+In the same conversation, send a second turn after a successful first turn. Some OpenAI-compatible gateways return a `resp_*` ID on turn 1 but reject HTTP `previous_response_id` on turn 2 with `previous_response_id is only supported on Responses WebSocket v2`.
+
+Expected behavior:
+
+- Cursor receives a normal response after one stateless retry.
+- The retried upstream request sends the full input array and no `previous_response_id`.
+- Later turns in the same process skip response-ID chaining for that upstream/model/user scope.
+
+Expected logs when this path is exercised:
+
+```text
+PREV_RESP_ID_FOUND key: conv:<sha> id: resp_<id>
+OAI_PREV_RESP_UNSUPPORTED_RETRY status: 400 inputItems: <full_count>
+RES 200 provider: openaicompat ms: <n>
+```
+
+Expected later log for the same scope:
+
+```text
+OAI_PREV_RESP_UNSUPPORTED_SKIP provider: openaicompat mode: stateless
+MESSAGES_TO_INPUT provider: openaicompat inputItems: <full_count> prevResp: (none)
+```
+
+> This means the gateway supports Responses mode but not Codex-style HTTP `previous_response_id` cache chaining. The proxy downgrades to stateless Responses so Cursor keeps working.
+
+### Test 8 — Structured text content normalization
 
 Continue the same Cursor conversation after at least one assistant turn. Cursor may send prior assistant or user text as structured content arrays such as `[{ "type": "text", "text": "..." }]` instead of plain strings.
 
@@ -153,6 +180,7 @@ RES 200 provider: openaicompat ms: <n>
 PREV_RESP_ID_FOUND count: 0 across multiple turns   # chaining never activated (branch never executed)
 UPSTREAM_ERROR_STATUS                                  # upstream rejected the request (check store/previous_response_id/tool fallback)
 OAI_STREAM_ERROR ... invalid_enum_value ... Invalid value: 'text'
+previous_response_id is only supported on Responses WebSocket v2 # should be retried stateless, not returned to Cursor
 previous_response_not_found                            # stale or mismatched response ID replayed against wrong scope
 /v1/v1/responses                                       # URL normalization bug — trailing /v1 in UPSTREAM_OPENAICOMPAT not stripped
 ```

@@ -52,6 +52,7 @@ const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
 const OPENAICOMPAT_RESPONSE_CACHE_VERSION = "v1";
 let proxyAuthWarningLogged = false;
+const openAICompatPreviousResponseUnsupportedScopes = new Set();
 
 // Soft caps for per-stream string accumulators. These prevent a runaway
 // reasoning model from OOMing a single Vercel Edge instance during a long
@@ -388,6 +389,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cloneJson(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function isOpenAICompatPreviousResponseUnsupported(status, bodyText) {
+  return status === 400
+    && /previous_response_id/i.test(bodyText || "")
+    && /Responses WebSocket v2/i.test(bodyText || "");
+}
+
 async function waitForAzResponseId(key, retries = 2) {
   // Response IDs are written to KV before the proxy responds to Cursor,
   // so the next request usually finds the key immediately. Short retry
@@ -406,6 +417,8 @@ export default async function handler(req) {
   const t0 = Date.now();
   let azureReplyKey = null; // KV key for saving response ID (azure or openaicompat)
   let respIdCachePrefix = "azresp:"; // KV namespace prefix (set in chaining block)
+  let respIdChainScope = null;
+  let openAICompatStatelessRetryInput = null;
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
   if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
@@ -708,6 +721,9 @@ export default async function handler(req) {
           azureScopeUser,
         ].join(":");
       }
+      respIdChainScope = chainScope;
+      const prevRespUnsupported = openaiCompatResponses
+        && openAICompatPreviousResponseUnsupportedScopes.has(chainScope);
 
       // Build a normalized array for hashing and finding the last assistant
       // turn.  For messages we use the Chat Completions array directly (role
@@ -802,11 +818,15 @@ export default async function handler(req) {
         azureReplyKey = null;
         diag("STORE_OPT_OUT", "provider:", providerKey, "client sent store:false — chaining disabled (no prev lookup, no KV write)");
       }
+      if (prevRespUnsupported) {
+        azureReplyKey = null;
+        diag("OAI_PREV_RESP_UNSUPPORTED_SKIP", "provider:", providerKey, "mode:", "stateless");
+      }
 
       // Look up a cached response ID from the prior turn.
       // hashBoundaryIdx marks items BEFORE the contiguous assistant block.
       let prevRespId = null;
-      if (!storeOptOut && hashBoundaryIdx >= 0) {
+      if (!storeOptOut && !prevRespUnsupported && hashBoundaryIdx >= 0) {
         const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, chainScope);
         const readResult = await waitForAzResponseId(cachePrefix + prevRespKey);
         if (readResult) {
@@ -861,15 +881,24 @@ export default async function handler(req) {
           return [item];
         };
 
+        const fullInput = parsedBody.messages.reduce((acc, item) => {
+          acc.push(...normalizeAzureInput(item));
+          return acc;
+        }, []);
+
         if (prevRespId) {
           // If trimming would produce an empty input, force stateless mode.
           // Azure rejects previous_response_id with no new items.
           if (parsedBody.messages.slice(lastAssistantIdx + 1).length === 0) {
             prevRespId = null;
+            openAICompatStatelessRetryInput = null;
             log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
                  "lastAssistantIdx:", lastAssistantIdx,
                  "totalItems:", parsedBody.messages.length);
           } else {
+            if (openaiCompatResponses) {
+              openAICompatStatelessRetryInput = cloneJson(fullInput);
+            }
             // Only send input items that appeared AFTER the last assistant.
             // Azure replays the full prior conversation server-side.
             parsedBody.input = parsedBody.messages.slice(lastAssistantIdx + 1)
@@ -883,10 +912,7 @@ export default async function handler(req) {
         if (!prevRespId && !parsedBody.input) {
           // Stateless fallback — full input array (but response is still stored
           // so the NEXT turn can chain from it).
-          parsedBody.input = parsedBody.messages.reduce((acc, item) => {
-            acc.push(...normalizeAzureInput(item));
-            return acc;
-          }, []);
+          parsedBody.input = fullInput;
         }
         delete parsedBody.messages;
         bodyText = JSON.stringify(parsedBody);
@@ -920,10 +946,14 @@ export default async function handler(req) {
           // Azure rejects previous_response_id with no new items.
           if (parsedBody.input.slice(lastAssistantIdx + 1).length === 0) {
             prevRespId = null;
+            openAICompatStatelessRetryInput = null;
             log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
                  "lastAssistantIdx:", lastAssistantIdx,
                  "totalItems:", parsedBody.input.length);
           } else {
+            if (openaiCompatResponses) {
+              openAICompatStatelessRetryInput = cloneJson(parsedBody.input);
+            }
             parsedBody.input = parsedBody.input.slice(lastAssistantIdx + 1);
             parsedBody.previous_response_id = prevRespId;
           }
@@ -1538,6 +1568,63 @@ export default async function handler(req) {
       }
     }
   }
+
+  // Some OpenAI-compatible Responses gateways support POST /v1/responses but
+  // reject HTTP previous_response_id chaining, returning:
+  // "previous_response_id is only supported on Responses WebSocket v2".
+  // Retry once in stateless mode with the full input array so Cursor gets an
+  // answer. Mark this upstream/model/user scope as unsupported for the current
+  // process so later turns skip oairesp: reads/writes instead of replaying a
+  // bad response id.
+  if (
+    openaiCompatResponses
+    && parsedBody?.previous_response_id
+    && openAICompatStatelessRetryInput
+    && upstreamRes.status === 400
+  ) {
+    const errText = await upstreamRes.clone().text().catch(() => "");
+    if (isOpenAICompatPreviousResponseUnsupported(upstreamRes.status, errText)) {
+      if (respIdChainScope) {
+        openAICompatPreviousResponseUnsupportedScopes.add(respIdChainScope);
+      }
+      const retryBody = cloneJson(parsedBody);
+      retryBody.input = cloneJson(openAICompatStatelessRetryInput);
+      delete retryBody.previous_response_id;
+      const retryNormalized = normalizeOpenAICompatResponsesInputContent(providerKey, retryBody).parsedBody;
+      const retryBodyText = JSON.stringify(retryNormalized);
+      azureReplyKey = null;
+      diag("OAI_PREV_RESP_UNSUPPORTED_RETRY",
+        "status:", upstreamRes.status,
+        "inputItems:", retryNormalized.input?.length || 0);
+      try {
+        upstreamRes = await fetchUpstream(retryBodyText);
+        parsedBody = retryNormalized;
+        bodyText = retryBodyText;
+        contentType = upstreamRes.headers.get("content-type") || "";
+        isStream = contentType.includes("text/event-stream");
+        log("UPSTREAM_STATUS_PREV_RETRY", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
+      } catch (err) {
+        const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+        log("UPSTREAM_PREV_RETRY_ERROR", err?.name, err?.message);
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: isTimeout
+                ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting) during previous_response_id stateless retry`
+                : `Upstream previous_response_id stateless retry failed: ${err?.message}`,
+              type: "upstream_error",
+              code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
+            },
+          }),
+          {
+            status: 504,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
+    }
+  }
+
   // Log upstream errors with response body for debugging (always-on).
   // Cap the captured preview so a multi-MB Azure error payload doesn't
   // double memory pressure on the failing path or flood log lines.
