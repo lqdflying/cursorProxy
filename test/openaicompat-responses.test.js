@@ -17,6 +17,7 @@ const PROVIDER_URL = "http://localhost/api/proxy?provider=openaicompat&path=chat
 
 const ENV_KEYS = [
   "OPENAICOMPAT_WIRE_API",
+  "OPENAICOMPAT_CACHE_HIT_MODE",
   "OPENAICOMPAT_REASONING_EFFORT",
   "OPENAICOMPAT_API_KEY",
   "UPSTREAM_OPENAICOMPAT",
@@ -35,6 +36,7 @@ function makeInMemoryKv() {
     store,
     async get(key) { return store.has(key) ? store.get(key) : null; },
     async set(key, value) { store.set(key, value); },
+    async del(key) { store.delete(key); },
   };
 }
 
@@ -1081,5 +1083,252 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(turn2Captured.body.input[0].content, "bye",
       "turn 2 trimmed input should preserve string content for openaicompat");
     assert.equal(turn2Captured.body.store, true, "store:true on turn 2");
+  });
+
+  it("sub2api mode injects a derived prompt_cache_key for GPT-5/Codex models only", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const captured = mockFetchResponses({
+      id: "resp_prompt_key",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          { role: "system", content: "be concise" },
+          { role: "user", content: "hi" },
+        ],
+      }),
+    }));
+
+    assert.match(captured.body.prompt_cache_key, /^compat_cc_[0-9a-f]{32}$/);
+
+    const nonGpt = mockFetchResponses({
+      id: "resp_no_prompt_key",
+      object: "response",
+      model: "gpt-4o",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+    assert.equal(nonGpt.body.prompt_cache_key, undefined);
+  });
+
+  it("sub2api mode preserves explicit prompt_cache_key", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const captured = mockFetchResponses({
+      id: "resp_explicit_prompt_key",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        prompt_cache_key: "client-key",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.equal(captured.body.prompt_cache_key, "client-key");
+  });
+
+  it("sub2api mode refreshes a stale previous_response_id after previous_response_not_found", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_abc",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const turn1Messages = [{ role: "user", content: "hi" }];
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: turn1Messages }),
+    }));
+    assert.ok([...kv.store.values()].includes("resp_abc"), "turn 1 should cache resp_abc");
+
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (body.previous_response_id) {
+        return new Response(JSON.stringify({
+          error: {
+            code: "previous_response_not_found",
+            message: "previous response not found",
+          },
+        }), { status: 404, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        id: "resp_def",
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "bye" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          ...turn1Messages,
+          { role: "assistant", content: "hello" },
+          { role: "user", content: "bye" },
+        ],
+      }),
+    }));
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].previous_response_id, "resp_abc");
+    assert.equal(calls[0].input.length, 1, "first attempt should be trimmed");
+    assert.equal(calls[1].previous_response_id, undefined);
+    assert.equal(calls[1].input.length, 3, "retry should restore full input");
+    assert.equal([...kv.store.values()].includes("resp_abc"), false, "stale response id should be deleted");
+    assert.equal([...kv.store.values()].includes("resp_def"), true, "stateless retry response should refresh the chain");
+  });
+
+  it("sub2api mode expands native Responses trim to include matching function_call before tool outputs", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_tool_call",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [{ role: "user", content: "lookup" }],
+      }),
+    }));
+
+    let captured = null;
+    global.fetch = async (_url, init) => {
+      captured = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "resp_done",
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        input: [
+          { role: "user", content: "lookup" },
+          { type: "message", role: "assistant", content: "calling lookup" },
+          { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" },
+          { type: "function_call_output", call_id: "call_1", output: "42" },
+          { role: "user", content: "summarize" },
+        ],
+      }),
+    }));
+
+    assert.equal(captured.previous_response_id, "resp_tool_call");
+    assert.equal(captured.input.length, 3);
+    assert.equal(captured.input[0].type, "function_call");
+    assert.equal(captured.input[1].type, "function_call_output");
+    assert.equal(captured.input[2].role, "user");
+  });
+
+  it("maps Responses cached token usage into Chat Completions usage", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_usage",
+      object: "response",
+      model: "gpt-4o",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 10,
+        total_tokens: 110,
+        input_tokens_details: { cached_tokens: 80 },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+    const body = await res.json();
+    assert.equal(body.usage.prompt_tokens, 100);
+    assert.equal(body.usage.completion_tokens, 10);
+    assert.equal(body.usage.total_tokens, 110);
+    assert.equal(body.usage.prompt_tokens_details.cached_tokens, 80);
+  });
+
+  it("emits stream usage when stream_options.include_usage is requested", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_usage_stream\",\"status\":\"in_progress\",\"model\":\"gpt-4o\"}}",
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_usage_stream\",\"status\":\"completed\",\"model\":\"gpt-4o\",\"error\":null,\"usage\":{\"input_tokens\":50,\"output_tokens\":5,\"total_tokens\":55,\"input_tokens_details\":{\"cached_tokens\":40}}}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hi" }],
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+    }));
+
+    const body = await res.text();
+    assert.match(body, /"choices":\[\]/);
+    assert.match(body, /"prompt_tokens":50/);
+    assert.match(body, /"cached_tokens":40/);
+    assert.match(body, /data: \[DONE\]/);
   });
 });

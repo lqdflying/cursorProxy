@@ -41,6 +41,7 @@ flowchart LR
 
     subgraph "oairesp: — OpenAI-compatible response IDs"
         OK["oairesp:conv:\n<sha256(openaicompat:v1:upstream:model:user:messages)>"]
+        OK2["sub2api mode:\n<sha256(openaicompat:v1:sub2api:upstream:model:session:user:messages)>"]
         OV["Value: response ID string\n(e.g. resp_abc123)"]
     end
 
@@ -149,6 +150,18 @@ sequenceDiagram
 > turn's `finally` block is still flushing the response ID to KV.
 > Delays are hardcoded: `[0, 80, 200]` ms (total max wait ~280 ms).
 
+For OpenAI-compatible Responses mode, `OPENAICOMPAT_CACHE_HIT_MODE=sub2api`
+adds sub2api-style cache hints while keeping cursorProxy's exact-prefix KV
+response-ID lookup:
+
+- injects `prompt_cache_key=compat_cc_<hash>` for GPT-5/Codex-like models when
+  the client did not send one;
+- scopes `oairesp:` keys by `session_id`, then `conversation_id`, then
+  `prompt_cache_key`, then a content-derived `compat_cs_<hash>` seed;
+- deletes stale previous-response KV entries on `previous_response_not_found`
+  and retries stateless so the successful retry can refresh the chain;
+- suppresses unsupported `previous_response_id` scopes for `KV_TTL_SECONDS`.
+
 ### Reasoning (conv:) — configurable delays
 
 ```mermaid
@@ -201,6 +214,7 @@ flowchart TD
 
     subgraph "oairesp: scope"
         OS["oairesp:conv:\nopenaicompat : v1 : upstream-base : model : user"]
+        OS2["sub2api mode:\nopenaicompat : v1 : sub2api : upstream-base : model : session-anchor : user"]
     end
 
     subgraph "claude_thinking: scope"
@@ -213,7 +227,7 @@ flowchart TD
 
     note1["Azure scope includes deployment name:\nchanging AZURE_OPENAI_GENERAL_ALIAS_TARGET\nyields a fresh bucket — prevents 400 errors\nfrom replaying IDs across deployments"]
 
-    note2["OpenAI-compatible scope includes upstream base and model:\nchanging UPSTREAM_OPENAICOMPAT, path tenant, or model\nyields a fresh bucket — prevents replaying IDs\nagainst the wrong gateway/model"]
+    note2["OpenAI-compatible scope includes upstream base and model:\nchanging UPSTREAM_OPENAICOMPAT, path tenant, or model\nyields a fresh bucket — prevents replaying IDs\nagainst the wrong gateway/model.\nsub2api mode also includes a session anchor."]
 
     AS --- note1
     OS --- note2
@@ -242,6 +256,7 @@ cache version is incremented after a breaking schema change.
 | Variable | Default | Purpose |
 |---|---|---|
 | `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `oairesp:`, `claude_thinking:`) |
+| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | `sub2api` enables OpenAI-compatible Responses prompt cache key injection, session anchors, stale previous-response cleanup, and unsupported-scope TTLs |
 | `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
 | `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |

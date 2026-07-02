@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { kvGet, kvSet } from "../lib/kv.js";
+import { kvDelete, kvGet, kvSet } from "../lib/kv.js";
 import {
   mapAnthropicResponseToOpenAI,
   mapAnthropicSSEToOpenAI,
@@ -11,6 +11,7 @@ import {
 import {
   mapResponsesSSEToOpenAI,
   mapResponsesToOpenAI,
+  mapResponsesUsageToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeOpenAICompatResponsesInputContent,
   normalizeAzureOpenAITools,
@@ -19,6 +20,12 @@ import {
 } from "../lib/azure-openai.js";
 import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "../lib/auth.js";
 import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "../lib/cache.js";
+import {
+  deriveCompatPromptCacheKey,
+  deriveOpenAICompatSessionAnchor,
+  isOpenAICompatSub2ApiCacheMode,
+  shouldAutoInjectPromptCacheKeyForCompat,
+} from "../lib/openaicompat-cache.js";
 import {
   isModelDiscoveryRequest,
   isOpenAICompatResponses,
@@ -52,7 +59,7 @@ const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
 const OPENAICOMPAT_RESPONSE_CACHE_VERSION = "v1";
 let proxyAuthWarningLogged = false;
-const openAICompatPreviousResponseUnsupportedScopes = new Set();
+const openAICompatPreviousResponseUnsupportedScopes = new Map();
 
 // Soft caps for per-stream string accumulators. These prevent a runaway
 // reasoning model from OOMing a single Vercel Edge instance during a long
@@ -496,10 +503,72 @@ function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function isOpenAICompatPreviousResponseUnsupported(status, bodyText) {
-  return status === 400
-    && /previous_response_id/i.test(bodyText || "")
-    && /Responses WebSocket v2/i.test(bodyText || "");
+function openAICompatUnsupportedScopeTtlMs() {
+  const raw = parseInt(process.env.KV_TTL_SECONDS || "", 10);
+  const ttlSeconds = Number.isFinite(raw) && raw > 0 ? raw : 7200;
+  return ttlSeconds * 1000;
+}
+
+function markOpenAICompatPreviousResponseUnsupportedScope(scope) {
+  if (!scope) return;
+  openAICompatPreviousResponseUnsupportedScopes.set(
+    scope,
+    Date.now() + openAICompatUnsupportedScopeTtlMs()
+  );
+}
+
+function hasOpenAICompatPreviousResponseUnsupportedScope(scope) {
+  if (!scope) return false;
+  const expiresAt = openAICompatPreviousResponseUnsupportedScopes.get(scope);
+  if (!expiresAt) return false;
+  if (Date.now() > expiresAt) {
+    openAICompatPreviousResponseUnsupportedScopes.delete(scope);
+    return false;
+  }
+  return true;
+}
+
+function openAICompatPreviousResponseFailureKind(status, bodyText) {
+  const lower = String(bodyText || "").toLowerCase();
+  if (status === 400 && lower.includes("previous_response_id")) {
+    if (
+      lower.includes("unsupported parameter") ||
+      lower.includes("only supported on responses websocket") ||
+      lower.includes("not supported")
+    ) {
+      return "unsupported";
+    }
+  }
+  if (
+    (status === 400 || status === 404) &&
+    (
+      lower.includes("previous_response_not_found") ||
+      (lower.includes("previous response") && lower.includes("not found"))
+    )
+  ) {
+    return "not_found";
+  }
+  return null;
+}
+
+function expandResponsesInputToolCallStart(items, start) {
+  if (!Array.isArray(items) || start <= 0 || start >= items.length) return start;
+  const needed = new Set();
+  for (let i = start; i < items.length; i++) {
+    if (items[i]?.type !== "function_call_output") continue;
+    const callId = String(items[i].call_id || "").trim();
+    if (callId) needed.add(callId);
+  }
+  if (needed.size === 0) return start;
+  let expandedStart = start;
+  for (let i = start - 1; i >= 0 && needed.size > 0; i--) {
+    if (items[i]?.type !== "function_call") continue;
+    const callId = String(items[i].call_id || "").trim();
+    if (!needed.has(callId)) continue;
+    needed.delete(callId);
+    expandedStart = i;
+  }
+  return expandedStart;
 }
 
 async function waitForAzResponseId(key, retries = 2) {
@@ -519,6 +588,7 @@ async function waitForAzResponseId(key, retries = 2) {
 export default async function handler(req) {
   const t0 = Date.now();
   let azureReplyKey = null; // KV key for saving response ID (azure or openaicompat)
+  let respIdPreviousKvKey = null; // full KV key for stale previous_response_id cleanup
   let respIdCachePrefix = "azresp:"; // KV namespace prefix (set in chaining block)
   let respIdChainScope = null;
   let openAICompatStatelessRetryInput = null;
@@ -589,6 +659,9 @@ export default async function handler(req) {
   // provider is in Responses mode AND this request targets chat/completions.
   const openaiCompatResponses = isOpenAICompatResponses(providerKey)
     && pathParam === "chat/completions";
+  const openAICompatSub2ApiCache = openaiCompatResponses && isOpenAICompatSub2ApiCacheMode();
+  const responsesStreamIncludeUsage = (providerKey === "azureopenai" || openaiCompatResponses)
+    && parsedBody?.stream_options?.include_usage === true;
 
   // Probe before any mutation so we see the raw client tool shapes.
   probeStrictTools(providerKey, parsedBody);
@@ -776,6 +849,26 @@ export default async function handler(req) {
 
     if (hasMessages || hasInput) {
       const azureScopeUser = await cacheScopeUserId(req);
+      let openAICompatSessionAnchor = "";
+      if (openAICompatSub2ApiCache) {
+        const modelForCache = parsedBody?.model || upstreamModelName || "";
+        if (!parsedBody.prompt_cache_key && shouldAutoInjectPromptCacheKeyForCompat(modelForCache)) {
+          const derivedPromptCacheKey = await deriveCompatPromptCacheKey(parsedBody, modelForCache);
+          if (derivedPromptCacheKey) {
+            parsedBody.prompt_cache_key = derivedPromptCacheKey;
+            bodyText = JSON.stringify(parsedBody);
+            diag("OAI_PROMPT_CACHE_KEY_INJECTED",
+              "model:", modelForCache,
+              "key:", derivedPromptCacheKey.slice(0, 24) + "...");
+          }
+        }
+        openAICompatSessionAnchor = await deriveOpenAICompatSessionAnchor(req, parsedBody, modelForCache);
+        if (openAICompatSessionAnchor) {
+          diag("OAI_SESSION_ANCHOR",
+            "source:", openAICompatSessionAnchor.split("_").slice(0, -1).join("_") || "derived",
+            "hash:", openAICompatSessionAnchor.slice(-32));
+        }
+      }
       // Cache scope: provider-specific identifiers so response IDs from one
       // provider/deployment/resource are never replayed against another.
       //
@@ -802,13 +895,23 @@ export default async function handler(req) {
       if (openaiCompatResponses) {
         const upstreamBase = (process.env.UPSTREAM_OPENAICOMPAT || "https://api.openai.com")
           .replace(/\/+$/, "").replace(/\/v1$/i, "");
-        chainScope = [
-          providerKey,
-          cacheVersion,
-          upstreamBase,
-          parsedBody?.model || "(none)",
-          azureScopeUser,
-        ].join(":");
+        chainScope = openAICompatSub2ApiCache
+          ? [
+            providerKey,
+            cacheVersion,
+            "sub2api",
+            upstreamBase,
+            parsedBody?.model || "(none)",
+            openAICompatSessionAnchor || "(none)",
+            azureScopeUser,
+          ].join(":")
+          : [
+            providerKey,
+            cacheVersion,
+            upstreamBase,
+            parsedBody?.model || "(none)",
+            azureScopeUser,
+          ].join(":");
       } else {
         const azureScopeDeployment = parsedBody?.model || "(none)";
         const azureScopeResource = (
@@ -826,7 +929,7 @@ export default async function handler(req) {
       }
       respIdChainScope = chainScope;
       const prevRespUnsupported = openaiCompatResponses
-        && openAICompatPreviousResponseUnsupportedScopes.has(chainScope);
+        && hasOpenAICompatPreviousResponseUnsupportedScope(chainScope);
 
       // Build a normalized array for hashing and finding the last assistant
       // turn.  For messages we use the Chat Completions array directly (role
@@ -931,7 +1034,8 @@ export default async function handler(req) {
       let prevRespId = null;
       if (!storeOptOut && !prevRespUnsupported && hashBoundaryIdx >= 0) {
         const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, chainScope);
-        const readResult = await waitForAzResponseId(cachePrefix + prevRespKey);
+        respIdPreviousKvKey = cachePrefix + prevRespKey;
+        const readResult = await waitForAzResponseId(respIdPreviousKvKey);
         if (readResult) {
           prevRespId = readResult;
           diag("PREV_RESP_ID_FOUND", "key:", prevRespKey, "id:", prevRespId);
@@ -1047,7 +1151,11 @@ export default async function handler(req) {
         if (prevRespId) {
           // If trimming would produce an empty input, force stateless mode.
           // Azure rejects previous_response_id with no new items.
-          if (parsedBody.input.slice(lastAssistantIdx + 1).length === 0) {
+          const trimStart = openAICompatSub2ApiCache
+            ? expandResponsesInputToolCallStart(parsedBody.input, lastAssistantIdx + 1)
+            : lastAssistantIdx + 1;
+          const trimmedInput = parsedBody.input.slice(trimStart);
+          if (trimmedInput.length === 0) {
             prevRespId = null;
             openAICompatStatelessRetryInput = null;
             log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
@@ -1057,7 +1165,7 @@ export default async function handler(req) {
             if (openaiCompatResponses) {
               openAICompatStatelessRetryInput = cloneJson(parsedBody.input);
             }
-            parsedBody.input = parsedBody.input.slice(lastAssistantIdx + 1);
+            parsedBody.input = trimmedInput;
             parsedBody.previous_response_id = prevRespId;
           }
         }
@@ -1672,31 +1780,33 @@ export default async function handler(req) {
     }
   }
 
-  // Some OpenAI-compatible Responses gateways support POST /v1/responses but
-  // reject HTTP previous_response_id chaining, returning:
-  // "previous_response_id is only supported on Responses WebSocket v2".
-  // Retry once in stateless mode with the full input array so Cursor gets an
-  // answer. Mark this upstream/model/user scope as unsupported for the current
-  // process so later turns skip oairesp: reads/writes instead of replaying a
-  // bad response id.
+  // Some OpenAI-compatible Responses gateways reject or lose
+  // previous_response_id state. Retry once in stateless mode with the full
+  // input array so Cursor gets an answer. Unsupported upstreams are suppressed
+  // for a TTL; stale IDs are deleted so the retry can refresh the oairesp key.
   if (
     openaiCompatResponses
     && parsedBody?.previous_response_id
     && openAICompatStatelessRetryInput
-    && upstreamRes.status === 400
+    && (upstreamRes.status === 400 || upstreamRes.status === 404)
   ) {
     const errText = await upstreamRes.clone().text().catch(() => "");
-    if (isOpenAICompatPreviousResponseUnsupported(upstreamRes.status, errText)) {
-      if (respIdChainScope) {
-        openAICompatPreviousResponseUnsupportedScopes.add(respIdChainScope);
+    const previousResponseFailureKind = openAICompatPreviousResponseFailureKind(upstreamRes.status, errText);
+    if (previousResponseFailureKind) {
+      if (previousResponseFailureKind === "unsupported") {
+        markOpenAICompatPreviousResponseUnsupportedScope(respIdChainScope);
+        azureReplyKey = null;
+      } else if (previousResponseFailureKind === "not_found" && respIdPreviousKvKey) {
+        await kvDelete(respIdPreviousKvKey);
       }
       const retryBody = cloneJson(parsedBody);
       retryBody.input = cloneJson(openAICompatStatelessRetryInput);
       delete retryBody.previous_response_id;
       const retryNormalized = normalizeOpenAICompatResponsesInputContent(providerKey, retryBody).parsedBody;
       const retryBodyText = JSON.stringify(retryNormalized);
-      azureReplyKey = null;
-      diag("OAI_PREV_RESP_UNSUPPORTED_RETRY",
+      diag(previousResponseFailureKind === "unsupported"
+        ? "OAI_PREV_RESP_UNSUPPORTED_RETRY"
+        : "OAI_PREV_RESP_NOT_FOUND_RETRY",
         "status:", upstreamRes.status,
         "inputItems:", retryNormalized.input?.length || 0);
       try {
@@ -2277,6 +2387,22 @@ export default async function handler(req) {
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
                   logAzureStreamSummary(responsesEvent);
+                  if (responsesStreamIncludeUsage && completed.usage) {
+                    const usage = mapResponsesUsageToOpenAI(completed.usage);
+                    if (usage) {
+                      const usageChunk = withPublicResponseModel({
+                        id: completed.id || azureResponseId || "resp_unknown",
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
+                        model: completed.model || "",
+                        choices: [],
+                        usage,
+                      }, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo));
+                      await writer.write(encoder.encode(
+                        "data: " + JSON.stringify(stripResponseChunk(usageChunk)) + "\n\n"
+                      ));
+                    }
+                  }
                   if (responsesToolCallSeen) {
                     const finishChunk = withPublicResponseModel({
                       choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
