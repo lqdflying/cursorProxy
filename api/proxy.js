@@ -328,6 +328,64 @@ function responsesToolArgsForLog(data, state) {
   return state?.partialJson || "";
 }
 
+function isResponsesToolArgDeltaEvent(eventName) {
+  return eventName === "response.function_call_arguments.delta"
+    || eventName === "response.custom_tool_call_input.delta"
+    || eventName === "response.apply_patch_call.delta"
+    || eventName === "response.apply_patch_call_input.delta";
+}
+
+function isCursorSubagentToolName(name) {
+  return String(name || "").trim().toLowerCase() === "subagent";
+}
+
+const CURSOR_SUBAGENT_CLOUD_ONLY_ARG_KEYS = new Set([
+  "cloud_base_branch",
+  "environment",
+  "file_attachments",
+]);
+
+function sanitizeCursorSubagentArgsForLocal(rawArgs) {
+  const text = typeof rawArgs === "string" ? rawArgs : "";
+  if (!text.trim()) return { argsText: text, removed: [], parseError: false };
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { argsText: text, removed: [], parseError: false };
+    }
+    const removed = [];
+    for (const key of CURSOR_SUBAGENT_CLOUD_ONLY_ARG_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        delete parsed[key];
+        removed.push(key);
+      }
+    }
+    return {
+      argsText: removed.length > 0 ? JSON.stringify(parsed) : text,
+      removed,
+      parseError: false,
+    };
+  } catch {
+    return { argsText: text, removed: [], parseError: true };
+  }
+}
+
+function mapResponsesToolArgsChunkForProxy(state, argsText) {
+  return {
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: state?.toolIndex ?? 0,
+          id: state?.id || "",
+          type: "function",
+          function: { name: state?.name || "", arguments: argsText },
+        }],
+      },
+    }],
+  };
+}
+
 // Confirm at cold start that the opt-in cache flag was honored.
 if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
   diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
@@ -2141,7 +2199,39 @@ export default async function handler(req) {
                      "argKeys:", summarizeJsonArgKeysForLog(argsText));
               }
 
-              const mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
+              let mapped = null;
+              const preMappedToolState = responsesToolStateForLog(responsesToolState, json);
+              const shouldSanitizeSubagentArgs = openaiCompatResponses
+                && isCursorSubagentToolName(preMappedToolState?.name || json?.name);
+
+              if (shouldSanitizeSubagentArgs && isResponsesToolArgDeltaEvent(responsesEvent)) {
+                // Let mapResponsesSSEToOpenAI update partialJson, then suppress
+                // the raw delta so Cursor never sees cloud-only Subagent args.
+                mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
+                continue;
+              }
+
+              if (shouldSanitizeSubagentArgs && isResponsesToolDoneEvent(responsesEvent)) {
+                const argsText = responsesToolArgsForLog(json, preMappedToolState);
+                const sanitized = sanitizeCursorSubagentArgsForLocal(argsText);
+                if (sanitized.removed.length > 0) {
+                  diag("OAI_SUBAGENT_ARGS_SANITIZED",
+                       "provider:", providerKey,
+                       "name:", safeLogToken(preMappedToolState?.name || json?.name || "(unknown)"),
+                       "toolIndex:", preMappedToolState?.toolIndex ?? "(none)",
+                       "removed:", sanitized.removed.map((key) => safeLogToken(key)).join(","),
+                       "argKeys:", summarizeJsonArgKeysForLog(sanitized.argsText));
+                } else if (sanitized.parseError) {
+                  diag("OAI_SUBAGENT_ARGS_SANITIZE_SKIP",
+                       "provider:", providerKey,
+                       "name:", safeLogToken(preMappedToolState?.name || json?.name || "(unknown)"),
+                       "reason:", "unparseable");
+                }
+                mapped = mapResponsesToolArgsChunkForProxy(preMappedToolState, sanitized.argsText);
+              } else {
+                mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
+              }
+
               if (mapped) {
                 const mappedToolCalls = mapped.choices?.[0]?.delta?.tool_calls;
                 if (mappedToolCalls) {

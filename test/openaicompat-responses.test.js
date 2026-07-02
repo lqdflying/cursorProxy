@@ -540,6 +540,89 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.doesNotMatch(logs, /inspect/, "tool-call diagnostics must not log argument values");
   });
 
+  it("sanitizes Cursor Subagent cloud-only arguments before forwarding the tool call", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const args = JSON.stringify({
+      cloud_base_branch: "main",
+      description: "review docs",
+      environment: "prod",
+      file_attachments: ["secret.txt"],
+      interrupt: false,
+      model: "inherit",
+      prompt: "inspect docs",
+      readonly: true,
+      resume: false,
+      run_in_background: true,
+      subagent_type: "review",
+    });
+    const midpoint = Math.floor(args.length / 2);
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_subagent\",\"status\":\"in_progress\",\"model\":\"gpt-4o\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_sub\",\"type\":\"function_call\",\"call_id\":\"call_sub\",\"name\":\"Subagent\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.delta", output_index: 1, item_id: "fc_sub", delta: args.slice(0, midpoint) })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.delta", output_index: 1, item_id: "fc_sub", delta: args.slice(midpoint) })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_sub", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_subagent\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "start subagent" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(bodyText, /cloud_base_branch/);
+    assert.doesNotMatch(bodyText, /file_attachments/);
+    assert.doesNotMatch(bodyText, /"environment"/);
+    assert.match(logs, /OAI_SUBAGENT_ARGS_SANITIZED .*removed: cloud_base_branch,environment,file_attachments/);
+
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    const sanitized = JSON.parse(argText);
+    assert.deepEqual(Object.keys(sanitized), [
+      "description",
+      "interrupt",
+      "model",
+      "prompt",
+      "readonly",
+      "resume",
+      "run_in_background",
+      "subagent_type",
+    ]);
+    assert.equal(sanitized.prompt, "inspect docs");
+    assert.equal(sanitized.readonly, true);
+    assert.ok(chunks.some((chunk) => chunk.choices?.[0]?.finish_reason === "tool_calls"),
+      "sanitized Subagent call still needs finish_reason=tool_calls");
+  });
+
   it("maps Responses output indexes to dense Chat tool indexes", () => {
     const state = new Map();
     const first = mapResponsesSSEToOpenAI("response.output_item.added", {

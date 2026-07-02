@@ -182,6 +182,7 @@ Expected behavior:
 
 - Cursor starts/runs the requested tool or subagent instead of reporting a tool-start failure.
 - Logs may show `functionArgDeltas: <n>` and `content: 0` for a pure tool-call turn; that is valid as long as Cursor executes the tool.
+- If the upstream emits a `Subagent` tool call containing local-incompatible cloud keys, the proxy strips only those keys before Cursor sees the final arguments delta.
 
 Regression signs:
 
@@ -190,6 +191,13 @@ OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0
 ```
 
 combined with Cursor UI reporting that a tool/subagent failed to start. In that case inspect the transformed downstream SSE: Responses `output_index` values must be remapped to dense Chat `tool_calls[].index` values starting at `0`, and the stream must include a terminal Chat chunk with `finish_reason:"tool_calls"` before `data: [DONE]`.
+
+Expected logs for the known local Subagent compatibility path:
+
+```text
+OAI_TOOL_CALL_DONE provider: openaicompat name: Subagent ... argKeys: cloud_base_branch,description,environment,file_attachments,...
+OAI_SUBAGENT_ARGS_SANITIZED provider: openaicompat name: Subagent ... removed: cloud_base_branch,environment,file_attachments
+```
 
 ## Negative signs
 
