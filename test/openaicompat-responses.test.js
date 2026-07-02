@@ -387,6 +387,39 @@ describe("openaicompat Responses wire mode — integration", () => {
 
   // ─── Responses → Chat Completions response mapping ───────────────────────
 
+  it("surfaces Responses stream error events instead of returning an empty completion", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_err\",\"status\":\"in_progress\",\"model\":\"gpt-4o\"}}",
+      "",
+      "event: error",
+      "data: {\"type\":\"error\",\"message\":\"provider stream failed\",\"code\":\"bad_gateway\"}",
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_err\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "text/event-stream");
+    const body = await res.text();
+    assert.match(body, /provider stream failed/);
+    assert.match(body, /bad_gateway/);
+    assert.match(body, /data: \[DONE\]/);
+    assert.equal(body.includes("STREAM_DONE_VIA_RESPONSE_COMPLETED"), false);
+  });
+
   it("maps Responses output to Chat Completions choices in the response", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     mockFetchResponses({

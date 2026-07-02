@@ -1960,6 +1960,31 @@ export default async function handler(req) {
                 azureFunctionDeltaCount++;
               }
 
+              if (responsesEvent === "error") {
+                if (doneSeen) continue;
+                doneSeen = true;
+                const upstreamError = json?.error || json;
+                const errMessage = upstreamError?.message || upstreamError?.code || "Upstream Responses stream error";
+                const errType = upstreamError?.type || "upstream_stream_error";
+                const errCode = upstreamError?.code || "responses_stream_error";
+                diag(openaiCompatResponses ? "OAI_STREAM_ERROR" : "AZURE_STREAM_ERROR",
+                     "message:", String(errMessage).slice(0, 500),
+                     "type:", errType,
+                     "code:", errCode);
+                azureResponseTerminalStatus = "failed";
+                await cacheReasoningSnapshot(true);
+                logAzureStreamSummary("error");
+                await writer.write(encoder.encode("data: " + JSON.stringify({
+                  error: {
+                    message: errMessage,
+                    type: errType,
+                    code: errCode,
+                  },
+                }) + "\n\n"));
+                await writer.write(encoder.encode("data: [DONE]\n\n"));
+                continue;
+              }
+
               const mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
               if (mapped) {
                 json = mapped;
