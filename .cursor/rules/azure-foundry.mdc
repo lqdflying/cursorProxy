@@ -237,6 +237,8 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 
 8. **HTTP `previous_response_id` is not universal**: `api.pptoken.org` accepts first-turn POST `/v1/responses` with `store:true`, returns a `resp_*` ID, but rejects the second-turn HTTP replay with `previous_response_id is only supported on Responses WebSocket v2`. For openaicompat only, retry that exact error stateless with the full input array, disable response-ID writes for that retry, and mark only the affected upstream/model/user scope stateless-only in the current process. Azure must keep strict `previous_response_id` behavior, and other compatible gateways that accept HTTP `previous_response_id` must keep the normal cache-hit path.
 
+9. **Responses `output_index` is not Chat `tool_calls[].index`**: Responses streams can emit message/reasoning output items before function-call items, so a function call may arrive at `output_index: 2` while it must be exposed to Chat Completions clients as `tool_calls[0]`. The mapper must allocate dense tool-call indexes independent of Responses output indexes and keep argument deltas on the same dense index. When any Responses stream emits tool calls, write a final Chat chunk with `finish_reason:"tool_calls"` before `[DONE]`; Cursor may fail tool/subagent startup without that terminal reason.
+
 ## Claude Thinking KV Caching (azureanthropic only)
 
 Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thinking/signature blocks in its content array. Without caching, Claude re-reasons from scratch on every turn, wasting tokens. The proxy caches these blocks in KV and re-injects them into prior assistant messages on subsequent turns.

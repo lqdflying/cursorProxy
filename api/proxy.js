@@ -1806,6 +1806,7 @@ export default async function handler(req) {
     // Track Azure Responses API function_call items for converting
     // response.function_call_arguments.delta to OpenAI tool_calls.
     const responsesToolState = new Map(); // call_id -> { id, name, partialJson }
+    let responsesToolCallSeen = false;
 
     // Track Claude thinking blocks for KV caching (azureanthropic + adaptive thinking).
     // Store the content_block object from content_block_start directly, then mutate
@@ -2085,6 +2086,9 @@ export default async function handler(req) {
 
               const mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
               if (mapped) {
+                if (mapped.choices?.[0]?.delta?.tool_calls) {
+                  responsesToolCallSeen = true;
+                }
                 json = mapped;
               } else {
                 // Capture the response ID from the first SSE event so we can
@@ -2117,6 +2121,14 @@ export default async function handler(req) {
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
                   logAzureStreamSummary(responsesEvent);
+                  if (responsesToolCallSeen) {
+                    const finishChunk = withPublicResponseModel({
+                      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+                    }, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo));
+                    await writer.write(encoder.encode(
+                      "data: " + JSON.stringify(stripResponseChunk(finishChunk)) + "\n\n"
+                    ));
+                  }
                   await writer.write(encoder.encode("data: [DONE]\n\n"));
                 }
                 continue; // skip events that produce no output

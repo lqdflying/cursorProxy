@@ -2,6 +2,7 @@ import { describe, it, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import handler from "../api/proxy.js";
 import {
+  mapResponsesSSEToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeOpenAICompatResponsesInputContent,
 } from "../lib/azure-openai.js";
@@ -463,6 +464,79 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(body, /bad_gateway/);
     assert.match(body, /data: \[DONE\]/);
     assert.equal(body.includes("STREAM_DONE_VIA_RESPONSE_COMPLETED"), false);
+  });
+
+  it("streams Responses function calls with dense Chat tool indexes and tool_calls finish reason", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool\",\"status\":\"in_progress\",\"model\":\"gpt-4o\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_subagent\",\"name\":\"start_subagent\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"item_id\":\"fc_1\",\"delta\":\"{\\\"task\\\":\"}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"item_id\":\"fc_1\",\"delta\":\"\\\"inspect\\\"}\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      "data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":2,\"item_id\":\"fc_1\",\"arguments\":\"{\\\"task\\\":\\\"inspect\\\"}\"}",
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tool\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "start subagent" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    const chunks = (await res.text())
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const toolChunks = chunks.filter((chunk) => chunk.choices?.[0]?.delta?.tool_calls);
+    assert.ok(toolChunks.length >= 2, "expected streamed tool call chunks");
+    assert.equal(toolChunks[0].choices[0].delta.tool_calls[0].index, 0,
+      "Responses output_index must be remapped to dense Chat tool index 0");
+    assert.equal(toolChunks[0].choices[0].delta.tool_calls[0].function.name, "start_subagent");
+    assert.equal(toolChunks[1].choices[0].delta.tool_calls[0].index, 0,
+      "argument deltas must keep the same dense Chat tool index");
+    assert.ok(chunks.some((chunk) => chunk.choices?.[0]?.finish_reason === "tool_calls"),
+      "stream must finish with finish_reason=tool_calls so Cursor runs the tool");
+  });
+
+  it("maps Responses output indexes to dense Chat tool indexes", () => {
+    const state = new Map();
+    const first = mapResponsesSSEToOpenAI("response.output_item.added", {
+      output_index: 2,
+      item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "first_tool" },
+    }, state);
+    const second = mapResponsesSSEToOpenAI("response.output_item.added", {
+      output_index: 5,
+      item: { id: "fc_2", type: "function_call", call_id: "call_2", name: "second_tool" },
+    }, state);
+    const firstDelta = mapResponsesSSEToOpenAI("response.function_call_arguments.delta", {
+      output_index: 2,
+      item_id: "fc_1",
+      delta: "{}",
+    }, state);
+
+    assert.equal(first.choices[0].delta.tool_calls[0].index, 0);
+    assert.equal(second.choices[0].delta.tool_calls[0].index, 1);
+    assert.equal(firstDelta.choices[0].delta.tool_calls[0].index, 0);
   });
 
   it("maps Responses output to Chat Completions choices in the response", async () => {

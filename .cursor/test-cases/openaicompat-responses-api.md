@@ -174,6 +174,23 @@ RES 200 provider: openaicompat ms: <n>
 
 > Plain string content must remain a string for openaicompat Responses mode. Only existing structured `text` parts are rewritten to Responses-legal `input_text` / `output_text`.
 
+### Test 9 — Tool/subagent stream mapping
+
+In Cursor agent mode, ask for a task that causes the model to call a tool or start a subagent.
+
+Expected behavior:
+
+- Cursor starts/runs the requested tool or subagent instead of reporting a tool-start failure.
+- Logs may show `functionArgDeltas: <n>` and `content: 0` for a pure tool-call turn; that is valid as long as Cursor executes the tool.
+
+Regression signs:
+
+```text
+OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0
+```
+
+combined with Cursor UI reporting that a tool/subagent failed to start. In that case inspect the transformed downstream SSE: Responses `output_index` values must be remapped to dense Chat `tool_calls[].index` values starting at `0`, and the stream must include a terminal Chat chunk with `finish_reason:"tool_calls"` before `data: [DONE]`.
+
 ## Negative signs
 
 ```text
