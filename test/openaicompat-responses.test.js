@@ -1,0 +1,428 @@
+import { describe, it, afterEach, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import handler from "../api/proxy.js";
+import { setKvDriver } from "../lib/kv.js";
+
+// These tests invoke the shared handler directly with the internal rewrite
+// URL shape (/api/proxy?provider=openaicompat&path=chat/completions). They
+// exercise the request transformation + KV chaining but do NOT test server.js,
+// vercel.json, or the EdgeOne rewrite adapters.
+
+const PROVIDER_URL = "http://localhost/api/proxy?provider=openaicompat&path=chat/completions";
+
+const ENV_KEYS = [
+  "OPENAICOMPAT_WIRE_API",
+  "OPENAICOMPAT_API_KEY",
+  "UPSTREAM_OPENAICOMPAT",
+  "CURSORPROXY_API_KEY",
+];
+
+// Minimal in-memory KV map with a Redis-like driver shape
+// ({ get, set(key, value, "EX", ttl) }) so setKvDriver() picks it up.
+function makeInMemoryKv() {
+  const store = new Map();
+  return {
+    store,
+    async get(key) { return store.has(key) ? store.get(key) : null; },
+    async set(key, value) { store.set(key, value); },
+  };
+}
+
+describe("openaicompat Responses wire mode — integration", () => {
+  let origFetch;
+  let origEnvs = {};
+
+  beforeEach(() => {
+    origFetch = global.fetch;
+    origEnvs = {};
+    for (const k of ENV_KEYS) origEnvs[k] = process.env[k];
+    process.env.OPENAICOMPAT_API_KEY = "sk-test-key";
+    process.env.UPSTREAM_OPENAICOMPAT = "https://api.openai.com";
+    delete process.env.CURSORPROXY_API_KEY; // avoid auth requirement in tests
+  });
+
+  afterEach(() => {
+    global.fetch = origFetch;
+    for (const k of ENV_KEYS) {
+      if (origEnvs[k] === undefined) delete process.env[k];
+      else process.env[k] = origEnvs[k];
+    }
+    // Reset the KV driver so tests don't leak state into each other.
+    setKvDriver(null);
+  });
+
+  // Helper: mock fetch to return a Responses-API-shaped JSON body and capture
+  // the outbound URL + body for assertions.
+  function mockFetchResponses(responsesBody) {
+    let captured = { url: null, body: null };
+    global.fetch = async (url, init) => {
+      captured.url = url;
+      captured.body = JSON.parse(init.body);
+      return new Response(JSON.stringify(responsesBody), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    return captured;
+  }
+
+  // ─── Default (chat mode): no Responses remap ────────────────────────────
+
+  it("default chat mode posts to /v1/chat/completions (no remap)", async () => {
+    delete process.env.OPENAICOMPAT_WIRE_API;
+    const captured = mockFetchResponses({
+      id: "chat_abc",
+      object: "chat.completion",
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    // In chat mode, messages stays as messages (not converted to input)
+    assert.ok(captured.body.messages, "chat mode should keep messages array");
+    assert.equal(captured.body.input, undefined, "chat mode should not produce input");
+  });
+
+  // ─── Responses mode: URL remap ──────────────────────────────────────────
+
+  it("responses mode remaps chat/completions → responses in the URL", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const captured = mockFetchResponses({
+      id: "resp_abc",
+      object: "response",
+      model: "gpt-4o",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/responses"), `expected responses, got: ${captured.url}`);
+    assert.ok(!captured.url.includes("/v1/v1/"), `double /v1 prefix: ${captured.url}`);
+  });
+
+  it("responses mode does NOT remap non-chat/completions paths (e.g. embeddings)", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    let capturedUrl = null;
+    let capturedBody = null;
+    global.fetch = async (url, init) => {
+      capturedUrl = url;
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await handler(new Request("http://localhost/api/proxy?provider=openaicompat&path=embeddings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "text-embedding-3-small",
+        input: "test",
+        encoding_format: "float",
+        dimensions: 256,
+      }),
+    }));
+
+    assert.ok(capturedUrl, "fetch should have been called");
+    assert.ok(capturedUrl.endsWith("/v1/embeddings"), `expected /v1/embeddings, got: ${capturedUrl}`);
+    // Regression for path-gate bug: Responses-mode sanitization must NOT touch
+    // non-chat/completions paths. encoding_format and dimensions are not in
+    // the Responses API whitelist but must survive for /embeddings.
+    assert.equal(capturedBody.encoding_format, "float", "encoding_format must survive (not whitelisted)");
+    assert.equal(capturedBody.dimensions, 256, "dimensions must survive (not whitelisted)");
+    assert.equal(capturedBody.store, undefined, "store:false must NOT be injected for /embeddings");
+    assert.equal(capturedBody.input, "test", "input must stay as-is");
+  });
+
+  // ─── UPSTREAM_OPENAICOMPAT normalization ─────────────────────────────────
+
+  it("tolerates trailing /v1 in UPSTREAM_OPENAICOMPAT (no double prefix)", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.UPSTREAM_OPENAICOMPAT = "https://api.openai.com/v1";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-4o", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.ok(captured.url.includes("://api.openai.com/v1/responses"), `unexpected URL: ${captured.url}`);
+    assert.ok(!captured.url.includes("/v1/v1/"), `double /v1: ${captured.url}`);
+  });
+
+  // ─── Messages → input conversion (MESSAGES_TO_INPUT branch) ─────────────
+
+  it("responses mode converts messages to input and injects store:true", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-4o", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }));
+
+    // messages should be gone, replaced by input
+    assert.equal(captured.body.messages, undefined, "messages should be deleted");
+    assert.ok(Array.isArray(captured.body.input), "input should be an array");
+    assert.equal(captured.body.store, true, "store:true must be injected for chaining");
+    // previous_response_id absent on first turn (no cache hit)
+    assert.equal(captured.body.previous_response_id, undefined);
+  });
+
+  it("responses mode converts assistant.tool_calls and role:tool in messages", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-4o", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [
+          { role: "user", content: "list files" },
+          { role: "assistant", content: null, tool_calls: [{ id: "call_1", function: { name: "list", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "call_1", content: "file.txt" },
+        ],
+      }),
+    }));
+
+    // The assistant tool_call should become a function_call item,
+    // and the tool result should become a function_call_output item.
+    const types = captured.body.input.map((i) => i.type);
+    assert.ok(types.includes("function_call"), `expected function_call in: ${JSON.stringify(types)}`);
+    assert.ok(types.includes("function_call_output"), `expected function_call_output in: ${JSON.stringify(types)}`);
+  });
+
+  // ─── Native input branch (INPUT_CHAIN) ───────────────────────────────────
+
+  it("responses mode preserves native input array as-is on first turn", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-4o", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const nativeInput = [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+    ];
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", input: nativeInput }),
+    }));
+
+    assert.ok(Array.isArray(captured.body.input), "native input should stay as input");
+    assert.equal(captured.body.input.length, 1, "first-turn input should not be trimmed");
+    assert.equal(captured.body.store, true);
+    assert.equal(captured.body.previous_response_id, undefined);
+  });
+
+  // ─── store:false opt-out ─────────────────────────────────────────────────
+
+  it("responses mode honors explicit store:false (no store injection)", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const captured = mockFetchResponses({
+      id: "resp_abc", object: "response", model: "gpt-4o", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hi" }],
+        store: false,
+      }),
+    }));
+
+    assert.equal(captured.body.store, false, "explicit store:false must be honored");
+  });
+
+  it("responses mode rejects store:false + background:true with 400", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    let fetchCalled = false;
+    global.fetch = async () => { fetchCalled = true; return new Response("{}", { status: 200 }); };
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "hi" }],
+        store: false,
+        background: true,
+      }),
+    }));
+
+    assert.equal(res.status, 400);
+    assert.equal(fetchCalled, false, "upstream fetch must not be called on 400");
+    const body = await res.json();
+    assert.equal(body.error.code, "store_background_conflict");
+  });
+
+  // ─── Responses → Chat Completions response mapping ───────────────────────
+
+  it("maps Responses output to Chat Completions choices in the response", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    mockFetchResponses({
+      id: "resp_abc",
+      object: "response",
+      model: "gpt-4o",
+      status: "completed",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Hello from Responses API" }],
+      }],
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    // mapResponsesToOpenAI should produce choices[0].message.content
+    assert.ok(body.choices, "response should have choices array");
+    assert.equal(body.choices[0].message.content, "Hello from Responses API");
+  });
+
+  // ─── Alias path: compatible-gpt-5.5 ─────────────────────────────────────
+
+  it("compatible-gpt-5.5 alias routes to openaicompat and maps response model back", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    mockFetchResponses({
+      id: "resp_abc",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const res = await handler(new Request("http://localhost/api/proxy?path=chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "cursorproxy/compatible-gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    // Response model should reflect the public alias, not the upstream gpt-5.5
+    assert.equal(body.model, "cursorproxy/compatible-gpt-5.5");
+  });
+
+  // ─── KV cache-hit chaining (two-turn end-to-end) ──────────────────────────
+
+  it("two-turn flow: turn 1 caches response id, turn 2 sends previous_response_id with trimmed input", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    // Turn 1: single user message. Expect: full input forwarded, store:true,
+    // response id written to oairesp: KV.
+    const turn1Captured = { url: null, body: null };
+    global.fetch = async (url, init) => {
+      turn1Captured.url = url;
+      turn1Captured.body = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "resp_abc",
+        object: "response",
+        model: "gpt-4o",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const turn1Messages = [
+      { role: "user", content: "hi" },
+    ];
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: turn1Messages }),
+    }));
+
+    // Turn 1 forwards the full input (1 item) with store:true injected.
+    assert.ok(turn1Captured.url.endsWith("/v1/responses"), "turn 1 should hit /v1/responses");
+    assert.ok(Array.isArray(turn1Captured.body.input), "turn 1 should send input array");
+    assert.equal(turn1Captured.body.input.length, 1, "turn 1 sends full input (1 user msg)");
+    assert.equal(turn1Captured.body.store, true, "store:true must be injected on turn 1");
+    assert.equal(turn1Captured.body.previous_response_id, undefined, "turn 1 has no previous_response_id");
+
+    // The response id must be written to the oairesp: KV namespace.
+    const oairespKeys = [...kv.store.keys()].filter((k) => k.startsWith("oairesp:"));
+    assert.equal(oairespKeys.length, 1, "exactly one oairesp: key should be written");
+    assert.equal(kv.store.get(oairespKeys[0]), "resp_abc", "cached id must be resp_abc");
+
+    // Turn 2: same conversation + assistant reply + new user message. Expect:
+    // KV hit resolves resp_abc, input trimmed to only the new user message,
+    // previous_response_id set to resp_abc.
+    const turn2Captured = { url: null, body: null };
+    global.fetch = async (url, init) => {
+      turn2Captured.url = url;
+      turn2Captured.body = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "resp_def",
+        object: "response",
+        model: "gpt-4o",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "bye" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const turn2Messages = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "bye" },
+    ];
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: turn2Messages }),
+    }));
+
+    // Turn 2 must chain: previous_response_id set, input trimmed.
+    assert.ok(turn2Captured.url.endsWith("/v1/responses"), "turn 2 should hit /v1/responses");
+    assert.equal(turn2Captured.body.previous_response_id, "resp_abc",
+      "turn 2 must send previous_response_id=resp_abc (KV hit)");
+    assert.ok(Array.isArray(turn2Captured.body.input), "turn 2 should send input array");
+    assert.equal(turn2Captured.body.input.length, 1,
+      "turn 2 input must be trimmed to only the new user message (1 item, not 3)");
+    assert.equal(turn2Captured.body.store, true, "store:true on turn 2");
+  });
+});

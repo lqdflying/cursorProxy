@@ -143,9 +143,12 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
   const qs = queryString || "";
   ```
 
-## `previous_response_id` KV Chaining (azureopenai only)
+## `previous_response_id` KV Chaining (azureopenai + openaicompat Responses mode)
 
 Azure Responses API supports server-side conversation state via `previous_response_id`. Instead of sending the full conversation history on every turn, the proxy sends only new messages plus `previous_response_id`, and Azure replays prior state server-side. This cuts reasoning token costs significantly.
+
+> [!NOTE]
+> The same chaining machinery is shared by the **OpenAI-compatible Responses mode** (`OPENAICOMPAT_WIRE_API=responses`). The gating condition in `api/proxy.js` is `providerKey === "azureopenai" || openaiCompatResponses`. The KV namespace prefix and cache version are parameterized: Azure uses `azresp:` / `AZURE_OPENAI_RESPONSE_CACHE_VERSION` (`v7`); openaicompat uses `oairesp:` / `OPENAICOMPAT_RESPONSE_CACHE_VERSION` (`v1`). The variable names inside the block (`azureReplyKey`, `azureResponseId`, `azureScope`, etc.) are provider-generic despite the legacy "azure" prefix — do not assume they are Azure-only.
 
 ### Lifecycle
 

@@ -19,8 +19,10 @@ import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "../lib/auth.js
 import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "../lib/cache.js";
 import {
   isModelDiscoveryRequest,
+  isOpenAICompatResponses,
   modelDiscoveryResponse,
   normalizeParsedBodyModel,
+  openaiCompatWireApi,
   providerFromModel,
   publicModelId,
   resolveAzureAlias,
@@ -46,6 +48,7 @@ import { convertImagesToText } from "../lib/vision-bridge.js";
 
 const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
+const OPENAICOMPAT_RESPONSE_CACHE_VERSION = "v1";
 let proxyAuthWarningLogged = false;
 
 // Soft caps for per-stream string accumulators. These prevent a runaway
@@ -196,6 +199,17 @@ const PROVIDERS = {
     apiKeyEnv: "OPENAICOMPAT_API_KEY",
     authHeaderName: "authorization",
     authHeaderPrefix: "Bearer ",
+    buildUrl(_model, pathParam, queryString) {
+      // Normalize the base URL: strip trailing slashes and a trailing /v1
+      // so both https://host and https://host/v1 produce /v1/<path> (not /v1/v1/...).
+      const raw = (process.env.UPSTREAM_OPENAICOMPAT || "https://api.openai.com").replace(/\/+$/, "");
+      const base = raw.replace(/\/v1$/i, "");
+      // Responses wire mode: remap chat/completions → responses. Only this
+      // path is remapped; /models and other paths pass through unchanged.
+      const responsesMode = openaiCompatWireApi() === "responses";
+      const remapped = responsesMode && pathParam === "chat/completions" ? "responses" : pathParam;
+      return `${base}/v1/${remapped}${queryString || ""}`;
+    },
   },
   anthropiccompat: {
     get url() {
@@ -388,7 +402,8 @@ async function waitForAzResponseId(key, retries = 2) {
 
 export default async function handler(req) {
   const t0 = Date.now();
-  let azureReplyKey = null; // KV key for saving Azure response ID
+  let azureReplyKey = null; // KV key for saving response ID (azure or openaicompat)
+  let respIdCachePrefix = "azresp:"; // KV namespace prefix (set in chaining block)
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
   if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
@@ -441,6 +456,21 @@ export default async function handler(req) {
   if (!providerKey) {
     providerKey = "deepseek";
   }
+
+  // OpenAI-compatible Responses wire mode (OPENAICOMPAT_WIRE_API=responses).
+  // When true, openaicompat routes to upstream /v1/responses and chains
+  // via previous_response_id, mirroring the azureopenai provider. Computed
+  // once per request and reused by every downstream gate so the env-var name
+  // is resolved in exactly one place (lib/models.js).
+  //
+  // PATH GATE: the wire-mode env var only affects the chat/completions path
+  // (the one buildUrl remaps to /v1/responses). All other paths
+  // (/embeddings, /models, etc.) must pass through UNCHANGED — they must not
+  // have their body whitelisted/sanitized by the Responses sanitizer or have
+  // store:false injected. So openaiCompatResponses is true only when BOTH the
+  // provider is in Responses mode AND this request targets chat/completions.
+  const openaiCompatResponses = isOpenAICompatResponses(providerKey)
+    && pathParam === "chat/completions";
 
   // Probe before any mutation so we see the raw client tool shapes.
   probeStrictTools(providerKey, parsedBody);
@@ -574,9 +604,10 @@ export default async function handler(req) {
     }
   }
 
-  // Azure OpenAI Responses API uses "input" natively. Do not normalize native
-  // Responses input items (input_text, output_text, function_call_output, etc.).
-  // Azure OpenAI previous_response_id chaining via KV.
+  // Azure OpenAI Responses API and OpenAI-compatible Responses wire mode both
+  // use "input" natively. Do not normalize native Responses input items
+  // (input_text, output_text, function_call_output, etc.).
+  // previous_response_id chaining via KV.
   //
   // Supports two input formats from the client:
   //   1. Legacy Chat Completions `messages` — renamed to `input` with
@@ -585,22 +616,38 @@ export default async function handler(req) {
   //   2. Native Responses API `input` — items already in Responses format.
   //
   // When a prior assistant turn exists, try to recover the response ID from KV
-  // and use previous_response_id chaining so Azure reuses server-side context
-  // instead of re-reasoning from scratch on every turn. Falls back to stateless
-  // full-input-array mode on KV miss.
-  if (providerKey === "azureopenai") {
+  // and use previous_response_id chaining so the upstream reuses server-side
+  // context instead of re-reasoning from scratch on every turn. Falls back to
+  // stateless full-input-array mode on KV miss.
+  //
+  // The block runs for azureopenai (always) and openaicompat (only when
+  // OPENAICOMPAT_WIRE_API=responses). The `responsesProvider` boolean and the
+  // `cachePrefix`/`cacheVersion` variables below parameterize the provider-
+  // specific KV namespace and scope so the two providers never collide.
+  if (providerKey === "azureopenai" || openaiCompatResponses) {
+    // Provider-specific KV namespace prefix and cache version.
+    // Azure uses azresp: (distinct from the openaicompat oairesp: namespace)
+    // so the two providers' response IDs are isolated even when they share a
+    // KV backend. The variable names (azureReplyKey, azureResponseId, etc.)
+    // are provider-generic despite the legacy "azure" prefix.
+    respIdCachePrefix = openaiCompatResponses ? "oairesp:" : "azresp:";
+    const cachePrefix = respIdCachePrefix;
+    const cacheVersion = openaiCompatResponses
+      ? OPENAICOMPAT_RESPONSE_CACHE_VERSION
+      : AZURE_OPENAI_RESPONSE_CACHE_VERSION;
+
     // Provider-wide guard: store:false (privacy/compliance opt-out) is
-    // incompatible with background:true (Azure background responses cannot
+    // incompatible with background:true (background responses cannot
     // resume without server-side stored state). Reject before any shape
     // detection so the rule applies uniformly to messages, array input,
     // string input, and missing input. A later sanitizer would silently
     // flip store:true on a background job, defeating the opt-out — that
     // path is also hardened, but rejecting here is the source of truth.
     if (parsedBody?.store === false && parsedBody?.background === true) {
-      diag("AZURE_STORE_BACKGROUND_CONFLICT", "store:false + background:true is incompatible");
+      diag("STORE_BACKGROUND_CONFLICT", "provider:", providerKey, "store:false + background:true is incompatible");
       return jsonErrorResponse(
         400,
-        "store:false is incompatible with background:true. Azure background responses require server-side stored state to resume. Send store:true to allow chaining, or drop background:true for a stateless one-shot.",
+        `store:false is incompatible with background:true. Background responses require server-side stored state to resume. Send store:true to allow chaining, or drop background:true for a stateless one-shot.`,
         "store_background_conflict",
         "invalid_request_error"
       );
@@ -611,7 +658,10 @@ export default async function handler(req) {
 
     if (hasMessages || hasInput) {
       const azureScopeUser = await cacheScopeUserId(req);
-      // Scope embeds three identifiers in addition to provider + version + user:
+      // Cache scope: provider-specific identifiers so response IDs from one
+      // provider/deployment/resource are never replayed against another.
+      //
+      // Azure scope embeds:
       //   1. The resolved Azure deployment name — retargeting an alias
       //      (e.g. AZURE_OPENAI_GENERAL_ALIAS_TARGET changing from
       //      gpt-5.5 to gpt-5.5-mini) yields a fresh cache bucket, so
@@ -623,21 +673,39 @@ export default async function handler(req) {
       //      AZURE_FOUNDRY_RESOURCE invalidates response ids that only
       //      exist on the prior resource, even when the deployment name
       //      stays the same.
-      // The cache version was bumped to v7 alongside this change so any
-      // pre-existing v6 keys are orphaned cleanly across the deploy.
-      const azureScopeDeployment = parsedBody?.model || "(none)";
-      const azureScopeResource = (
-        process.env.AZURE_OPENAI_ENDPOINT
-        || process.env.AZURE_FOUNDRY_RESOURCE
-        || "(none)"
-      ).trim().toLowerCase().replace(/\/+$/, "");
-      const azureScope = [
-        providerKey,
-        AZURE_OPENAI_RESPONSE_CACHE_VERSION,
-        azureScopeResource,
-        azureScopeDeployment,
-        azureScopeUser,
-      ].join(":");
+      //
+      // OpenAI-compatible scope uses the normalized upstream BASE URL
+      // (origin + path with trailing slashes and trailing /v1 stripped)
+      // instead of hostname only, so path-based gateways
+      // (https://gw/tenantA/v1 vs https://gw/tenantB/v1) don't collide.
+      // The resolved model name (after alias resolution) is embedded so
+      // switching models mid-conversation yields a fresh bucket.
+      let chainScope;
+      if (openaiCompatResponses) {
+        const upstreamBase = (process.env.UPSTREAM_OPENAICOMPAT || "https://api.openai.com")
+          .replace(/\/+$/, "").replace(/\/v1$/i, "");
+        chainScope = [
+          providerKey,
+          cacheVersion,
+          upstreamBase,
+          parsedBody?.model || "(none)",
+          azureScopeUser,
+        ].join(":");
+      } else {
+        const azureScopeDeployment = parsedBody?.model || "(none)";
+        const azureScopeResource = (
+          process.env.AZURE_OPENAI_ENDPOINT
+          || process.env.AZURE_FOUNDRY_RESOURCE
+          || "(none)"
+        ).trim().toLowerCase().replace(/\/+$/, "");
+        chainScope = [
+          providerKey,
+          cacheVersion,
+          azureScopeResource,
+          azureScopeDeployment,
+          azureScopeUser,
+        ].join(":");
+      }
 
       // Build a normalized array for hashing and finding the last assistant
       // turn.  For messages we use the Chat Completions array directly (role
@@ -714,11 +782,11 @@ export default async function handler(req) {
       // read and write hash fixtures are updated together.
       // conversationHash(messages, upTo, scope) hashes messages.slice(0, upTo),
       // so upTo=hashItems.length hashes ALL items.
-      azureReplyKey = await conversationHash(hashItems, hashItems.length, azureScope);
+      azureReplyKey = await conversationHash(hashItems, hashItems.length, chainScope);
 
       // Honour an explicit client opt-out before doing anything KV-related.
-      // store:false means the client requires this turn to be stateless on
-      // Azure's side (compliance / privacy-sensitive workloads). That implies
+      // store:false means the client requires this turn to be stateless
+      // upstream (compliance / privacy-sensitive workloads). That implies
       // BOTH directions:
       //   - we must not forward a previous_response_id (which would replay
       //     prior turns the client has just asked us to forget), and
@@ -730,15 +798,15 @@ export default async function handler(req) {
       const storeOptOut = parsedBody.store === false;
       if (storeOptOut) {
         azureReplyKey = null;
-        diag("AZURE_STORE_OPT_OUT", "client sent store:false — chaining disabled (no prev lookup, no KV write)");
+        diag("STORE_OPT_OUT", "provider:", providerKey, "client sent store:false — chaining disabled (no prev lookup, no KV write)");
       }
 
       // Look up a cached response ID from the prior turn.
       // hashBoundaryIdx marks items BEFORE the contiguous assistant block.
       let prevRespId = null;
       if (!storeOptOut && hashBoundaryIdx >= 0) {
-        const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, azureScope);
-        const readResult = await waitForAzResponseId("azresp:" + prevRespKey);
+        const prevRespKey = await conversationHash(hashItems, hashBoundaryIdx, chainScope);
+        const readResult = await waitForAzResponseId(cachePrefix + prevRespKey);
         if (readResult) {
           prevRespId = readResult;
           diag("PREV_RESP_ID_FOUND", "key:", prevRespKey, "id:", prevRespId);
@@ -867,8 +935,18 @@ export default async function handler(req) {
     }
   }
 
+  // Responses-target body normalizers (input content, tools, sanitizer) run
+  // for azureopenai (Responses-only by provider identity) and for openaicompat
+  // ONLY on the actual Responses target path (chat/completions → /v1/responses).
+  // Gating openaicompat on `openaiCompatResponses` (path-aware) ensures
+  // /embeddings, /models, and other paths pass through unmutated — without it
+  // the Responses whitelist would strip encoding_format/dimensions and inject
+  // store:false into non-Responses endpoints.
   {
-    const inputResult = normalizeAzureOpenAIInputContent(providerKey, parsedBody);
+    const runInputNorm = providerKey === "azureopenai" || openaiCompatResponses;
+    const inputResult = runInputNorm
+      ? normalizeAzureOpenAIInputContent(providerKey, parsedBody)
+      : { parsedBody, changed: false };
     parsedBody = inputResult.parsedBody;
     if (inputResult.changed) {
       bodyText = JSON.stringify(parsedBody);
@@ -884,19 +962,27 @@ export default async function handler(req) {
   }
 
   {
-    const toolsResult = normalizeAzureOpenAITools(providerKey, parsedBody);
+    const runToolsNorm = providerKey === "azureopenai" || openaiCompatResponses;
+    const toolsResult = runToolsNorm
+      ? normalizeAzureOpenAITools(providerKey, parsedBody)
+      : { parsedBody, changed: false };
     parsedBody = toolsResult.parsedBody;
     if (toolsResult.changed) {
       bodyText = JSON.stringify(parsedBody);
     }
   }
 
-  // Normalize tools for openaicompat: any tool that lacks the {type:"function",
-  // function:{...}} wrapper must be wrapped, since the OpenAI Chat Completions
-  // API requires it. This catches both Anthropic-flat ({name, description,
-  // input_schema}) and inline OpenAI/Responses ({type:"function", name,
-  // parameters}) shapes — both are missing the required `function` object.
-  if (providerKey === "openaicompat" && Array.isArray(parsedBody?.tools)) {
+  // Normalize tools for openaicompat Chat Completions mode: any tool that lacks
+  // the {type:"function", function:{...}} wrapper must be wrapped, since the
+  // OpenAI Chat Completions API requires it. This catches both Anthropic-flat
+  // ({name, description, input_schema}) and inline OpenAI/Responses
+  // ({type:"function", name, parameters}) shapes — both are missing the
+  // required `function` object.
+  //
+  // In Responses wire mode (OPENAICOMPAT_WIRE_API=responses), normalizeAzureOpenAITools
+  // already handles the conversion to Responses inline format above, so this
+  // Chat-Completions wrapper is skipped to avoid producing the wrong shape.
+  if (providerKey === "openaicompat" && !openaiCompatResponses && Array.isArray(parsedBody?.tools)) {
     let toolsFixed = false;
     for (let i = 0; i < parsedBody.tools.length; i++) {
       const t = parsedBody.tools[i];
@@ -921,7 +1007,10 @@ export default async function handler(req) {
   let azureModelName = upstreamModelName;
 
   {
-    const openAiSanitized = sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName, azureAliasInfo);
+    const runSanitize = providerKey === "azureopenai" || openaiCompatResponses;
+    const openAiSanitized = runSanitize
+      ? sanitizeAzureOpenAIBody(providerKey, parsedBody, azureModelName, azureAliasInfo)
+      : { parsedBody, sanitized: false };
     parsedBody = openAiSanitized.parsedBody;
     if (openAiSanitized.sanitized) {
       bodyText = JSON.stringify(parsedBody);
@@ -1434,20 +1523,22 @@ export default async function handler(req) {
     }
 
     // Convert Responses API output to Chat Completions format
-    if (providerKey === "azureopenai") {
+    if (providerKey === "azureopenai" || openaiCompatResponses) {
       const azureRespId = json.id;
       // Mirror the stream-side cache guard: only persist response IDs for
       // turns that actually completed. A response with status=incomplete /
       // failed / cancelled cannot be replayed via previous_response_id —
       // caching it would 400 the next turn and burn a free retry.
       const azureRespStatus = json.status || "completed";
+      const cacheRespIdTag = openaiCompatResponses ? "CACHE_OAI_RESP_ID" : "CACHE_AZ_RESP_ID";
+      const skipCacheRespIdTag = openaiCompatResponses ? "SKIP_CACHE_OAI_RESP_ID" : "SKIP_CACHE_AZ_RESP_ID";
       json = mapResponsesToOpenAI(json);
       if (azureRespId && azureReplyKey) {
         if (azureRespStatus === "completed") {
-          log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId);
-          await kvSet("azresp:" + azureReplyKey, azureRespId);
+          log(cacheRespIdTag, "key:", azureReplyKey, "id:", azureRespId);
+          await kvSet(respIdCachePrefix + azureReplyKey, azureRespId);
         } else {
-          log("SKIP_CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureRespId, "status:", azureRespStatus);
+          log(skipCacheRespIdTag, "key:", azureReplyKey, "id:", azureRespId, "status:", azureRespStatus);
         }
       }
     }
@@ -1597,9 +1688,9 @@ export default async function handler(req) {
     }
 
     function logAzureStreamSummary(reason) {
-      if (providerKey !== "azureopenai" || azureStreamSummaryLogged || azureEventCounts.total === 0) return;
+      if (!(providerKey === "azureopenai" || openaiCompatResponses) || azureStreamSummaryLogged || azureEventCounts.total === 0) return;
       azureStreamSummaryLogged = true;
-      diag("AZURE_STREAM_SUMMARY",
+      diag(openaiCompatResponses ? "OAI_STREAM_SUMMARY" : "AZURE_STREAM_SUMMARY",
            "reason:", reason,
            "content:", accContent.length,
            "refusal:", accRefusal.length,
@@ -1659,9 +1750,12 @@ export default async function handler(req) {
 
     async function cacheAzResponseId() {
       if (!azureResponseId || !azureReplyKey || azureRespCached) return;
+      const cacheRespIdTag = openaiCompatResponses ? "CACHE_OAI_RESP_ID" : "CACHE_AZ_RESP_ID";
+      const skipCacheRespIdTag = openaiCompatResponses ? "SKIP_CACHE_OAI_RESP_ID" : "SKIP_CACHE_AZ_RESP_ID";
+      const writeErrorTag = openaiCompatResponses ? "CACHE_OAI_WRITE_ERROR" : "CACHE_AZ_WRITE_ERROR";
       if (azureResponseTerminalStatus && azureResponseTerminalStatus !== "completed") {
         azureRespCached = true;
-        log("SKIP_CACHE_AZ_RESP_ID",
+        log(skipCacheRespIdTag,
             "key:", azureReplyKey,
             "id:", azureResponseId,
             "status:", azureResponseTerminalStatus,
@@ -1669,9 +1763,9 @@ export default async function handler(req) {
         return;
       }
       azureRespCached = true;
-      log("CACHE_AZ_RESP_ID", "key:", azureReplyKey, "id:", azureResponseId);
-      await kvSet("azresp:" + azureReplyKey, azureResponseId)
-        .catch((err) => log("CACHE_AZ_WRITE_ERROR", err?.message));
+      log(cacheRespIdTag, "key:", azureReplyKey, "id:", azureResponseId);
+      await kvSet(respIdCachePrefix + azureReplyKey, azureResponseId)
+        .catch((err) => log(writeErrorTag, err?.message));
     }
 
     try {
@@ -1690,14 +1784,15 @@ export default async function handler(req) {
           // For Azure Anthropic, skip event: lines entirely — we convert data lines
           // into OpenAI-compatible format and emit only the transformed chunks.
           //
-          // For Azure OpenAI (Responses API), track event: lines to use when
-          // processing data: lines — the event name tells us what type of delta it is.
-          if (providerKey === "azureopenai" && line.startsWith("event: ")) {
+          // For Azure OpenAI and OpenAI-compatible Responses API, track event:
+          // lines to use when processing data: lines — the event name tells us
+          // what type of delta it is.
+          if ((providerKey === "azureopenai" || openaiCompatResponses) && line.startsWith("event: ")) {
             currentResponsesEvent = line.slice(7).trim();
             continue;
           }
           if (!line.startsWith("data: ")) {
-            if (!(providerKey === "azureanthropic" || providerKey === "anthropiccompat" || providerKey === "azureopenai")) {
+            if (!(providerKey === "azureanthropic" || providerKey === "anthropiccompat" || providerKey === "azureopenai" || openaiCompatResponses)) {
               if (line.trim()) await writer.write(encoder.encode(line + "\n"));
             }
             continue;
@@ -1790,7 +1885,7 @@ export default async function handler(req) {
             // Transform Azure Responses API SSE events into OpenAI-compatible format.
             // Responses API uses named events (event: response.output_text.delta)
             // with data payloads, unlike Anthropic's data-only content_block_delta.
-            if (providerKey === "azureopenai" && (currentResponsesEvent || json?.type)) {
+            if ((providerKey === "azureopenai" || openaiCompatResponses) && (currentResponsesEvent || json?.type)) {
               const responsesEvent = json?.type || currentResponsesEvent;
               countAzureEvent(responsesEvent);
               if (responsesEvent === "response.refusal.delta") {
@@ -1820,7 +1915,7 @@ export default async function handler(req) {
                 if (responsesEvent === "response.created" && !azureResponseId) {
                   azureResponseId = json?.response?.id || null;
                   if (azureResponseId) {
-                    log("STREAM_AZ_RESP_ID", "id:", azureResponseId);
+                    log(openaiCompatResponses ? "STREAM_OAI_RESP_ID" : "STREAM_AZ_RESP_ID", "id:", azureResponseId);
                   }
                 }
                 // Emit downstream [DONE] when the Responses API signals completion.
