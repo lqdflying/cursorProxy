@@ -150,6 +150,13 @@ sequenceDiagram
 > turn's `finally` block is still flushing the response ID to KV.
 > Delays are hardcoded: `[0, 80, 200]` ms (total max wait ~280 ms).
 
+For OpenAI-compatible Chat Completions mode, `OPENAICOMPAT_CHAT_CACHE_MODE=facade`
+normalizes upstream cache-hit usage into `usage.prompt_tokens_details.cached_tokens`.
+It also forces `stream_options.include_usage=true` on streaming requests so raw
+Chat gateways can return usage chunks. This mode does not use KV, does not send
+`previous_response_id`, and does not trim messages; cache hits must come from
+the upstream gateway itself.
+
 For OpenAI-compatible Responses mode, `OPENAICOMPAT_CACHE_HIT_MODE=sub2api`
 adds sub2api-style cache hints while keeping cursorProxy's exact-prefix KV
 response-ID lookup:
@@ -256,7 +263,9 @@ cache version is incremented after a breaking schema change.
 | Variable | Default | Purpose |
 |---|---|---|
 | `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `oairesp:`, `claude_thinking:`) |
-| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | `sub2api` enables OpenAI-compatible Responses prompt cache key injection, session anchors, stale previous-response cleanup, and unsupported-scope TTLs |
+| `OPENAICOMPAT_WIRE_API` | `chat` | `chat` activates Chat Completions passthrough/facade behavior; `responses` activates `/v1/responses` remap and `oairesp:` chaining |
+| `OPENAICOMPAT_CHAT_CACHE_MODE` | `passthrough` | Chat mode only. `facade` normalizes raw Chat cache-hit usage and forces upstream stream usage chunks; ignored when `OPENAICOMPAT_WIRE_API=responses` |
+| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only. `sub2api` enables prompt cache key injection, session anchors, stale previous-response cleanup, and unsupported-scope TTLs; ignored when `OPENAICOMPAT_WIRE_API=chat` |
 | `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
 | `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |

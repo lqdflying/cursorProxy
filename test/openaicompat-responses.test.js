@@ -18,6 +18,7 @@ const PROVIDER_URL = "http://localhost/api/proxy?provider=openaicompat&path=chat
 const ENV_KEYS = [
   "OPENAICOMPAT_WIRE_API",
   "OPENAICOMPAT_CACHE_HIT_MODE",
+  "OPENAICOMPAT_CHAT_CACHE_MODE",
   "OPENAICOMPAT_REASONING_EFFORT",
   "OPENAICOMPAT_API_KEY",
   "UPSTREAM_OPENAICOMPAT",
@@ -116,6 +117,97 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.input, undefined, "chat mode should not produce input");
   });
 
+  it("default chat mode does not normalize provider-specific cache usage", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    const captured = mockFetchResponses({
+      id: "chat_cache_default",
+      object: "chat.completion",
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 5,
+        total_tokens: 105,
+        cached_tokens: 70,
+      },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    const body = await res.json();
+    assert.equal(body.usage.cached_tokens, 70);
+    assert.equal(body.usage.prompt_tokens_details, undefined);
+  });
+
+  it("chat cache facade normalizes cache usage and ignores sub2api mode in chat wire mode", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "facade";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const captured = mockFetchResponses({
+      id: "chat_cache_facade",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 120,
+        completion_tokens: 6,
+        total_tokens: 126,
+        prompt_cache_hit_tokens: 90,
+      },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.equal(captured.body.prompt_cache_key, undefined, "sub2api prompt_cache_key injection must not run in chat mode");
+    const body = await res.json();
+    assert.equal(body.usage.prompt_tokens_details.cached_tokens, 90);
+  });
+
+  it("chat cache facade forces stream usage and normalizes usage chunks", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "facade";
+    let captured = { url: null, body: null };
+    const stream = [
+      "data: {\"id\":\"chatcmpl_usage\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"total_tokens\":105,\"cached_tokens\":70}}",
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    global.fetch = async (url, init) => {
+      captured.url = url;
+      captured.body = JSON.parse(init.body);
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.equal(captured.body.stream_options.include_usage, true);
+    const body = await res.text();
+    assert.match(body, /"prompt_tokens_details":\{"cached_tokens":70\}/);
+    assert.match(body, /data: \[DONE\]/);
+  });
+
   // ─── Responses mode: URL remap ──────────────────────────────────────────
 
   it("responses mode remaps chat/completions → responses in the URL", async () => {
@@ -137,6 +229,28 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(res.status, 200);
     assert.ok(captured.url.endsWith("/v1/responses"), `expected responses, got: ${captured.url}`);
     assert.ok(!captured.url.includes("/v1/v1/"), `double /v1 prefix: ${captured.url}`);
+  });
+
+  it("responses mode ignores chat cache facade env", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "facade";
+    const captured = mockFetchResponses({
+      id: "resp_chat_facade_ignored",
+      object: "response",
+      model: "gpt-4o",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/responses"), `expected responses, got: ${captured.url}`);
+    assert.equal(captured.body.stream_options, undefined, "chat facade must not force stream_options in Responses mode");
   });
 
   it("responses mode does NOT remap non-chat/completions paths (e.g. embeddings)", async () => {

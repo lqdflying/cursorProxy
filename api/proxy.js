@@ -23,7 +23,9 @@ import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256I
 import {
   deriveCompatPromptCacheKey,
   deriveOpenAICompatSessionAnchor,
+  isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatSub2ApiCacheMode,
+  normalizeOpenAICompatChatCacheUsage,
   shouldAutoInjectPromptCacheKeyForCompat,
 } from "../lib/openaicompat-cache.js";
 import {
@@ -660,6 +662,10 @@ export default async function handler(req) {
   const openaiCompatResponses = isOpenAICompatResponses(providerKey)
     && pathParam === "chat/completions";
   const openAICompatSub2ApiCache = openaiCompatResponses && isOpenAICompatSub2ApiCacheMode();
+  const openAICompatChatCacheFacade = providerKey === "openaicompat"
+    && pathParam === "chat/completions"
+    && !openaiCompatResponses
+    && isOpenAICompatChatCacheFacadeMode();
   const responsesStreamIncludeUsage = (providerKey === "azureopenai" || openaiCompatResponses)
     && parsedBody?.stream_options?.include_usage === true;
 
@@ -1258,6 +1264,17 @@ export default async function handler(req) {
     if (toolsFixed) {
       bodyText = JSON.stringify(parsedBody);
       diag("OPENAICOMPAT_TOOLS_FIXED", "provider:", providerKey, "count:", parsedBody.tools.length);
+    }
+  }
+
+  if (openAICompatChatCacheFacade && parsedBody?.stream === true) {
+    if (!parsedBody.stream_options || typeof parsedBody.stream_options !== "object" || Array.isArray(parsedBody.stream_options)) {
+      parsedBody.stream_options = {};
+    }
+    if (parsedBody.stream_options.include_usage !== true) {
+      parsedBody.stream_options.include_usage = true;
+      bodyText = JSON.stringify(parsedBody);
+      diag("OAI_CHAT_CACHE_INCLUDE_USAGE_FORCED", "provider:", providerKey, "model:", safeLogToken(upstreamModelName || parsedBody?.model || ""));
     }
   }
 
@@ -1909,6 +1926,17 @@ export default async function handler(req) {
       }
     }
 
+    if (openAICompatChatCacheFacade) {
+      const cacheUsage = normalizeOpenAICompatChatCacheUsage(json);
+      json = cacheUsage.json;
+      if (cacheUsage.changed) {
+        diag("OAI_CHAT_CACHE_USAGE",
+             "provider:", providerKey,
+             "model:", safeLogToken(upstreamModelName || json?.model || ""),
+             "cached_tokens:", cacheUsage.cachedTokens);
+      }
+    }
+
     json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
@@ -2414,6 +2442,17 @@ export default async function handler(req) {
                   await writer.write(encoder.encode("data: [DONE]\n\n"));
                 }
                 continue; // skip events that produce no output
+              }
+            }
+
+            if (openAICompatChatCacheFacade) {
+              const cacheUsage = normalizeOpenAICompatChatCacheUsage(json);
+              json = cacheUsage.json;
+              if (cacheUsage.changed) {
+                diag("OAI_CHAT_CACHE_STREAM_USAGE",
+                     "provider:", providerKey,
+                     "model:", safeLogToken(upstreamModelName || json?.model || ""),
+                     "cached_tokens:", cacheUsage.cachedTokens);
               }
             }
 

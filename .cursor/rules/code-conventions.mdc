@@ -177,6 +177,16 @@ Implementation lives in `lib/reasoning.js` (helpers + `injectStoredReasoning` or
 - If KV miss: inject placeholder `"(prior reasoning unavailable)"` so DeepSeek/Kimi thinking mode doesn't reject the request
 - Provider gating set lives in `injectStoredReasoning()`: only `deepseek`, `kimi`, `minimax`, `mimo` get reasoning re-injected. Anthropic and Azure OpenAI are excluded.
 
+## OpenAI-compatible Chat cache facade mode
+
+`OPENAICOMPAT_CHAT_CACHE_MODE=facade` is an opt-in extension of default `OPENAICOMPAT_WIRE_API=chat`. It must have no effect in Responses wire mode, and it must only run on the `chat/completions` path that is forwarded to upstream `/v1/chat/completions`.
+
+- Preserve default Chat Completions passthrough when the env var is unset or invalid. Do not mutate request usage options or response usage shape unless facade mode is active.
+- Facade mode is usage/accounting only: do not add `previous_response_id`, do not trim messages, do not write `oairesp:` KV state, and do not auto-inject `prompt_cache_key`.
+- In facade mode, streaming requests may force upstream `stream_options.include_usage=true` so provider cache-hit usage chunks are visible downstream.
+- Normalize raw Chat cache-hit counters into `usage.prompt_tokens_details.cached_tokens` while preserving token totals and content/tool deltas. Recognized counters include `usage.input_tokens_details.cached_tokens`, `usage.cached_tokens`, `usage.prompt_cache_hit_tokens`, `choices[].usage.cached_tokens`, and `timings.cache_n`.
+- `OPENAICOMPAT_CHAT_CACHE_MODE` and `OPENAICOMPAT_CACHE_HIT_MODE` may both be configured; `OPENAICOMPAT_WIRE_API` decides which one is active.
+
 ## OpenAI-compatible Responses cache-hit mode
 
 `OPENAICOMPAT_CACHE_HIT_MODE=sub2api` is an opt-in extension of `OPENAICOMPAT_WIRE_API=responses`. It must have no effect in default Chat Completions wire mode, and it must only run on the `chat/completions` path that is remapped to upstream `/v1/responses`.

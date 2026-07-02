@@ -4,18 +4,24 @@ import {
   deriveCompatPromptCacheKey,
   deriveOpenAICompatSessionAnchor,
   deriveOpenAIContentSessionSeed,
+  normalizeOpenAICompatChatCacheUsage,
   normalizeCompatSeedJSON,
+  openAICompatChatCacheMode,
   openAICompatCacheHitMode,
+  openAICompatChatCachedTokens,
   shouldAutoInjectPromptCacheKeyForCompat,
 } from "../lib/openaicompat-cache.js";
 
-describe("openaicompat sub2api cache helpers", () => {
+describe("openaicompat cache helpers", () => {
   const origMode = process.env.OPENAICOMPAT_CACHE_HIT_MODE;
+  const origChatMode = process.env.OPENAICOMPAT_CHAT_CACHE_MODE;
   const origEffort = process.env.OPENAICOMPAT_REASONING_EFFORT;
 
   afterEach(() => {
     if (origMode === undefined) delete process.env.OPENAICOMPAT_CACHE_HIT_MODE;
     else process.env.OPENAICOMPAT_CACHE_HIT_MODE = origMode;
+    if (origChatMode === undefined) delete process.env.OPENAICOMPAT_CHAT_CACHE_MODE;
+    else process.env.OPENAICOMPAT_CHAT_CACHE_MODE = origChatMode;
     if (origEffort === undefined) delete process.env.OPENAICOMPAT_REASONING_EFFORT;
     else process.env.OPENAICOMPAT_REASONING_EFFORT = origEffort;
   });
@@ -27,6 +33,57 @@ describe("openaicompat sub2api cache helpers", () => {
     assert.equal(openAICompatCacheHitMode(), "sub2api");
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "bogus";
     assert.equal(openAICompatCacheHitMode(), "default");
+  });
+
+  it("parses chat cache mode with safe fallback", () => {
+    delete process.env.OPENAICOMPAT_CHAT_CACHE_MODE;
+    assert.equal(openAICompatChatCacheMode(), "passthrough");
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = " facade ";
+    assert.equal(openAICompatChatCacheMode(), "facade");
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "bogus";
+    assert.equal(openAICompatChatCacheMode(), "passthrough");
+  });
+
+  it("extracts raw Chat cache hit counters from provider-specific usage fields", () => {
+    assert.equal(openAICompatChatCachedTokens({
+      usage: { prompt_tokens_details: { cached_tokens: 11 }, cached_tokens: 99 },
+    }), 11);
+    assert.equal(openAICompatChatCachedTokens({
+      usage: { input_tokens_details: { cached_tokens: 22 } },
+    }), 22);
+    assert.equal(openAICompatChatCachedTokens({
+      usage: { cached_tokens: "33" },
+    }), 33);
+    assert.equal(openAICompatChatCachedTokens({
+      usage: { prompt_cache_hit_tokens: 44 },
+    }), 44);
+    assert.equal(openAICompatChatCachedTokens({
+      choices: [{ usage: { cached_tokens: 55 } }],
+    }), 55);
+    assert.equal(openAICompatChatCachedTokens({
+      timings: { cache_n: 66 },
+    }), 66);
+    assert.equal(openAICompatChatCachedTokens({
+      usage: { cached_tokens: "   " },
+    }), null);
+  });
+
+  it("normalizes raw Chat cache hit counters into prompt token details", () => {
+    const body = {
+      id: "chatcmpl_1",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 5,
+        total_tokens: 105,
+        prompt_cache_hit_tokens: 80,
+      },
+    };
+    const result = normalizeOpenAICompatChatCacheUsage(body);
+    assert.equal(result.changed, true);
+    assert.equal(result.cachedTokens, 80);
+    assert.equal(body.usage.prompt_tokens_details.cached_tokens, 80);
+    assert.equal(body.usage.prompt_tokens, 100);
   });
 
   it("gates auto prompt_cache_key injection to GPT-5/Codex models", () => {
