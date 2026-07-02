@@ -14,7 +14,7 @@ Validate that the `openaicompat` provider, when `OPENAICOMPAT_WIRE_API=responses
 ## Preconditions
 
 - Required env vars:
-  - `OPENAICOMPAT_API_KEY` set to a valid key for an OpenAI-compatible endpoint that supports `/v1/responses`, `store:true`, and `previous_response_id`.
+  - `OPENAICOMPAT_API_KEY` set to a valid key for an OpenAI-compatible endpoint that supports `/v1/responses` and `store:true`. Endpoints that also support HTTP `previous_response_id` should exercise the cache-hit path; endpoints that reject it with the known WebSocket-only error should exercise Test 7's stateless fallback.
   - `OPENAICOMPAT_WIRE_API=responses`
   - A KV backend configured (`REDIS_URL` for Docker, `KV_URL` + `KV_TOKEN` for Vercel/Upstash, or an EdgeOne KV binding). Without KV, chaining silently degrades to stateless mode.
 - Required deployment state: deployed and reachable from Cursor.
@@ -225,6 +225,6 @@ comm -23 \
 ## Notes
 
 - The `compatible-gpt-5.5` alias resolves to upstream model `gpt-5.5` and maps the response model back to `cursorproxy/compatible-gpt-5.5`. Verify this with the `COMPATIBLE_ALIAS_RESOLVED` log line.
-- The upstream endpoint MUST support the OpenAI Responses API (`/v1/responses`, `store:true`, `previous_response_id`). If it doesn't, the proxy will surface the upstream error — that is expected, not a proxy bug.
+- The upstream endpoint MUST support the OpenAI Responses API (`/v1/responses`, `store:true`) for this mode to work. If the upstream rejects HTTP `previous_response_id` with the known WebSocket-only error, the proxy retries stateless as described in Test 7; other unsupported Responses API errors are surfaced upstream and are not proxy bugs.
 - This is **state chaining** via `previous_response_id`, NOT `OPENAICOMPAT_REASONING_CACHE` (which is Chat-mode-only reasoning injection) and NOT prompt-cache hints.
 - Automated coverage lives in `test/openaicompat-wire-api.test.js` (pure helper unit tests) and `test/openaicompat-responses.test.js` (integration tests with mocked fetch + in-memory KV). This manual case verifies the full Cursor → proxy → upstream → Cursor loop end-to-end.

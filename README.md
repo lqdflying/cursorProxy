@@ -3,7 +3,7 @@
 A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **GLM / ZHIPU AI**, **Fireworks AI**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
 - **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo/GLM `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
-- **Azure Responses chaining:** caches Azure OpenAI response IDs in KV so subsequent turns use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly.
+- **Responses chaining:** caches Azure OpenAI and supported OpenAI-compatible Responses API response IDs in KV so subsequent turns can use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly where the upstream supports HTTP chaining.
 - **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (typed-canonical hash) so multi-turn conversations reuse prior reasoning instead of re-thinking from scratch.
 - **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax M2.x, MiMo Pro/Flash/TTS, GLM-5.2). MiniMax M3, MiMo `mimo-v2.5`, `mimo-v2-omni`, and allowlisted visual GLM models accept images natively.
 - **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates request bodies and SSE streams to/from Azure OpenAI Responses and Azure Anthropic Messages.
@@ -33,7 +33,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 On EdgeOne, `GET /health` should return `"kv":{"backend":"edgeone","available":true,...}` after deployment.
 
 > [!IMPORTANT]
-> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax/MiMo), Azure OpenAI cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
+> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax/MiMo), Azure OpenAI and OpenAI-compatible Responses mode cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
 
 ### 3. Deploy
 

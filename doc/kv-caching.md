@@ -39,6 +39,11 @@ flowchart LR
         AV["Value: response ID string\n(e.g. resp_abc123)"]
     end
 
+    subgraph "oairesp: — OpenAI-compatible response IDs"
+        OK["oairesp:conv:\n<sha256(openaicompat:v1:upstream:model:user:messages)>"]
+        OV["Value: response ID string\n(e.g. resp_abc123)"]
+    end
+
     subgraph "img: — Vision descriptions"
         IK["img:\n<sha256(image-data-uri)>"]
         IV["Value: plain text description"]
@@ -57,12 +62,14 @@ flowchart TD
     subgraph Providers["Provider families"]
         DS["DeepSeek / Kimi / MiniMax"]
         AO["Azure OpenAI"]
+        OC["OpenAI-compatible\nResponses mode"]
         AA["Azure Anthropic"]
     end
 
     subgraph Keys["KV keys"]
         CONV["conv:*\n(reasoning)"]
-        AZRESP["azresp:*\n(response IDs)"]
+        AZRESP["azresp:*\n(Azure response IDs)"]
+        OIRESP["oairesp:*\n(OpenAI-compatible response IDs)"]
         IMG["img:*\n(vision)"]
         THINK["claude_thinking:*\n(thinking blocks)"]
     end
@@ -72,6 +79,9 @@ flowchart TD
 
     AO -->|write at DONE / response.completed| AZRESP
     AO -->|read at request start with retries| AZRESP
+
+    OC -->|write at DONE / response.completed| OIRESP
+    OC -->|read at request start with retries| OIRESP
 
     DS -->|write on cache miss| IMG
     DS -->|read before vision call| IMG
@@ -106,7 +116,7 @@ sequenceDiagram
 
 ## Retry Logic
 
-### Azure Response ID (azresp:) — hardcoded delays
+### Response IDs (azresp: / oairesp:) — hardcoded delays
 
 ```mermaid
 sequenceDiagram
@@ -117,15 +127,15 @@ sequenceDiagram
     C->>P: new request (conversation continues)
     Note over P: Compute hash of messages before\nlast assistant block
 
-    P->>KV: GET azresp:conv:<prev_hash> (attempt 1, 0 ms delay)
+    P->>KV: GET azresp:conv:<prev_hash>\nor oairesp:conv:<prev_hash> (attempt 1, 0 ms delay)
     alt hit
         KV-->>P: response ID
     else miss
-        P->>KV: GET azresp:conv:<prev_hash> (attempt 2, 80 ms delay)
+        P->>KV: GET response-id key (attempt 2, 80 ms delay)
         alt hit
             KV-->>P: response ID
         else miss
-            P->>KV: GET azresp:conv:<prev_hash> (attempt 3, 200 ms delay)
+            P->>KV: GET response-id key (attempt 3, 200 ms delay)
             alt hit
                 KV-->>P: response ID
             else miss — stateless fallback
@@ -189,6 +199,10 @@ flowchart TD
         AS["azresp:conv:\nazureopenai : v7 : azure-resource : deployment : user"]
     end
 
+    subgraph "oairesp: scope"
+        OS["oairesp:conv:\nopenaicompat : v1 : upstream-base : model : user"]
+    end
+
     subgraph "claude_thinking: scope"
         TS["claude_thinking:asst:\nazureanthropic : user\n(normalized hash — ignores content format changes)"]
     end
@@ -199,7 +213,10 @@ flowchart TD
 
     note1["Azure scope includes deployment name:\nchanging AZURE_OPENAI_GENERAL_ALIAS_TARGET\nyields a fresh bucket — prevents 400 errors\nfrom replaying IDs across deployments"]
 
+    note2["OpenAI-compatible scope includes upstream base and model:\nchanging UPSTREAM_OPENAICOMPAT, path tenant, or model\nyields a fresh bucket — prevents replaying IDs\nagainst the wrong gateway/model"]
+
     AS --- note1
+    OS --- note2
 ```
 
 ## TTL & Eviction
@@ -208,6 +225,7 @@ flowchart TD
 |---|---|---|
 | `conv:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
 | `azresp:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
+| `oairesp:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
 | `claude_thinking:*` | 7 200 s (2 h) | `KV_TTL_SECONDS` |
 | `img:*` | 604 800 s (7 d) | `KV_IMAGE_TTL_SECONDS` |
 
@@ -215,15 +233,15 @@ Conversation-scoped entries share `KV_TTL_SECONDS`. The image-description
 cache uses its own longer TTL (`KV_IMAGE_TTL_SECONDS`, default 7 days) because
 keys are content-addressed by SHA-256 of the data URI and the description is
 effectively immutable — there's no reason to re-pay the vision-API cost every
-2 hours. The cache version tag (`v7` in `azresp:`) acts as a logical namespace
-bump — old keys are orphaned and expire naturally when the cache version is
-incremented after a breaking schema change.
+2 hours. The cache version tags (`v7` in `azresp:`, `v1` in `oairesp:`) act as
+logical namespace bumps — old keys are orphaned and expire naturally when the
+cache version is incremented after a breaking schema change.
 
 ## Key Environment Variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `claude_thinking:`) |
+| `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `oairesp:`, `claude_thinking:`) |
 | `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
 | `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |
