@@ -22,8 +22,10 @@ import { checkProxyAuth, cleanEnvValue, jsonErrorResponse } from "../lib/auth.js
 import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256ImageHash } from "../lib/cache.js";
 import {
   deriveCompatPromptCacheKey,
+  deriveOpenAICompatChatRemotePromptCacheKey,
   deriveOpenAICompatSessionAnchor,
   isOpenAICompatChatCacheFacadeMode,
+  isOpenAICompatChatCacheRemoteMode,
   isOpenAICompatSub2ApiCacheMode,
   normalizeOpenAICompatChatCacheUsage,
   shouldAutoInjectPromptCacheKeyForCompat,
@@ -666,6 +668,11 @@ export default async function handler(req) {
     && pathParam === "chat/completions"
     && !openaiCompatResponses
     && isOpenAICompatChatCacheFacadeMode();
+  const openAICompatChatCacheRemote = providerKey === "openaicompat"
+    && pathParam === "chat/completions"
+    && !openaiCompatResponses
+    && isOpenAICompatChatCacheRemoteMode();
+  const openAICompatChatCacheUsageFacade = openAICompatChatCacheFacade || openAICompatChatCacheRemote;
   const responsesStreamIncludeUsage = (providerKey === "azureopenai" || openaiCompatResponses)
     && parsedBody?.stream_options?.include_usage === true;
 
@@ -798,6 +805,24 @@ export default async function handler(req) {
     parsedBody = remapResult.parsedBody;
     if (remapResult.changed) {
       bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
+  if (openAICompatChatCacheRemote && parsedBody) {
+    const remotePromptCache = await deriveOpenAICompatChatRemotePromptCacheKey(
+      req,
+      parsedBody,
+      parsedBody?.model || upstreamModelName || ""
+    );
+    if (remotePromptCache.key) {
+      if (String(parsedBody.prompt_cache_key || "").trim() === "") {
+        parsedBody.prompt_cache_key = remotePromptCache.key;
+        bodyText = JSON.stringify(parsedBody);
+      }
+      diag("OAI_CHAT_REMOTE_KEY",
+           "provider:", providerKey,
+           "source:", remotePromptCache.source,
+           "key:", remotePromptCache.key.slice(0, 24) + "...");
     }
   }
 
@@ -1267,7 +1292,7 @@ export default async function handler(req) {
     }
   }
 
-  if (openAICompatChatCacheFacade && parsedBody?.stream === true) {
+  if (openAICompatChatCacheUsageFacade && parsedBody?.stream === true) {
     if (!parsedBody.stream_options || typeof parsedBody.stream_options !== "object" || Array.isArray(parsedBody.stream_options)) {
       parsedBody.stream_options = {};
     }
@@ -1926,7 +1951,7 @@ export default async function handler(req) {
       }
     }
 
-    if (openAICompatChatCacheFacade) {
+    if (openAICompatChatCacheUsageFacade) {
       const cacheUsage = normalizeOpenAICompatChatCacheUsage(json);
       json = cacheUsage.json;
       if (cacheUsage.changed) {
@@ -2445,7 +2470,7 @@ export default async function handler(req) {
               }
             }
 
-            if (openAICompatChatCacheFacade) {
+            if (openAICompatChatCacheUsageFacade) {
               const cacheUsage = normalizeOpenAICompatChatCacheUsage(json);
               json = cacheUsage.json;
               if (cacheUsage.changed) {

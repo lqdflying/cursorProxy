@@ -2,8 +2,10 @@ import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   deriveCompatPromptCacheKey,
+  deriveOpenAICompatChatRemotePromptCacheKey,
   deriveOpenAICompatSessionAnchor,
   deriveOpenAIContentSessionSeed,
+  isOpenAICompatChatCacheRemoteMode,
   normalizeOpenAICompatChatCacheUsage,
   normalizeCompatSeedJSON,
   openAICompatChatCacheMode,
@@ -40,6 +42,9 @@ describe("openaicompat cache helpers", () => {
     assert.equal(openAICompatChatCacheMode(), "passthrough");
     process.env.OPENAICOMPAT_CHAT_CACHE_MODE = " facade ";
     assert.equal(openAICompatChatCacheMode(), "facade");
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = " remote ";
+    assert.equal(openAICompatChatCacheMode(), "remote");
+    assert.equal(isOpenAICompatChatCacheRemoteMode(), true);
     process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "bogus";
     assert.equal(openAICompatChatCacheMode(), "passthrough");
   });
@@ -145,5 +150,46 @@ describe("openaicompat cache helpers", () => {
 
     const content = await deriveOpenAIContentSessionSeed({ model: "gpt-4o", input: "hello" }, "gpt-4o");
     assert.match(content, /^compat_cs_[0-9a-f]{32}$/);
+  });
+
+  it("derives Chat remote prompt cache keys by explicit key, session, conversation, then content", async () => {
+    const body = {
+      model: "gpt-5.5",
+      messages: [
+        { role: "system", content: "be concise" },
+        { role: "user", content: "hi" },
+      ],
+    };
+
+    const explicit = await deriveOpenAICompatChatRemotePromptCacheKey(
+      new Request("http://localhost"),
+      { ...body, prompt_cache_key: "client-key" },
+      "gpt-5.5"
+    );
+    assert.deepEqual(explicit, { key: "client-key", source: "client" });
+
+    const session = await deriveOpenAICompatChatRemotePromptCacheKey(
+      new Request("http://localhost", { headers: { session_id: "sess-1" } }),
+      body,
+      "gpt-5.5"
+    );
+    assert.equal(session.source, "session_id");
+    assert.match(session.key, /^remote_session_id_[0-9a-f]{32}$/);
+
+    const conversation = await deriveOpenAICompatChatRemotePromptCacheKey(
+      new Request("http://localhost", { headers: { conversation_id: "conv-1" } }),
+      body,
+      "gpt-5.5"
+    );
+    assert.equal(conversation.source, "conversation_id");
+    assert.match(conversation.key, /^remote_conversation_id_[0-9a-f]{32}$/);
+
+    const content = await deriveOpenAICompatChatRemotePromptCacheKey(
+      new Request("http://localhost"),
+      body,
+      "gpt-5.5"
+    );
+    assert.equal(content.source, "content");
+    assert.match(content.key, /^remote_cs_[0-9a-f]{32}$/);
   });
 });

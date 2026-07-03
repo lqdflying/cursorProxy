@@ -208,6 +208,104 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(body, /data: \[DONE\]/);
   });
 
+  it("chat remote mode injects a stable prompt_cache_key and leaves state mapping to upstream", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "remote";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    const captured = mockFetchResponses({
+      id: "chat_remote",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 120,
+        completion_tokens: 6,
+        total_tokens: 126,
+        prompt_cache_hit_tokens: 90,
+      },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", session_id: "session-1" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.ok(captured.body.messages, "remote mode should keep Chat messages");
+    assert.equal(captured.body.input, undefined, "remote mode must not convert to Responses input");
+    assert.equal(captured.body.previous_response_id, undefined, "remote mode must not use proxy-owned response IDs");
+    assert.match(captured.body.prompt_cache_key, /^remote_session_id_[0-9a-f]{32}$/);
+    assert.equal([...kv.store.keys()].filter((k) => k.startsWith("oairesp:")).length, 0,
+      "remote mode must not write oairesp state");
+
+    const body = await res.json();
+    assert.equal(body.usage.prompt_tokens_details.cached_tokens, 90,
+      "remote mode should normalize cache usage like facade mode");
+  });
+
+  it("chat remote mode preserves explicit prompt_cache_key", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "remote";
+    const captured = mockFetchResponses({
+      id: "chat_remote_client_key",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", session_id: "session-ignored" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        prompt_cache_key: "client-key",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.equal(captured.body.prompt_cache_key, "client-key");
+  });
+
+  it("chat remote mode forces stream usage and normalizes usage chunks", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "remote";
+    let captured = { url: null, body: null };
+    const stream = [
+      "data: {\"id\":\"chatcmpl_remote_usage\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5.5\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"total_tokens\":105,\"cached_tokens\":70}}",
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    global.fetch = async (url, init) => {
+      captured.url = url;
+      captured.body = JSON.parse(init.body);
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", conversation_id: "conv-1" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.match(captured.body.prompt_cache_key, /^remote_conversation_id_[0-9a-f]{32}$/);
+    assert.equal(captured.body.stream_options.include_usage, true);
+    const body = await res.text();
+    assert.match(body, /"prompt_tokens_details":\{"cached_tokens":70\}/);
+    assert.match(body, /data: \[DONE\]/);
+  });
+
   // ─── Responses mode: URL remap ──────────────────────────────────────────
 
   it("responses mode remaps chat/completions → responses in the URL", async () => {
@@ -251,6 +349,28 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(res.status, 200);
     assert.ok(captured.url.endsWith("/v1/responses"), `expected responses, got: ${captured.url}`);
     assert.equal(captured.body.stream_options, undefined, "chat facade must not force stream_options in Responses mode");
+  });
+
+  it("responses mode ignores chat cache remote env", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "remote";
+    const captured = mockFetchResponses({
+      id: "resp_chat_remote_ignored",
+      object: "response",
+      model: "gpt-4o",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", session_id: "session-ignored" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/responses"), `expected responses, got: ${captured.url}`);
+    assert.equal(captured.body.prompt_cache_key, undefined, "chat remote key injection must not run in Responses mode");
   });
 
   it("responses mode does NOT remap non-chat/completions paths (e.g. embeddings)", async () => {
