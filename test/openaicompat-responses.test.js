@@ -1311,6 +1311,33 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(body.model, "cursorproxy/compatible-gpt-5.5");
   });
 
+  // ─── Alias path: cursor-openai-5.5 ────────────────────────────────────────
+
+  it("cursor-openai-5.5 alias routes to openaicompat chat mode and maps response model back", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    const captured = mockFetchResponses({
+      id: "chat_cursor_openai",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    const res = await handler(new Request("http://localhost/api/proxy?path=chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "cursorproxy/cursor-openai-5.5",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.equal(res.status, 200);
+    assert.equal(captured.body.model, "gpt-5.5");
+    const body = await res.json();
+    // Response model should reflect the public alias, not the upstream gpt-5.5
+    assert.equal(body.model, "cursorproxy/cursor-openai-5.5");
+  });
+
   // ─── KV cache-hit chaining (two-turn end-to-end) ──────────────────────────
 
   it("falls back to stateless mode when upstream rejects HTTP previous_response_id", async () => {
