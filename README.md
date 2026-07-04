@@ -105,11 +105,15 @@ Full references:
 
 ## Wiki
 
-- [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) — Step-by-step: Vercel, Docker, Compose, 1Panel, Nginx
-- [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration) — Every env var, routing logic, Cursor setup
+- [Deployment](https://github.com/lqdflying/cursorProxy/wiki/Deployment) — Vercel, Docker, Compose, EdgeOne, 1Panel, and Nginx setup
+- [Configuration](https://github.com/lqdflying/cursorProxy/wiki/Configuration) — API keys, Cursor setup, routing, and model discovery
+- [Environment Variables](https://github.com/lqdflying/cursorProxy/wiki/Environment-Variables) — Full user-facing env var reference
+- [Provider Behavior](https://github.com/lqdflying/cursorProxy/wiki/Provider-Behavior) — Provider-specific behavior and model caveats
+- [Azure](https://github.com/lqdflying/cursorProxy/wiki/Azure) — Azure Foundry setup, aliases, and troubleshooting
+- [Compatible Providers](https://github.com/lqdflying/cursorProxy/wiki/Compatible-Providers) — Generic OpenAI- and Anthropic-compatible endpoints
+- [Known Issues](https://github.com/lqdflying/cursorProxy/wiki/Known-Issues) — Cursor-side limitations and workarounds
 - [Advanced Usage](https://github.com/lqdflying/cursorProxy/wiki/Advanced-Usage-for-CursorProxy) — OAI VSCode Plugin and other OpenAI-compatible clients
-- [Architecture](https://github.com/lqdflying/cursorProxy/wiki/Architecture) — Request flow, TLS, file structure
-- [Development](https://github.com/lqdflying/cursorProxy/wiki/Development) — Contributing, adding providers
+- [Architecture](https://github.com/lqdflying/cursorProxy/wiki/Architecture) — User-facing request flow, routing, TLS, and deployment modes
 
 ## In-repo docs
 

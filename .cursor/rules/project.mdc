@@ -18,8 +18,9 @@ alwaysApply: true
 - `cliProxy` at `/home/opc/cliProxy` is the sibling reference implementation for EdgeOne Pages deployment (see `.cursor/rules/edgeone-deployment.mdc`).
 - Manual verification prompts live under `.cursor/test-cases/`.
 - `wiki/` is a separate git clone for the GitHub wiki. Do not commit wiki changes in the main repo.
-- For every new feature, provider, behavior change, env var, deployment change, or operator-facing fix, explicitly evaluate whether the GitHub wiki needs updating. If it does, update `wiki/` in the same work so docs ship with the code change; if it does not, be ready to state why.
-- Keep `README.md` minimal and quick-start focused. Put optional configuration, provider-specific details, troubleshooting, tuning knobs, and long explanations in the wiki, then link from the README instead of expanding it.
+- The public wiki is for end users and operators: setup, deployment, configuration, provider behavior, troubleshooting, and operational trade-offs. Do not put developer-only implementation guidance, file ownership inventories, function-level checklists, internal cache-key design, log contracts, or provider-addition workflows in the public wiki; put those in `.cursor/rules/` instead.
+- For every new feature, provider, behavior change, env var, deployment change, or operator-facing fix, explicitly evaluate whether the GitHub wiki needs updating. If it does, update `wiki/` with user/operator-facing content in the same work so docs ship with the code change; if it is developer-only, update `.cursor/rules/` instead and be ready to state why the wiki did not change.
+- Keep `README.md` minimal and quick-start focused. Put optional configuration, provider-specific details, troubleshooting, tuning knobs, and long user-facing explanations in the wiki, then link from the README instead of expanding it.
 - **Release process — THREE STEPS, two review gates, never auto-advance past a pause**:
 
   - **Step 1 (default — do proactively): local edits + commit.** Make edits, write tests, update wiki and rules, then `git commit` to the local branch (main repo and `wiki/` as appropriate). Do NOT `git push`, do NOT tag, do NOT `gh release create`. **PAUSE here and wait.** A separate review tool runs against the local commit.
