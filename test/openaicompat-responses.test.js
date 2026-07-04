@@ -713,6 +713,40 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
   });
 
+  it("chat mode wraps native apply_patch custom tool while preserving format and parameters", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    const captured = mockFetchResponses({
+      id: "chat_apply_patch",
+      object: "chat.completion",
+      model: "gpt-4o",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "edit" }],
+        tools: [
+          {
+            type: "custom",
+            name: "apply_patch",
+            description: "Apply a patch to a file.",
+            format: { type: "text" },
+          },
+        ],
+      }),
+    }));
+
+    assert.equal(captured.body.tools.length, 1);
+    assert.equal(captured.body.tools[0].type, "function");
+    assert.equal(captured.body.tools[0].function.name, "apply_patch");
+    assert.match(captured.body.tools[0].function.description, /Apply a patch/);
+    assert.match(captured.body.tools[0].function.description, /format: {"type":"text"}/);
+    assert.equal(captured.body.tools[0].function.parameters.type, "object");
+  });
+
   it("chat facade and remote modes inject flat OPENAICOMPAT_REASONING_EFFORT", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "chat";
     process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";

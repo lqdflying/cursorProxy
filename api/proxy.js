@@ -1307,12 +1307,28 @@ export default async function handler(req) {
     for (let i = 0; i < parsedBody.tools.length; i++) {
       const t = parsedBody.tools[i];
       if (t.name && !t.function) {
+        // Native Responses tools (custom, apply_patch, etc.) may carry a
+        // `format` field that the model needs to produce valid patch output.
+        // Chat Completions does not support `format` directly, so mirror it
+        // into the description. Also ensure a valid `parameters` schema is
+        // always present, because some Chat Completions gateways reject or
+        // ignore function tools without one.
+        const parameters = t.input_schema != null
+          ? t.input_schema
+          : t.parameters != null
+            ? t.parameters
+            : { type: "object", properties: {}, additionalProperties: false };
+        const descriptionParts = [
+          t.description != null ? String(t.description) : "",
+          t.format ? `format: ${JSON.stringify(t.format)}` : "",
+        ].filter(Boolean);
+        const description = descriptionParts.length > 0 ? descriptionParts.join("; ") : undefined;
         parsedBody.tools[i] = {
           type: "function",
           function: {
             name: t.name,
-            ...(t.description != null ? { description: t.description } : {}),
-            ...(t.input_schema != null ? { parameters: t.input_schema } : t.parameters != null ? { parameters: t.parameters } : {}),
+            ...(description != null ? { description } : {}),
+            parameters,
           },
         };
         toolsFixed = true;
