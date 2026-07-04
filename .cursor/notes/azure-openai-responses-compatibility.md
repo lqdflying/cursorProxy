@@ -112,6 +112,10 @@ OpenAI documents the native `apply_patch` tool as `tools:[{"type":"apply_patch"}
 
 The current proxy recognizes `apply_patch_call` enough to avoid totally dropping the item, but it maps only `item.input` / `item.patch` to Chat-style function arguments. That is correct for the custom-tool flavor's raw string input, but not faithful for native `apply_patch_call.operation`. Until tested with real Cursor native apply_patch traffic, treat native apply_patch support as a known compatibility gap, not a completed feature.
 
+### Chat Completions mode synthesizes an apply_patch function schema
+
+When `OPENAICOMPAT_WIRE_API=chat` is used with an OpenAI-compatible gateway, Cursor may still send its native Responses `custom`/`apply_patch` tool. The proxy's Chat-mode tool wrapper converts this into an OpenAI Chat Completions `function` tool and injects a standard operation schema (`create_file`/`update_file`/`delete_file` with `path` and `diff`) because Cursor sends `apply_patch` without an `input_schema`. This is a best-effort translation: Chat Completions has no native `custom` tool grammar, so the model may not reproduce the exact patch format Cursor expects. For fully native `apply_patch` behavior, prefer `OPENAICOMPAT_WIRE_API=responses` (or the Azure OpenAI provider) where the native tool definition is preserved.
+
 ### Generic aliases may not expose Cursor's local apply_patch tool
 
 The proxy can preserve and map `apply_patch` once Cursor sends it, but it cannot

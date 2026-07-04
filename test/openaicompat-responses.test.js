@@ -713,7 +713,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
   });
 
-  it("chat mode wraps native apply_patch custom tool while preserving format and parameters", async () => {
+  it("chat mode wraps native apply_patch custom tool with patch-operation schema", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "chat";
     const captured = mockFetchResponses({
       id: "chat_apply_patch",
@@ -744,7 +744,12 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.tools[0].function.name, "apply_patch");
     assert.match(captured.body.tools[0].function.description, /Apply a patch/);
     assert.match(captured.body.tools[0].function.description, /format: {"type":"text"}/);
-    assert.equal(captured.body.tools[0].function.parameters.type, "object");
+    const params = captured.body.tools[0].function.parameters;
+    assert.equal(params.type, "object");
+    assert.equal(params.oneOf.length, 3);
+    const types = params.oneOf.map((s) => s.properties.type.enum[0]).sort();
+    assert.deepEqual(types, ["create_file", "delete_file", "update_file"]);
+    assert.equal(params.oneOf[0].required.join(","), "type,path,diff");
   });
 
   it("chat facade and remote modes inject flat OPENAICOMPAT_REASONING_EFFORT", async () => {

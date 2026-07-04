@@ -1313,11 +1313,55 @@ export default async function handler(req) {
         // into the description. Also ensure a valid `parameters` schema is
         // always present, because some Chat Completions gateways reject or
         // ignore function tools without one.
-        const parameters = t.input_schema != null
-          ? t.input_schema
-          : t.parameters != null
-            ? t.parameters
-            : { type: "object", properties: {}, additionalProperties: false };
+        //
+        // apply_patch is a special case: Cursor sends it as a `custom` tool
+        // with no input_schema. For Chat Completions we must synthesize the
+        // standard patch-operation schema (create_file/update_file/delete_file)
+        // so the model knows what arguments to emit.
+        const isApplyPatch = t.name === "apply_patch";
+        let parameters;
+        if (isApplyPatch) {
+          parameters = {
+            type: "object",
+            oneOf: [
+              {
+                type: "object",
+                properties: {
+                  type: { enum: ["create_file"] },
+                  path: { type: "string" },
+                  diff: { type: "string" },
+                },
+                required: ["type", "path", "diff"],
+                additionalProperties: false,
+              },
+              {
+                type: "object",
+                properties: {
+                  type: { enum: ["update_file"] },
+                  path: { type: "string" },
+                  diff: { type: "string" },
+                },
+                required: ["type", "path", "diff"],
+                additionalProperties: false,
+              },
+              {
+                type: "object",
+                properties: {
+                  type: { enum: ["delete_file"] },
+                  path: { type: "string" },
+                },
+                required: ["type", "path"],
+                additionalProperties: false,
+              },
+            ],
+          };
+        } else {
+          parameters = t.input_schema != null
+            ? t.input_schema
+            : t.parameters != null
+              ? t.parameters
+              : { type: "object", properties: {}, additionalProperties: false };
+        }
         const descriptionParts = [
           t.description != null ? String(t.description) : "",
           t.format ? `format: ${JSON.stringify(t.format)}` : "",
@@ -1329,6 +1373,7 @@ export default async function handler(req) {
             name: t.name,
             ...(description != null ? { description } : {}),
             parameters,
+            ...(t.strict === true ? { strict: true } : {}),
           },
         };
         toolsFixed = true;
