@@ -25,10 +25,12 @@ import {
   deriveOpenAICompatChatRemotePromptCacheKey,
   deriveOpenAICompatChatRemoteSessionHeader,
   deriveOpenAICompatSessionAnchor,
+  hasInvalidOpenAICompatReasoningEffortEnv,
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
   isOpenAICompatSub2ApiCacheMode,
   normalizeOpenAICompatChatCacheUsage,
+  openAICompatReasoningEffortEnv,
   shouldAutoInjectPromptCacheKeyForCompat,
 } from "../lib/openaicompat-cache.js";
 import {
@@ -64,6 +66,7 @@ const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
 const OPENAICOMPAT_RESPONSE_CACHE_VERSION = "v1";
 let proxyAuthWarningLogged = false;
+let openAICompatChatReasoningEffortInvalidLogged = false;
 const openAICompatPreviousResponseUnsupportedScopes = new Map();
 
 // Soft caps for per-stream string accumulators. These prevent a runaway
@@ -807,6 +810,26 @@ export default async function handler(req) {
     parsedBody = remapResult.parsedBody;
     if (remapResult.changed) {
       bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
+  if (providerKey === "openaicompat" && pathParam === "chat/completions" && !openaiCompatResponses && parsedBody) {
+    const chatReasoningEffort = openAICompatReasoningEffortEnv();
+    if (chatReasoningEffort) {
+      if (parsedBody.reasoning_effort !== chatReasoningEffort) {
+        parsedBody.reasoning_effort = chatReasoningEffort;
+        bodyText = JSON.stringify(parsedBody);
+      }
+      diag("OAI_CHAT_REASONING_EFFORT",
+           "provider:", providerKey,
+           "effort:", chatReasoningEffort,
+           "source:", "openaicompat_env");
+    } else if (hasInvalidOpenAICompatReasoningEffortEnv() && !openAICompatChatReasoningEffortInvalidLogged) {
+      openAICompatChatReasoningEffortInvalidLogged = true;
+      diag("OPENAICOMPAT_REASONING_EFFORT_INVALID",
+           "raw:", process.env.OPENAICOMPAT_REASONING_EFFORT,
+           "fallback:", "client",
+           "valid:", "none|minimal|low|medium|high|xhigh");
     }
   }
 

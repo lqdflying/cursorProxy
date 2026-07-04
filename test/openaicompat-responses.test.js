@@ -625,11 +625,39 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
   });
 
-  it("chat mode ignores OPENAICOMPAT_REASONING_EFFORT and remains passthrough", async () => {
+  it("chat mode injects OPENAICOMPAT_REASONING_EFFORT as flat reasoning_effort", async () => {
     delete process.env.OPENAICOMPAT_WIRE_API;
     process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
     const captured = mockFetchResponses({
       id: "chat_abc",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    const { logs } = await captureConsoleLogs(async () => {
+      await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }));
+    });
+
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.equal(captured.body.reasoning, undefined);
+    assert.equal(captured.body.reasoning_effort, "xhigh");
+    assert.ok(captured.body.messages, "chat mode should keep messages array");
+    assert.match(logs, /OAI_CHAT_REASONING_EFFORT provider: openaicompat effort: xhigh source: openaicompat_env/);
+  });
+
+  it("chat mode OPENAICOMPAT_REASONING_EFFORT wins over client reasoning_effort", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "high";
+    const captured = mockFetchResponses({
+      id: "chat_effort_override",
       object: "chat.completion",
       model: "gpt-5.5",
       choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
@@ -640,14 +668,85 @@ describe("openaicompat Responses wire mode — integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model: "gpt-5.5",
+        reasoning_effort: "low",
         messages: [{ role: "user", content: "hello" }],
       }),
     }));
 
-    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
-    assert.equal(captured.body.reasoning, undefined);
-    assert.equal(captured.body.reasoning_effort, undefined);
-    assert.ok(captured.body.messages, "chat mode should keep messages array");
+    assert.equal(captured.body.reasoning_effort, "high");
+  });
+
+  it("chat mode invalid OPENAICOMPAT_REASONING_EFFORT preserves client effort", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "turbo";
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        id: `chat_effort_invalid_${calls.length}`,
+        object: "chat.completion",
+        model: "gpt-5.5",
+        choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const { logs } = await captureConsoleLogs(async () => {
+      for (const effort of ["high", "low"]) {
+        await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            reasoning_effort: effort,
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        }));
+      }
+    });
+
+    assert.equal(calls[0].reasoning_effort, "high");
+    assert.equal(calls[1].reasoning_effort, "low");
+    assert.equal((logs.match(/OPENAICOMPAT_REASONING_EFFORT_INVALID/g) || []).length, 1);
+    assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
+  });
+
+  it("chat facade and remote modes inject flat OPENAICOMPAT_REASONING_EFFORT", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        id: `chat_effort_mode_${calls.length}`,
+        object: "chat.completion",
+        model: "gpt-5.5",
+        choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "facade";
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "facade" }] }),
+    }));
+
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "remote";
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", session_id: "session-1" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "remote" }] }),
+    }));
+
+    assert.equal(calls[0].reasoning_effort, "xhigh");
+    assert.equal(calls[1].reasoning_effort, "xhigh");
+    assert.match(calls[1].prompt_cache_key, /^remote_session_id_[0-9a-f]{32}$/);
   });
 
   it("openaicompat Responses ignores Azure reasoning effort env", async () => {
