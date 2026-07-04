@@ -1306,28 +1306,37 @@ export default async function handler(req) {
     let toolsFixed = false;
     for (let i = 0; i < parsedBody.tools.length; i++) {
       const t = parsedBody.tools[i];
-      if (t.name && !t.function) {
-        // Native Responses tools (custom, apply_patch, etc.) may carry a
-        // `format` field that the model needs to produce valid patch output.
-        // Chat Completions does not support `format` directly, so mirror it
-        // into the description. Also ensure a valid `parameters` schema is
-        // always present, because some Chat Completions gateways reject or
-        // ignore function tools without one.
-        //
-        // apply_patch is a Responses API built-in tool, not a Chat Completions
-        // function tool. Cursor sends it as a `custom` tool when it thinks the
-        // model is apply-patch-capable, but a Chat Completions upstream has no
-        // reliable concept of a function named `apply_patch` and will ignore it
-        // (returning text instead). Drop it in Chat mode so the model falls back
-        // to Cursor's standard editing tools (edit_file, search_replace, write).
-        if (t.name === "apply_patch") {
-          parsedBody.tools.splice(i, 1);
-          i--;
-          toolsFixed = true;
-          diag("OPENAICOMPAT_APPLY_PATCH_DROPPED", "provider:", providerKey, "reason: chat_mode");
-          continue;
-        }
 
+      // apply_patch is a Responses API built-in tool, not a Chat Completions
+      // function tool. Cursor sends it when it thinks the model is
+      // apply-patch-capable, but a Chat Completions upstream has no reliable
+      // concept of a function named `apply_patch` and will ignore it (returning
+      // text instead). Drop it in Chat mode so the model falls back to Cursor's
+      // standard editing tools (edit_file, search_replace, write).
+      //
+      // Cursor may emit apply_patch in several shapes: native Responses
+      // {type:"apply_patch"}, custom {type:"custom", name:"apply_patch"}, or
+      // already wrapped as {type:"function", function:{name:"apply_patch"}}.
+      // This check runs before the wrapper condition so all shapes are caught.
+      const applyPatchShape =
+        t.name === "apply_patch" ? "name"
+        : t.type === "apply_patch" ? "type"
+        : t.function?.name === "apply_patch" ? "function_name"
+        : null;
+      if (applyPatchShape) {
+        parsedBody.tools.splice(i, 1);
+        i--;
+        toolsFixed = true;
+        diag("OPENAICOMPAT_APPLY_PATCH_DROPPED", "provider:", providerKey, "shape:", applyPatchShape);
+        continue;
+      }
+
+      if (t.name && !t.function) {
+        // Native Responses tools may carry a `format` field that the model needs
+        // to produce valid output. Chat Completions does not support `format`
+        // directly, so mirror it into the description. Also ensure a valid
+        // `parameters` schema is always present, because some Chat Completions
+        // gateways reject or ignore function tools without one.
         const parameters = t.input_schema != null
           ? t.input_schema
           : t.parameters != null

@@ -713,7 +713,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
   });
 
-  it("chat mode drops native apply_patch custom tool so Cursor falls back to standard editors", async () => {
+  it("chat mode drops apply_patch in all known shapes", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "chat";
     const captured = mockFetchResponses({
       id: "chat_apply_patch",
@@ -729,16 +729,10 @@ describe("openaicompat Responses wire mode — integration", () => {
         model: "gpt-4o",
         messages: [{ role: "user", content: "edit" }],
         tools: [
-          {
-            type: "custom",
-            name: "apply_patch",
-            description: "Apply a patch to a file.",
-            format: { type: "text" },
-          },
-          {
-            type: "function",
-            function: { name: "edit_file", description: "Edit a file", parameters: { type: "object" } },
-          },
+          { type: "apply_patch" },
+          { type: "custom", name: "apply_patch", description: "Apply a patch to a file.", format: { type: "text" } },
+          { type: "function", function: { name: "apply_patch", description: "Apply patch", parameters: { type: "object" } } },
+          { type: "function", function: { name: "edit_file", description: "Edit a file", parameters: { type: "object" } } },
         ],
       }),
     }));
