@@ -1,8 +1,10 @@
-# OpenAI-Compatible Chat Mode: apply_patch Tool
+# OpenAI-Compatible Chat Mode: apply_patch Fallback
 
 ## Purpose
 
-Validate that Cursor -> cursorProxy -> an OpenAI-compatible Chat Completions gateway can successfully invoke Cursor's `apply_patch` editing tool when `OPENAICOMPAT_WIRE_API=chat`.
+Validate that Cursor can still edit files through `openaicompat` Chat Completions mode when Cursor sends its native Responses `apply_patch` tool.
+
+Because `apply_patch` is a Responses API built-in and Chat Completions models do not reliably call a function named `apply_patch`, cursorProxy **drops** the tool in Chat mode. Cursor then falls back to its standard Chat-mode editing tools (`edit_file`, `search_replace`, `write`).
 
 ## Provider And Model
 
@@ -24,13 +26,11 @@ Start a fresh Cursor chat and paste:
 Create a tiny file named .cursor/tmp/openaicompat_chat_apply_patch_probe.txt with exactly this content:
 
 openaicompat chat apply_patch probe v1
-
-Use apply_patch for the edit. Do not use shell commands or direct file writes.
 ```
 
 Expected Cursor behavior:
 
-- Cursor applies a patch successfully.
+- Cursor creates the file successfully (via `edit_file`, `search_replace`, `write`, or another standard editing tool).
 - `.cursor/tmp/openaicompat_chat_apply_patch_probe.txt` exists.
 - The file content is exactly:
 
@@ -42,7 +42,8 @@ Expected proxy logs:
 
 ```text
 COMPATIBLE_ALIAS_RESOLVED alias: compatible-gpt-5.5 upstream: gpt-5.5
-OPENAICOMPAT_TOOLS_FIXED provider: openaicompat count: 18
+OPENAICOMPAT_APPLY_PATCH_DROPPED provider: openaicompat reason: chat_mode
+OPENAICOMPAT_TOOLS_FIXED provider: openaicompat count: 17
 UPSTREAM https://<your-upstream>/v1/chat/completions provider: openaicompat
 STREAM_DONE ...
 RES 200 provider: openaicompat ms: ...
@@ -53,7 +54,6 @@ Negative signs:
 ```text
 ApplyPatch is still failing
 apply patch no response
-direct file write
 UPSTREAM_ERROR_STATUS 400
 ```
 
@@ -67,5 +67,5 @@ After the test, remove:
 
 ## Notes
 
-- Chat mode wraps Cursor's native Responses `custom` `apply_patch` tool into an OpenAI `function` tool with a synthesized `create_file`/`update_file`/`delete_file` operation schema.
-- If the upstream gateway supports `/v1/responses` and HTTP `previous_response_id`, prefer `OPENAICOMPAT_WIRE_API=responses` for fully native apply_patch behavior.
+- `apply_patch` is a Responses API built-in tool. It is not a standard Chat Completions function tool and is not reliably callable by Chat Completions models.
+- If you need native `apply_patch` behavior, use `OPENAICOMPAT_WIRE_API=responses` with a gateway that supports `/v1/responses` and HTTP `previous_response_id`.

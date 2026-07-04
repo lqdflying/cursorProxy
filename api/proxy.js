@@ -1314,54 +1314,25 @@ export default async function handler(req) {
         // always present, because some Chat Completions gateways reject or
         // ignore function tools without one.
         //
-        // apply_patch is a special case: Cursor sends it as a `custom` tool
-        // with no input_schema. For Chat Completions we must synthesize the
-        // standard patch-operation schema (create_file/update_file/delete_file)
-        // so the model knows what arguments to emit.
-        const isApplyPatch = t.name === "apply_patch";
-        let parameters;
-        if (isApplyPatch) {
-          parameters = {
-            type: "object",
-            oneOf: [
-              {
-                type: "object",
-                properties: {
-                  type: { enum: ["create_file"] },
-                  path: { type: "string" },
-                  diff: { type: "string" },
-                },
-                required: ["type", "path", "diff"],
-                additionalProperties: false,
-              },
-              {
-                type: "object",
-                properties: {
-                  type: { enum: ["update_file"] },
-                  path: { type: "string" },
-                  diff: { type: "string" },
-                },
-                required: ["type", "path", "diff"],
-                additionalProperties: false,
-              },
-              {
-                type: "object",
-                properties: {
-                  type: { enum: ["delete_file"] },
-                  path: { type: "string" },
-                },
-                required: ["type", "path"],
-                additionalProperties: false,
-              },
-            ],
-          };
-        } else {
-          parameters = t.input_schema != null
-            ? t.input_schema
-            : t.parameters != null
-              ? t.parameters
-              : { type: "object", properties: {}, additionalProperties: false };
+        // apply_patch is a Responses API built-in tool, not a Chat Completions
+        // function tool. Cursor sends it as a `custom` tool when it thinks the
+        // model is apply-patch-capable, but a Chat Completions upstream has no
+        // reliable concept of a function named `apply_patch` and will ignore it
+        // (returning text instead). Drop it in Chat mode so the model falls back
+        // to Cursor's standard editing tools (edit_file, search_replace, write).
+        if (t.name === "apply_patch") {
+          parsedBody.tools.splice(i, 1);
+          i--;
+          toolsFixed = true;
+          diag("OPENAICOMPAT_APPLY_PATCH_DROPPED", "provider:", providerKey, "reason: chat_mode");
+          continue;
         }
+
+        const parameters = t.input_schema != null
+          ? t.input_schema
+          : t.parameters != null
+            ? t.parameters
+            : { type: "object", properties: {}, additionalProperties: false };
         const descriptionParts = [
           t.description != null ? String(t.description) : "",
           t.format ? `format: ${JSON.stringify(t.format)}` : "",

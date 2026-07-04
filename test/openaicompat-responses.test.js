@@ -713,7 +713,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
   });
 
-  it("chat mode wraps native apply_patch custom tool with patch-operation schema", async () => {
+  it("chat mode drops native apply_patch custom tool so Cursor falls back to standard editors", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "chat";
     const captured = mockFetchResponses({
       id: "chat_apply_patch",
@@ -735,21 +735,17 @@ describe("openaicompat Responses wire mode — integration", () => {
             description: "Apply a patch to a file.",
             format: { type: "text" },
           },
+          {
+            type: "function",
+            function: { name: "edit_file", description: "Edit a file", parameters: { type: "object" } },
+          },
         ],
       }),
     }));
 
     assert.equal(captured.body.tools.length, 1);
     assert.equal(captured.body.tools[0].type, "function");
-    assert.equal(captured.body.tools[0].function.name, "apply_patch");
-    assert.match(captured.body.tools[0].function.description, /Apply a patch/);
-    assert.match(captured.body.tools[0].function.description, /format: {"type":"text"}/);
-    const params = captured.body.tools[0].function.parameters;
-    assert.equal(params.type, "object");
-    assert.equal(params.oneOf.length, 3);
-    const types = params.oneOf.map((s) => s.properties.type.enum[0]).sort();
-    assert.deepEqual(types, ["create_file", "delete_file", "update_file"]);
-    assert.equal(params.oneOf[0].required.join(","), "type,path,diff");
+    assert.equal(captured.body.tools[0].function.name, "edit_file");
   });
 
   it("chat facade and remote modes inject flat OPENAICOMPAT_REASONING_EFFORT", async () => {

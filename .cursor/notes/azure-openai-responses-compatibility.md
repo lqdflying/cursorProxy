@@ -112,9 +112,9 @@ OpenAI documents the native `apply_patch` tool as `tools:[{"type":"apply_patch"}
 
 The current proxy recognizes `apply_patch_call` enough to avoid totally dropping the item, but it maps only `item.input` / `item.patch` to Chat-style function arguments. That is correct for the custom-tool flavor's raw string input, but not faithful for native `apply_patch_call.operation`. Until tested with real Cursor native apply_patch traffic, treat native apply_patch support as a known compatibility gap, not a completed feature.
 
-### Chat Completions mode synthesizes an apply_patch function schema
+### Chat Completions mode drops apply_patch
 
-When `OPENAICOMPAT_WIRE_API=chat` is used with an OpenAI-compatible gateway, Cursor may still send its native Responses `custom`/`apply_patch` tool. The proxy's Chat-mode tool wrapper converts this into an OpenAI Chat Completions `function` tool and injects a standard operation schema (`create_file`/`update_file`/`delete_file` with `path` and `diff`) because Cursor sends `apply_patch` without an `input_schema`. This is a best-effort translation: Chat Completions has no native `custom` tool grammar, so the model may not reproduce the exact patch format Cursor expects. For fully native `apply_patch` behavior, prefer `OPENAICOMPAT_WIRE_API=responses` (or the Azure OpenAI provider) where the native tool definition is preserved.
+When `OPENAICOMPAT_WIRE_API=chat` is used with an OpenAI-compatible gateway, Cursor may still send its native Responses `custom`/`apply_patch` tool. The proxy now drops `apply_patch` from the Chat-mode tools array and logs `OPENAICOMPAT_APPLY_PATCH_DROPPED`. `apply_patch` is a Responses API built-in tool; Chat Completions models are not trained to invoke a function named `apply_patch`, so keeping it produces text-only responses and no edit. Cursor already sends standard Chat-mode editing tools (`edit_file`, `search_replace`, `write`), so dropping `apply_patch` lets the model fall back to a tool surface it understands. For fully native `apply_patch` behavior, prefer `OPENAICOMPAT_WIRE_API=responses` (or the Azure OpenAI provider) where the native tool definition is preserved.
 
 ### Generic aliases may not expose Cursor's local apply_patch tool
 
