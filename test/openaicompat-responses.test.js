@@ -65,11 +65,12 @@ describe("openaicompat Responses wire mode — integration", () => {
   });
 
   // Helper: mock fetch to return a Responses-API-shaped JSON body and capture
-  // the outbound URL + body for assertions.
+  // the outbound URL, headers, and body for assertions.
   function mockFetchResponses(responsesBody) {
-    let captured = { url: null, body: null };
+    let captured = { url: null, headers: null, body: null };
     global.fetch = async (url, init) => {
       captured.url = url;
+      captured.headers = new Headers(init.headers);
       captured.body = JSON.parse(init.body);
       return new Response(JSON.stringify(responsesBody), {
         status: 200,
@@ -241,6 +242,8 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.input, undefined, "remote mode must not convert to Responses input");
     assert.equal(captured.body.previous_response_id, undefined, "remote mode must not use proxy-owned response IDs");
     assert.match(captured.body.prompt_cache_key, /^remote_session_id_[0-9a-f]{32}$/);
+    assert.equal(captured.headers.get("Session_id"), "session-1",
+      "remote mode should forward client session_id as upstream Session_id");
     assert.equal([...kv.store.keys()].filter((k) => k.startsWith("oairesp:")).length, 0,
       "remote mode must not write oairesp state");
 
@@ -270,6 +273,32 @@ describe("openaicompat Responses wire mode — integration", () => {
     }));
 
     assert.equal(captured.body.prompt_cache_key, "client-key");
+    assert.equal(captured.headers.get("Session_id"), "session-ignored",
+      "remote mode should pair explicit prompt_cache_key with the client session header");
+  });
+
+  it("chat remote mode derives upstream Session_id when no client session header exists", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "remote";
+    const captured = mockFetchResponses({
+      id: "chat_remote_derived_session",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.match(captured.body.prompt_cache_key, /^remote_cs_[0-9a-f]{32}$/);
+    assert.equal(captured.headers.get("Session_id"), captured.body.prompt_cache_key,
+      "remote mode should reuse the derived prompt_cache_key as upstream Session_id");
   });
 
   it("chat remote mode forces stream usage and normalizes usage chunks", async () => {
@@ -371,6 +400,29 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(res.status, 200);
     assert.ok(captured.url.endsWith("/v1/responses"), `expected responses, got: ${captured.url}`);
     assert.equal(captured.body.prompt_cache_key, undefined, "chat remote key injection must not run in Responses mode");
+    assert.equal(captured.headers.get("Session_id"), "session-ignored",
+      "Responses mode should pass client session headers through unchanged");
+  });
+
+  it("chat facade mode does not add an upstream Session_id", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "facade";
+    const captured = mockFetchResponses({
+      id: "chat_facade_no_session",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    assert.equal(captured.body.prompt_cache_key, undefined);
+    assert.equal(captured.headers.get("Session_id"), null,
+      "facade mode should normalize usage only, without adding remote cache headers");
   });
 
   it("responses mode does NOT remap non-chat/completions paths (e.g. embeddings)", async () => {

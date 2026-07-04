@@ -23,6 +23,7 @@ import { cacheScopeUserId, conversationHash, normalizedConversationHash, sha256I
 import {
   deriveCompatPromptCacheKey,
   deriveOpenAICompatChatRemotePromptCacheKey,
+  deriveOpenAICompatChatRemoteSessionHeader,
   deriveOpenAICompatSessionAnchor,
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
@@ -596,6 +597,7 @@ export default async function handler(req) {
   let respIdCachePrefix = "azresp:"; // KV namespace prefix (set in chaining block)
   let respIdChainScope = null;
   let openAICompatStatelessRetryInput = null;
+  let openAICompatChatRemoteSession = null;
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
   if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
@@ -823,6 +825,13 @@ export default async function handler(req) {
            "provider:", providerKey,
            "source:", remotePromptCache.source,
            "key:", remotePromptCache.key.slice(0, 24) + "...");
+      openAICompatChatRemoteSession = await deriveOpenAICompatChatRemoteSessionHeader(req, remotePromptCache);
+      if (openAICompatChatRemoteSession.value) {
+        diag("OAI_CHAT_REMOTE_SESSION",
+             "provider:", providerKey,
+             "source:", openAICompatChatRemoteSession.source,
+             "hash:", openAICompatChatRemoteSession.hash || "(none)");
+      }
     }
   }
 
@@ -1701,6 +1710,10 @@ export default async function handler(req) {
     for (const [k, v] of Object.entries(provider.extraHeaders)) {
       headers.set(k, v);
     }
+  }
+
+  if (openAICompatChatCacheRemote && openAICompatChatRemoteSession?.value) {
+    headers.set("Session_id", openAICompatChatRemoteSession.value);
   }
 
   // Dump the exact request being sent to Azure for debugging.

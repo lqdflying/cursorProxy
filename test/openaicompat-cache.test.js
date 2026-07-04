@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   deriveCompatPromptCacheKey,
   deriveOpenAICompatChatRemotePromptCacheKey,
+  deriveOpenAICompatChatRemoteSessionHeader,
   deriveOpenAICompatSessionAnchor,
   deriveOpenAIContentSessionSeed,
   isOpenAICompatChatCacheRemoteMode,
@@ -191,5 +192,29 @@ describe("openaicompat cache helpers", () => {
     );
     assert.equal(content.source, "content");
     assert.match(content.key, /^remote_cs_[0-9a-f]{32}$/);
+  });
+
+  it("derives Chat remote upstream Session_id by client header then prompt cache key", async () => {
+    const explicit = await deriveOpenAICompatChatRemoteSessionHeader(
+      new Request("http://localhost", { headers: { session_id: "sess-1" } }),
+      { key: "remote_key", source: "content" }
+    );
+    assert.equal(explicit.value, "sess-1");
+    assert.equal(explicit.source, "session_id");
+    assert.match(explicit.hash, /^[0-9a-f]{16}$/);
+
+    const derived = await deriveOpenAICompatChatRemoteSessionHeader(
+      new Request("http://localhost"),
+      { key: "remote_key", source: "content" }
+    );
+    assert.equal(derived.value, "remote_key");
+    assert.equal(derived.source, "content");
+    assert.match(derived.hash, /^[0-9a-f]{16}$/);
+
+    const empty = await deriveOpenAICompatChatRemoteSessionHeader(
+      new Request("http://localhost"),
+      { key: "", source: "none" }
+    );
+    assert.deepEqual(empty, { value: "", source: "none", hash: "" });
   });
 });

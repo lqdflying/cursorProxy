@@ -1,0 +1,4 @@
+interface:
+  display_name: "cursorProxy Provider Probe"
+  short_description: "Probe cursorProxy OpenAI-compatible cache behavior"
+  default_prompt: "Use $cursorproxy-provider-probe to test my cursorProxy OpenAI-compatible provider, compare Chat Completions and Responses-mode cache behavior, and recommend the matching cursorProxy cache settings."
