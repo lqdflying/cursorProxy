@@ -566,6 +566,13 @@ function openAICompatPreviousResponseFailureKind(status, bodyText) {
   ) {
     return "not_found";
   }
+  if (
+    status === 400 &&
+    lower.includes("no tool call found") &&
+    lower.includes("function call output")
+  ) {
+    return "tool_output_missing";
+  }
   return null;
 }
 
@@ -1939,7 +1946,10 @@ export default async function handler(req) {
   ) {
     const errText = await upstreamRes.clone().text().catch(() => "");
     const previousResponseFailureKind = openAICompatPreviousResponseFailureKind(upstreamRes.status, errText);
-    if (previousResponseFailureKind) {
+    if (
+      previousResponseFailureKind &&
+      (previousResponseFailureKind !== "tool_output_missing" || !openAICompatSub2ApiCache)
+    ) {
       if (previousResponseFailureKind === "unsupported") {
         markOpenAICompatPreviousResponseUnsupportedScope(respIdChainScope);
         azureReplyKey = null;
@@ -1951,9 +1961,12 @@ export default async function handler(req) {
       delete retryBody.previous_response_id;
       const retryNormalized = normalizeOpenAICompatResponsesInputContent(providerKey, retryBody).parsedBody;
       const retryBodyText = JSON.stringify(retryNormalized);
-      diag(previousResponseFailureKind === "unsupported"
+      const retryTag = previousResponseFailureKind === "unsupported"
         ? "OAI_PREV_RESP_UNSUPPORTED_RETRY"
-        : "OAI_PREV_RESP_NOT_FOUND_RETRY",
+        : previousResponseFailureKind === "tool_output_missing"
+          ? "OAI_TOOL_OUTPUT_RETRY"
+          : "OAI_PREV_RESP_NOT_FOUND_RETRY";
+      diag(retryTag,
         "status:", upstreamRes.status,
         "inputItems:", retryNormalized.input?.length || 0);
       try {

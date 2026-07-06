@@ -1655,6 +1655,144 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal([...kv.store.values()].includes("resp_def"), true, "stateless retry response should refresh the chain");
   });
 
+  it("retries stateless when previous_response_id rejects a tool output call_id", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_tool_call",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const turn1Messages = [{ role: "user", content: "lookup" }];
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: turn1Messages }),
+    }));
+    assert.ok([...kv.store.values()].includes("resp_tool_call"), "turn 1 should cache the tool-call response id");
+
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      if (body.previous_response_id) {
+        return new Response(JSON.stringify({
+          error: {
+            message: "No tool call found for function call output with call_id call_1.",
+            type: "invalid_request_error",
+            param: "input",
+            code: null,
+          },
+        }), { status: 400, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        id: "resp_tool_done",
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const { result: res, logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          ...turn1Messages,
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: { name: "lookup", arguments: "{}" },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_1", content: "42" },
+        ],
+      }),
+    })));
+
+    assert.equal(res.status, 200);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].previous_response_id, "resp_tool_call");
+    assert.equal(calls[0].input.length, 1, "first attempt should send only the tool output");
+    assert.equal(calls[0].input[0].type, "function_call_output");
+    assert.equal(calls[1].previous_response_id, undefined);
+    assert.equal(calls[1].input.length, 3, "retry should restore the full tool-call exchange");
+    assert.equal(calls[1].input[1].type, "function_call");
+    assert.equal(calls[1].input[2].type, "function_call_output");
+    assert.match(logs, /OAI_TOOL_OUTPUT_RETRY status: 400 inputItems: 3/);
+    assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
+  });
+
+  it("does not apply the default tool-output retry in sub2api mode", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_tool_call",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const turn1Messages = [{ role: "user", content: "lookup" }];
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: turn1Messages }),
+    }));
+
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        error: {
+          message: "No tool call found for function call output with call_id call_1.",
+          type: "invalid_request_error",
+          param: "input",
+          code: null,
+        },
+      }), { status: 400, headers: { "content-type": "application/json" } });
+    };
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          ...turn1Messages,
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: { name: "lookup", arguments: "{}" },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_1", content: "42" },
+        ],
+      }),
+    }));
+
+    assert.equal(res.status, 400);
+    assert.equal(calls.length, 1, "sub2api should not use the default-mode tool-output retry");
+    assert.equal(calls[0].previous_response_id, "resp_tool_call");
+  });
+
   it("sub2api mode expands native Responses trim to include matching function_call before tool outputs", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
