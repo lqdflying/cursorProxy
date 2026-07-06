@@ -1026,6 +1026,38 @@ describe("openaicompat Responses wire mode — integration", () => {
     ]);
   });
 
+  it("openaicompat Responses normalizer strips provider metadata from text and image parts", () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const parsedBody = {
+      input: [{
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "describe this",
+            providerOptions: { cursor: { source: "client" } },
+          },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,abc123" },
+            detail: "high",
+            provider_options: { cursor: { image: true } },
+            providerMetadata: { foo: "bar" },
+            experimental_providerMetadata: { baz: true },
+          },
+        ],
+      }],
+    };
+
+    const result = normalizeOpenAICompatResponsesInputContent("openaicompat", parsedBody);
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(parsedBody.input[0].content, [
+      { type: "input_text", text: "describe this" },
+      { type: "input_image", image_url: "data:image/png;base64,abc123", detail: "high" },
+    ]);
+  });
+
   it("openaicompat Responses normalizer preserves string image_url and existing input_image parts", () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const parsedBody = {
@@ -1798,7 +1830,12 @@ describe("openaicompat Responses wire mode — integration", () => {
           role: "user",
           content: [
             { type: "text", text: "describe this" },
-            { type: "image_url", image_url: { url: "data:image/png;base64,abc123" }, detail: "high" },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,abc123" },
+              detail: "high",
+              providerOptions: { cursor: { attachment: true } },
+            },
           ],
         }],
       }),
@@ -1809,7 +1846,7 @@ describe("openaicompat Responses wire mode — integration", () => {
       { type: "input_image", image_url: "data:image/png;base64,abc123", detail: "high" },
     ]);
     assert.match(captured.body.prompt_cache_key, /^compat_cc_[0-9a-f]{32}$/);
-    assert.match(logs, /OAI_INPUT_NORMALIZED provider: openaicompat textParts: 1 imageParts: 1/);
+    assert.match(logs, /OAI_INPUT_NORMALIZED provider: openaicompat textParts: 1 imageParts: 1 providerOptionParts: 1/);
   });
 
   it("halo Responses cache mode injects prompt_cache_key and forwards Session_id", async () => {
@@ -1867,7 +1904,12 @@ describe("openaicompat Responses wire mode — integration", () => {
           role: "user",
           content: [
             { type: "text", text: "describe this" },
-            { type: "image_url", image_url: "https://example.com/cat.png", detail: "low" },
+            {
+              type: "image_url",
+              image_url: "https://example.com/cat.png",
+              detail: "low",
+              providerOptions: { cursor: { attachment: true } },
+            },
           ],
         }],
       }),
@@ -1879,7 +1921,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     ]);
     assert.match(captured.body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
     assert.equal(captured.headers.get("Session_id"), "halo-session-image");
-    assert.match(logs, /OAI_INPUT_NORMALIZED provider: openaicompat textParts: 1 imageParts: 1/);
+    assert.match(logs, /OAI_INPUT_NORMALIZED provider: openaicompat textParts: 1 imageParts: 1 providerOptionParts: 1/);
   });
 
   it("halo Responses cache mode preserves explicit prompt_cache_key and derives Session_id from it", async () => {
