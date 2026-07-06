@@ -27,7 +27,7 @@ alwaysApply: true
 
   - **Step 2 (only after review sign-off): push the branch.** On explicit confirmation that review passed (e.g. "push", "looks good", "go ahead", "GA", or review feedback that has been addressed with a new Step 1 commit), `git push origin <branch>` (main repo) and `git push origin master` inside `wiki/`. Branch pushes trigger Vercel/EdgeOne/Docker auto-redeploy. Do NOT tag, do NOT `gh release create`. **PAUSE here and wait** if not also proceeding to Step 3.
 
-  - **Step 3 (ONLY on the literal command "GA"): tag and release.** Treat anything that is not the exact word "GA" (review feedback, "go ahead", "push and release", "next step", "deploy", silence, etc.) as Step 1 or Step 2 work — never as Step 3. Only an explicit "GA" from the user triggers Step 3. On "GA", run the full sequence in one turn:
+  - **Step 3 (on any explicit standalone "GA" mention): tag and release.** Treat a user message that includes `GA` as its own word (for example, "project can GA", "go GA now", or simply "GA") as Step 3 approval. Do not require `GA` to be the entire message, but do not match it inside another word. Review feedback, "go ahead", "push and release", "next step", "deploy", silence, and other messages that do not mention standalone `GA` remain Step 1 or Step 2 work — never Step 3. On a standalone `GA` mention, run the full sequence in one turn:
     1. Find the previous tag: `git tag --sort=-v:refname | head -5`.
     2. Determine the bump from `code-conventions.mdc` (patch = fixes/docs; minor = new provider or operator-facing feature; major = breaking).
     3. Confirm the target commit is already pushed (Step 2 handles this; if not, push now).
