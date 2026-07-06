@@ -29,6 +29,7 @@ import {
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
   isOpenAICompatSub2ApiCacheMode,
+  openAICompatChatCachedTokens,
   normalizeOpenAICompatChatCacheUsage,
   openAICompatReasoningEffortEnv,
   shouldAutoInjectPromptCacheKeyForCompat,
@@ -301,6 +302,15 @@ function diag(...args) {
 function safeLogToken(value, fallback = "(none)") {
   if (value == null || value === "") return fallback;
   return String(value).replace(/\s+/g, "_").slice(0, 80);
+}
+
+function summarizeToolChoiceForLog(value) {
+  if (value == null || value === "") return "(none)";
+  if (typeof value === "string") return safeLogToken(value);
+  if (typeof value !== "object" || Array.isArray(value)) return typeof value;
+  const type = value.type ? safeLogToken(value.type) : "object";
+  const functionShape = value.function && typeof value.function === "object" ? "function" : "";
+  return functionShape ? `${type}:${functionShape}` : type;
 }
 
 function summarizeJsonArgKeysForLog(rawArgs) {
@@ -1780,6 +1790,24 @@ export default async function handler(req) {
     headers.set("Session_id", openAICompatChatRemoteSession.value);
   }
 
+  if (providerKey === "openaicompat" && pathParam === "chat/completions" && !openaiCompatResponses) {
+    const chatCacheMode = openAICompatChatCacheRemote
+      ? "remote"
+      : (openAICompatChatCacheFacade ? "facade" : "passthrough");
+    diag("OAI_CHAT_REQUEST_SHAPE",
+         "provider:", providerKey,
+         "model:", safeLogToken(upstreamModelName || parsedBody?.model || ""),
+         "mode:", chatCacheMode,
+         "messages:", Array.isArray(parsedBody?.messages) ? parsedBody.messages.length : 0,
+         "input:", Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
+         "tools:", Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
+         "tool_choice:", summarizeToolChoiceForLog(parsedBody?.tool_choice),
+         "stream:", parsedBody?.stream === true,
+         "include_usage:", parsedBody?.stream_options?.include_usage === true,
+         "promptKey:", String(parsedBody?.prompt_cache_key || "").trim() !== "",
+         "session:", Boolean(headers.get("Session_id")));
+  }
+
   // Dump the exact request being sent to Azure for debugging.
   // Gate behind DEBUG to avoid logging user prompts in production.
   if (DEBUG && usesAzureHeaderIsolation) {
@@ -2177,6 +2205,22 @@ export default async function handler(req) {
     // Per-event logging was ~800 log lines per stream; this collapses to 1.
     const anthropicEventCounts = { total: 0 };
     const azureEventCounts = { total: 0 };
+    const openAICompatChatStreamDiag = providerKey === "openaicompat" && !openaiCompatResponses;
+    let openAICompatChatStreamSummaryLogged = false;
+    const openAICompatChatStreamStats = {
+      chunks: 0,
+      contentDeltas: 0,
+      reasoningDeltas: 0,
+      toolCallChunks: 0,
+      toolCallStarts: 0,
+      toolArgDeltas: 0,
+      usageChunks: 0,
+      parseErrors: 0,
+      cachedTokens: null,
+      finish: "(none)",
+    };
+    const openAICompatChatToolIds = new Set();
+    let streamReadError = false;
 
     function countAzureEvent(eventName) {
       const key = eventName || "unknown";
@@ -2195,6 +2239,68 @@ export default async function handler(req) {
            "events:", JSON.stringify(azureEventCounts));
       if (accRefusal) {
         log("AZURE_REFUSAL_PREVIEW", accRefusal.slice(0, 240));
+      }
+    }
+
+    function logOpenAICompatChatStreamSummary(reason) {
+      if (!openAICompatChatStreamDiag || openAICompatChatStreamSummaryLogged) return;
+      openAICompatChatStreamSummaryLogged = true;
+      diag("OAI_CHAT_STREAM_SUMMARY",
+           "provider:", providerKey,
+           "reason:", reason,
+           "chunks:", openAICompatChatStreamStats.chunks,
+           "contentDeltas:", openAICompatChatStreamStats.contentDeltas,
+           "content:", accContent.length,
+           "reasoningDeltas:", openAICompatChatStreamStats.reasoningDeltas,
+           "reasoning:", reasoningSize(accReasoning),
+           "toolCalls:", openAICompatChatStreamStats.toolCallChunks,
+           "toolStarts:", openAICompatChatStreamStats.toolCallStarts,
+           "toolArgDeltas:", openAICompatChatStreamStats.toolArgDeltas,
+           "finish:", openAICompatChatStreamStats.finish || "(none)",
+           "usageChunks:", openAICompatChatStreamStats.usageChunks,
+           "cached_tokens:", openAICompatChatStreamStats.cachedTokens ?? "(none)",
+           "doneSeen:", doneSeen,
+           "parseErrors:", openAICompatChatStreamStats.parseErrors);
+    }
+
+    function updateOpenAICompatChatStreamStats(json) {
+      if (!openAICompatChatStreamDiag || !json || typeof json !== "object") return;
+      openAICompatChatStreamStats.chunks++;
+      if (json.usage) {
+        openAICompatChatStreamStats.usageChunks++;
+        const cachedTokens = openAICompatChatCachedTokens(json);
+        if (cachedTokens != null) {
+          openAICompatChatStreamStats.cachedTokens = cachedTokens;
+        }
+      }
+      const choices = Array.isArray(json.choices) ? json.choices : [];
+      for (const choice of choices) {
+        if (choice?.finish_reason != null) {
+          openAICompatChatStreamStats.finish = safeLogToken(choice.finish_reason);
+        }
+        const choiceDelta = choice?.delta;
+        if (!choiceDelta || typeof choiceDelta !== "object") continue;
+        if (choiceDelta.content != null) {
+          openAICompatChatStreamStats.contentDeltas++;
+        }
+        if (hasReasoningValue(readReasoning(providerKey, choiceDelta))) {
+          openAICompatChatStreamStats.reasoningDeltas++;
+        }
+        const toolCalls = Array.isArray(choiceDelta.tool_calls) ? choiceDelta.tool_calls : [];
+        if (toolCalls.length > 0) {
+          openAICompatChatStreamStats.toolCallChunks++;
+          for (const toolCall of toolCalls) {
+            const toolIdentity = toolCall?.id
+              || `${choice?.index ?? 0}:${toolCall?.index ?? 0}:${toolCall?.function?.name || ""}`;
+            if ((toolCall?.id || toolCall?.function?.name) && !openAICompatChatToolIds.has(toolIdentity)) {
+              openAICompatChatToolIds.add(toolIdentity);
+              openAICompatChatStreamStats.toolCallStarts++;
+            }
+            if (toolCall?.function?.arguments != null && String(toolCall.function.arguments) !== "") {
+              openAICompatChatStreamStats.toolArgDeltas++;
+            }
+          }
+        }
       }
     }
 
@@ -2310,6 +2416,7 @@ export default async function handler(req) {
             await cacheAzResponseId();
             await cacheClaudeThinking();
             logAzureStreamSummary("[DONE]");
+            logOpenAICompatChatStreamSummary("[DONE]");
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
           }
@@ -2558,6 +2665,7 @@ export default async function handler(req) {
               }
             }
 
+            updateOpenAICompatChatStreamStats(json);
             const delta = json.choices?.[0]?.delta;
             const chunkReasoning = readReasoning(providerKey, delta);
             accReasoning = updateStreamReasoning(providerKey, accReasoning, chunkReasoning);
@@ -2588,6 +2696,9 @@ export default async function handler(req) {
               )
             );
           } catch {
+            if (openAICompatChatStreamDiag) {
+              openAICompatChatStreamStats.parseErrors++;
+            }
             await writer.write(encoder.encode(line + "\n\n"));
           }
         }
@@ -2603,6 +2714,7 @@ export default async function handler(req) {
       if (timedOut) {
         log("STREAM_READ_ABORTED_AFTER_TIMEOUT", err?.name, err?.message);
       } else {
+        streamReadError = true;
         diag("STREAM_READ_ERROR", err?.name, err?.message);
         try {
           const errMsg = JSON.stringify({
@@ -2659,6 +2771,7 @@ export default async function handler(req) {
         log("ANTHROPIC_EVENTS", anthropicEventCounts);
       }
       logAzureStreamSummary(timedOut ? "timeout" : "finally");
+      logOpenAICompatChatStreamSummary(timedOut ? "timeout" : (streamReadError ? "read_error" : "finally"));
       diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
       await writer.close();
     }

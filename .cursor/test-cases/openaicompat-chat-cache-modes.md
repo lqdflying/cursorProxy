@@ -69,8 +69,16 @@ Expected:
 - Request body keeps full Chat `messages`; it is not converted to Responses `input`.
 - Request body includes either the client-provided `prompt_cache_key` or a derived `remote_*` key.
 - Logs include `OAI_CHAT_REMOTE_KEY source: ...`.
+- Logs include `OAI_CHAT_REQUEST_SHAPE provider: openaicompat mode: remote` with safe counts for `messages`, `input`, `tools`, `tool_choice`, `stream`, `include_usage`, `promptKey`, and `session`.
+- Streaming requests emit exactly one `OAI_CHAT_STREAM_SUMMARY` line with safe counters for `chunks`, `contentDeltas`, `reasoningDeltas`, `toolCalls`, `toolStarts`, `toolArgDeltas`, `finish`, `usageChunks`, `cached_tokens`, `doneSeen`, and `parseErrors`.
 - No `previous_response_id`, message trimming, `PREV_RESP_ID_*`, or `CACHE_OAI_RESP_ID` appears.
 - Cache-hit usage normalization behaves the same as `facade`.
+
+Interpretation for Halo-style gateways:
+
+- `finish: stop`, `toolCalls: 0`, and `doneSeen: true` means the upstream completed a content-only answer; investigate model/tool behavior rather than stream transport.
+- Non-zero `toolCalls` with Cursor still stopping means inspect the Chat tool-call stream shape.
+- `doneSeen: false` or `parseErrors` greater than `0` means inspect upstream SSE termination or chunk shape before changing cache settings.
 
 ## Test 4: Responses Isolation
 
