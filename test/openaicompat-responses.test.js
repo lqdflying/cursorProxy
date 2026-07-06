@@ -1301,6 +1301,51 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(argText, args);
   });
 
+  it("remote Responses cache mode repairs tool args when done carries missing streamed args", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "remote";
+    const args = JSON.stringify({ command: "pwd", working_directory: "/tmp" });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell\",\"type\":\"function_call\",\"call_id\":\"call_shell\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run pwd" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    const bodyText = await res.text();
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.equal(argText, args);
+  });
+
   it("sub2api mode does not use the default done-argument repair", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
@@ -1679,6 +1724,64 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.prompt_cache_key, "client-key");
   });
 
+  it("remote Responses cache mode injects prompt_cache_key and forwards Session_id", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "remote";
+    const captured = mockFetchResponses({
+      id: "resp_remote_prompt_key",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "session_id": "halo-session-1",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          { role: "system", content: "be concise" },
+          { role: "user", content: "hi" },
+        ],
+      }),
+    }));
+
+    assert.match(captured.body.prompt_cache_key, /^remote_session_id_[0-9a-f]{32}$/);
+    assert.equal(captured.headers.get("Session_id"), "halo-session-1");
+    assert.equal(captured.body.store, true);
+    assert.equal(captured.body.previous_response_id, undefined);
+  });
+
+  it("remote Responses cache mode preserves explicit prompt_cache_key and derives Session_id from it", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "remote";
+    const captured = mockFetchResponses({
+      id: "resp_remote_explicit_key",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        prompt_cache_key: "client-remote-key",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    }));
+
+    assert.equal(captured.body.prompt_cache_key, "client-remote-key");
+    assert.equal(captured.headers.get("Session_id"), "client-remote-key");
+    assert.equal(captured.body.store, true);
+  });
+
   it("sub2api mode refreshes a stale previous_response_id after previous_response_not_found", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
@@ -1818,6 +1921,88 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(calls[1].input.length, 3, "retry should restore the full tool-call exchange");
     assert.equal(calls[1].input[1].type, "function_call");
     assert.equal(calls[1].input[2].type, "function_call_output");
+    assert.match(logs, /OAI_TOOL_OUTPUT_RETRY status: 400 inputItems: 3/);
+    assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
+  });
+
+  it("remote Responses cache mode retries stateless when previous_response_id rejects a tool output call_id", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "remote";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_tool_call",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const turn1Messages = [{ role: "user", content: "lookup" }];
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session_id": "halo-session-1" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: turn1Messages }),
+    }));
+    assert.ok([...kv.store.values()].includes("resp_tool_call"), "turn 1 should cache the tool-call response id");
+
+    const calls = [];
+    const sessions = [];
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      sessions.push(new Headers(init.headers).get("Session_id"));
+      if (body.previous_response_id) {
+        return new Response(JSON.stringify({
+          error: {
+            message: "No tool call found for function call output with call_id call_1.",
+            type: "invalid_request_error",
+            param: "input",
+            code: null,
+          },
+        }), { status: 400, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        id: "resp_tool_done",
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    const { result: res, logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session_id": "halo-session-1" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [
+          ...turn1Messages,
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_1",
+              type: "function",
+              function: { name: "lookup", arguments: "{}" },
+            }],
+          },
+          { role: "tool", tool_call_id: "call_1", content: "42" },
+        ],
+      }),
+    })));
+
+    assert.equal(res.status, 200);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].previous_response_id, "resp_tool_call");
+    assert.equal(calls[0].input.length, 1, "first attempt should send only the tool output");
+    assert.equal(calls[0].input[0].type, "function_call_output");
+    assert.equal(calls[1].previous_response_id, undefined);
+    assert.equal(calls[1].input.length, 3, "retry should restore the full tool-call exchange");
+    assert.match(calls[0].prompt_cache_key, /^remote_session_id_[0-9a-f]{32}$/);
+    assert.equal(calls[1].prompt_cache_key, calls[0].prompt_cache_key);
+    assert.deepEqual(sessions, ["halo-session-1", "halo-session-1"]);
     assert.match(logs, /OAI_TOOL_OUTPUT_RETRY status: 400 inputItems: 3/);
     assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
   });

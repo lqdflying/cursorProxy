@@ -28,6 +28,7 @@ import {
   hasInvalidOpenAICompatReasoningEffortEnv,
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
+  isOpenAICompatRemoteCacheMode,
   isOpenAICompatSub2ApiCacheMode,
   openAICompatChatCachedTokens,
   normalizeOpenAICompatChatCacheUsage,
@@ -629,6 +630,7 @@ export default async function handler(req) {
   let respIdChainScope = null;
   let openAICompatStatelessRetryInput = null;
   let openAICompatChatRemoteSession = null;
+  let openAICompatResponsesRemoteSession = null;
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
   if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
@@ -697,6 +699,7 @@ export default async function handler(req) {
   const openaiCompatResponses = isOpenAICompatResponses(providerKey)
     && pathParam === "chat/completions";
   const openAICompatSub2ApiCache = openaiCompatResponses && isOpenAICompatSub2ApiCacheMode();
+  const openAICompatResponsesRemoteCache = openaiCompatResponses && isOpenAICompatRemoteCacheMode();
   const openAICompatChatCacheFacade = providerKey === "openaicompat"
     && pathParam === "chat/completions"
     && !openaiCompatResponses
@@ -886,6 +889,31 @@ export default async function handler(req) {
     }
   }
 
+  if (openAICompatResponsesRemoteCache && parsedBody) {
+    const remotePromptCache = await deriveOpenAICompatChatRemotePromptCacheKey(
+      req,
+      parsedBody,
+      parsedBody?.model || upstreamModelName || ""
+    );
+    if (remotePromptCache.key) {
+      if (String(parsedBody.prompt_cache_key || "").trim() === "") {
+        parsedBody.prompt_cache_key = remotePromptCache.key;
+        bodyText = JSON.stringify(parsedBody);
+      }
+      diag("OAI_RESP_REMOTE_KEY",
+           "provider:", providerKey,
+           "source:", remotePromptCache.source,
+           "key:", remotePromptCache.key.slice(0, 24) + "...");
+      openAICompatResponsesRemoteSession = await deriveOpenAICompatChatRemoteSessionHeader(req, remotePromptCache);
+      if (openAICompatResponsesRemoteSession.value) {
+        diag("OAI_RESP_REMOTE_SESSION",
+             "provider:", providerKey,
+             "source:", openAICompatResponsesRemoteSession.source,
+             "hash:", openAICompatResponsesRemoteSession.hash || "(none)");
+      }
+    }
+  }
+
   // Azure OpenAI Responses API and OpenAI-compatible Responses wire mode both
   // use "input" natively. Do not normalize native Responses input items
   // (input_text, output_text, function_call_output, etc.).
@@ -996,6 +1024,16 @@ export default async function handler(req) {
             openAICompatSessionAnchor || "(none)",
             azureScopeUser,
           ].join(":")
+          : openAICompatResponsesRemoteCache
+            ? [
+              providerKey,
+              cacheVersion,
+              "remote",
+              upstreamBase,
+              parsedBody?.model || "(none)",
+              String(parsedBody?.prompt_cache_key || "").trim() || "(none)",
+              azureScopeUser,
+            ].join(":")
           : [
             providerKey,
             cacheVersion,
@@ -1806,6 +1844,9 @@ export default async function handler(req) {
 
   if (openAICompatChatCacheRemote && openAICompatChatRemoteSession?.value) {
     headers.set("Session_id", openAICompatChatRemoteSession.value);
+  }
+  if (openAICompatResponsesRemoteCache && openAICompatResponsesRemoteSession?.value) {
+    headers.set("Session_id", openAICompatResponsesRemoteSession.value);
   }
 
   if (providerKey === "openaicompat" && pathParam === "chat/completions" && !openaiCompatResponses) {
