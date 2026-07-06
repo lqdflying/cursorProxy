@@ -24,13 +24,16 @@ import {
   deriveCompatPromptCacheKey,
   deriveOpenAICompatChatRemotePromptCacheKey,
   deriveOpenAICompatChatRemoteSessionHeader,
+  deriveOpenAICompatResponsesHaloPromptCacheKey,
   deriveOpenAICompatSessionAnchor,
+  hasInvalidOpenAICompatCacheHitModeEnv,
   hasInvalidOpenAICompatReasoningEffortEnv,
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
-  isOpenAICompatRemoteCacheMode,
+  isOpenAICompatHaloCacheMode,
   isOpenAICompatSub2ApiCacheMode,
   openAICompatChatCachedTokens,
+  openAICompatCacheHitModeValidValues,
   normalizeOpenAICompatChatCacheUsage,
   openAICompatReasoningEffortEnv,
   shouldAutoInjectPromptCacheKeyForCompat,
@@ -608,6 +611,15 @@ function expandResponsesInputToolCallStart(items, start) {
   return expandedStart;
 }
 
+function countResponsesFunctionCallOutputs(items) {
+  if (!Array.isArray(items)) return 0;
+  let count = 0;
+  for (const item of items) {
+    if (item?.type === "function_call_output") count++;
+  }
+  return count;
+}
+
 async function waitForAzResponseId(key, retries = 2) {
   // Response IDs are written to KV before the proxy responds to Cursor,
   // so the next request usually finds the key immediately. Short retry
@@ -630,7 +642,7 @@ export default async function handler(req) {
   let respIdChainScope = null;
   let openAICompatStatelessRetryInput = null;
   let openAICompatChatRemoteSession = null;
-  let openAICompatResponsesRemoteSession = null;
+  let openAICompatResponsesHaloSession = null;
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
   if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
@@ -698,8 +710,20 @@ export default async function handler(req) {
   // provider is in Responses mode AND this request targets chat/completions.
   const openaiCompatResponses = isOpenAICompatResponses(providerKey)
     && pathParam === "chat/completions";
+  if (openaiCompatResponses && hasInvalidOpenAICompatCacheHitModeEnv()) {
+    const validValues = openAICompatCacheHitModeValidValues();
+    diag("OPENAICOMPAT_CACHE_HIT_MODE_INVALID",
+         "raw:", process.env.OPENAICOMPAT_CACHE_HIT_MODE,
+         "valid:", validValues);
+    return jsonErrorResponse(
+      400,
+      `Invalid OPENAICOMPAT_CACHE_HIT_MODE "${process.env.OPENAICOMPAT_CACHE_HIT_MODE}". Valid Responses values: ${validValues}.`,
+      "openaicompat_cache_hit_mode_invalid",
+      "invalid_request_error"
+    );
+  }
   const openAICompatSub2ApiCache = openaiCompatResponses && isOpenAICompatSub2ApiCacheMode();
-  const openAICompatResponsesRemoteCache = openaiCompatResponses && isOpenAICompatRemoteCacheMode();
+  const openAICompatResponsesHaloCache = openaiCompatResponses && isOpenAICompatHaloCacheMode();
   const openAICompatChatCacheFacade = providerKey === "openaicompat"
     && pathParam === "chat/completions"
     && !openaiCompatResponses
@@ -889,27 +913,27 @@ export default async function handler(req) {
     }
   }
 
-  if (openAICompatResponsesRemoteCache && parsedBody) {
-    const remotePromptCache = await deriveOpenAICompatChatRemotePromptCacheKey(
+  if (openAICompatResponsesHaloCache && parsedBody) {
+    const haloPromptCache = await deriveOpenAICompatResponsesHaloPromptCacheKey(
       req,
       parsedBody,
       parsedBody?.model || upstreamModelName || ""
     );
-    if (remotePromptCache.key) {
+    if (haloPromptCache.key) {
       if (String(parsedBody.prompt_cache_key || "").trim() === "") {
-        parsedBody.prompt_cache_key = remotePromptCache.key;
+        parsedBody.prompt_cache_key = haloPromptCache.key;
         bodyText = JSON.stringify(parsedBody);
       }
-      diag("OAI_RESP_REMOTE_KEY",
+      diag("OAI_RESP_HALO_KEY",
            "provider:", providerKey,
-           "source:", remotePromptCache.source,
-           "key:", remotePromptCache.key.slice(0, 24) + "...");
-      openAICompatResponsesRemoteSession = await deriveOpenAICompatChatRemoteSessionHeader(req, remotePromptCache);
-      if (openAICompatResponsesRemoteSession.value) {
-        diag("OAI_RESP_REMOTE_SESSION",
+           "source:", haloPromptCache.source,
+           "key:", haloPromptCache.key.slice(0, 24) + "...");
+      openAICompatResponsesHaloSession = await deriveOpenAICompatChatRemoteSessionHeader(req, haloPromptCache);
+      if (openAICompatResponsesHaloSession.value) {
+        diag("OAI_RESP_HALO_SESSION",
              "provider:", providerKey,
-             "source:", openAICompatResponsesRemoteSession.source,
-             "hash:", openAICompatResponsesRemoteSession.hash || "(none)");
+             "source:", openAICompatResponsesHaloSession.source,
+             "hash:", openAICompatResponsesHaloSession.hash || "(none)");
       }
     }
   }
@@ -1024,11 +1048,11 @@ export default async function handler(req) {
             openAICompatSessionAnchor || "(none)",
             azureScopeUser,
           ].join(":")
-          : openAICompatResponsesRemoteCache
+          : openAICompatResponsesHaloCache
             ? [
               providerKey,
               cacheVersion,
-              "remote",
+              "halo",
               upstreamBase,
               parsedBody?.model || "(none)",
               String(parsedBody?.prompt_cache_key || "").trim() || "(none)",
@@ -1225,7 +1249,8 @@ export default async function handler(req) {
         if (prevRespId) {
           // If trimming would produce an empty input, force stateless mode.
           // Azure rejects previous_response_id with no new items.
-          if (parsedBody.messages.slice(lastAssistantIdx + 1).length === 0) {
+          const nextMessages = parsedBody.messages.slice(lastAssistantIdx + 1);
+          if (nextMessages.length === 0) {
             prevRespId = null;
             openAICompatStatelessRetryInput = null;
             log("INPUT_CHAIN_EMPTY_TRIM", "provider:", providerKey,
@@ -1237,12 +1262,22 @@ export default async function handler(req) {
             }
             // Only send input items that appeared AFTER the last assistant.
             // Azure replays the full prior conversation server-side.
-            parsedBody.input = parsedBody.messages.slice(lastAssistantIdx + 1)
-              .reduce((acc, item) => {
-                acc.push(...normalizeAzureInput(item));
-                return acc;
-              }, []);
-            parsedBody.previous_response_id = prevRespId;
+            const trimmedInput = nextMessages.reduce((acc, item) => {
+              acc.push(...normalizeAzureInput(item));
+              return acc;
+            }, []);
+            const toolOutputCount = countResponsesFunctionCallOutputs(trimmedInput);
+            if (openAICompatResponsesHaloCache && toolOutputCount > 0) {
+              prevRespId = null;
+              parsedBody.input = fullInput;
+              diag("OAI_RESP_HALO_TOOL_OUTPUT_STATELESS",
+                   "provider:", providerKey,
+                   "inputItems:", fullInput.length,
+                   "toolOutputs:", toolOutputCount);
+            } else {
+              parsedBody.input = trimmedInput;
+              parsedBody.previous_response_id = prevRespId;
+            }
           }
         }
         if (!prevRespId && !parsedBody.input) {
@@ -1284,6 +1319,7 @@ export default async function handler(req) {
             ? expandResponsesInputToolCallStart(parsedBody.input, lastAssistantIdx + 1)
             : lastAssistantIdx + 1;
           const trimmedInput = parsedBody.input.slice(trimStart);
+          const toolOutputCount = countResponsesFunctionCallOutputs(trimmedInput);
           if (trimmedInput.length === 0) {
             prevRespId = null;
             openAICompatStatelessRetryInput = null;
@@ -1294,8 +1330,16 @@ export default async function handler(req) {
             if (openaiCompatResponses) {
               openAICompatStatelessRetryInput = cloneJson(parsedBody.input);
             }
-            parsedBody.input = trimmedInput;
-            parsedBody.previous_response_id = prevRespId;
+            if (openAICompatResponsesHaloCache && toolOutputCount > 0) {
+              prevRespId = null;
+              diag("OAI_RESP_HALO_TOOL_OUTPUT_STATELESS",
+                   "provider:", providerKey,
+                   "inputItems:", parsedBody.input.length,
+                   "toolOutputs:", toolOutputCount);
+            } else {
+              parsedBody.input = trimmedInput;
+              parsedBody.previous_response_id = prevRespId;
+            }
           }
         }
         bodyText = JSON.stringify(parsedBody);
@@ -1845,8 +1889,8 @@ export default async function handler(req) {
   if (openAICompatChatCacheRemote && openAICompatChatRemoteSession?.value) {
     headers.set("Session_id", openAICompatChatRemoteSession.value);
   }
-  if (openAICompatResponsesRemoteCache && openAICompatResponsesRemoteSession?.value) {
-    headers.set("Session_id", openAICompatResponsesRemoteSession.value);
+  if (openAICompatResponsesHaloCache && openAICompatResponsesHaloSession?.value) {
+    headers.set("Session_id", openAICompatResponsesHaloSession.value);
   }
 
   if (providerKey === "openaicompat" && pathParam === "chat/completions" && !openaiCompatResponses) {

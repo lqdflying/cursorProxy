@@ -6,6 +6,7 @@ import {
   deriveOpenAICompatChatRemoteSessionHeader,
   deriveOpenAICompatSessionAnchor,
   deriveOpenAIContentSessionSeed,
+  hasInvalidOpenAICompatCacheHitModeEnv,
   isOpenAICompatChatCacheRemoteMode,
   normalizeOpenAICompatChatCacheUsage,
   normalizeCompatSeedJSON,
@@ -29,13 +30,18 @@ describe("openaicompat cache helpers", () => {
     else process.env.OPENAICOMPAT_REASONING_EFFORT = origEffort;
   });
 
-  it("parses cache hit mode with safe fallback", () => {
+  it("parses cache hit mode and reports invalid values", () => {
     delete process.env.OPENAICOMPAT_CACHE_HIT_MODE;
     assert.equal(openAICompatCacheHitMode(), "default");
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = " sub2api ";
     assert.equal(openAICompatCacheHitMode(), "sub2api");
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "bogus";
-    assert.equal(openAICompatCacheHitMode(), "default");
+    assert.equal(hasInvalidOpenAICompatCacheHitModeEnv(), false);
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = " halo ";
+    assert.equal(openAICompatCacheHitMode(), "halo");
+    assert.equal(hasInvalidOpenAICompatCacheHitModeEnv(), false);
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "remote";
+    assert.equal(openAICompatCacheHitMode(), "");
+    assert.equal(hasInvalidOpenAICompatCacheHitModeEnv(), true);
   });
 
   it("parses chat cache mode with safe fallback", () => {
