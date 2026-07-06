@@ -411,6 +411,17 @@ function mapResponsesToolArgsChunkForProxy(state, argsText) {
   };
 }
 
+function mapMissingResponsesToolArgsForProxy(state, finalArgsText) {
+  if (!state || typeof finalArgsText !== "string") return null;
+  const priorArgs = state.partialJson || "";
+  if (finalArgsText === priorArgs) return null;
+  if (!finalArgsText.startsWith(priorArgs)) return null;
+  const suffix = finalArgsText.slice(priorArgs.length);
+  if (!suffix) return null;
+  state.partialJson = finalArgsText;
+  return mapResponsesToolArgsChunkForProxy(state, suffix);
+}
+
 // Confirm at cold start that the opt-in cache flag was honored.
 if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
   diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
@@ -2571,6 +2582,11 @@ export default async function handler(req) {
                 continue;
               }
 
+              const shouldRepairDefaultToolDoneArgs = openaiCompatResponses
+                && !openAICompatSub2ApiCache
+                && !shouldSanitizeSubagentArgs
+                && isResponsesToolDoneEvent(responsesEvent);
+
               if (shouldSanitizeSubagentArgs && isResponsesToolDoneEvent(responsesEvent)) {
                 const argsText = responsesToolArgsForLog(json, preMappedToolState);
                 const sanitized = sanitizeCursorSubagentArgsForLocal(argsText);
@@ -2588,6 +2604,11 @@ export default async function handler(req) {
                        "reason:", "unparseable");
                 }
                 mapped = mapResponsesToolArgsChunkForProxy(preMappedToolState, sanitized.argsText);
+              } else if (shouldRepairDefaultToolDoneArgs) {
+                mapped = mapMissingResponsesToolArgsForProxy(
+                  preMappedToolState,
+                  responsesToolArgsForLog(json, preMappedToolState),
+                );
               } else {
                 mapped = mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
               }

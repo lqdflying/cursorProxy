@@ -1257,6 +1257,95 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(firstDelta.choices[0].delta.tool_calls[0].index, 0);
   });
 
+  it("default Responses mode repairs tool args when done carries missing streamed args", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const args = JSON.stringify({ command: "pwd", working_directory: "/tmp" });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell\",\"type\":\"function_call\",\"call_id\":\"call_shell\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run pwd" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    const bodyText = await res.text();
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.equal(argText, args);
+  });
+
+  it("sub2api mode does not use the default done-argument repair", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const args = JSON.stringify({ command: "pwd", working_directory: "/tmp" });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell\",\"type\":\"function_call\",\"call_id\":\"call_shell\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run pwd" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    const bodyText = await res.text();
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.equal(argText, "");
+  });
+
   it("maps Responses output to Chat Completions choices in the response", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     mockFetchResponses({
