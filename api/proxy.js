@@ -296,7 +296,7 @@ const PROVIDERS = {
 };
 
 function log(...args) {
-  if (DEBUG) console.log("[cursorProxy:proxy]", ...args);
+  if (process.env.DEBUG === "true") console.log("[cursorProxy:proxy]", ...args);
 }
 
 function diag(...args) {
@@ -333,6 +333,64 @@ function summarizeJsonArgKeysForLog(rawArgs) {
   } catch {
     return "(unparseable)";
   }
+}
+
+function appendStringLengthShape(out, key, value, label = key) {
+  if (typeof value === "string") out.push(`${label}Len:`, value.length);
+}
+
+function appendPresenceShape(out, key, value, label = key) {
+  out.push(`${label}:`, value == null ? "absent" : "present");
+}
+
+function summarizeToolArgShapeForLog(toolName, rawArgs) {
+  const text = typeof rawArgs === "string" ? rawArgs.trim() : "";
+  if (!text) return ["shape:", "(empty)"];
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return ["shape:", "(unparseable)"];
+  }
+
+  if (parsed == null) return ["shape:", "null"];
+  if (Array.isArray(parsed)) return ["shape:", "array", "items:", parsed.length];
+  if (typeof parsed !== "object") return ["shape:", typeof parsed];
+
+  const keys = Object.keys(parsed);
+  const out = ["shape:", "object", "keyCount:", keys.length];
+  const normalizedToolName = String(toolName || "").trim().toLowerCase();
+
+  if (normalizedToolName === "shell") {
+    appendStringLengthShape(out, "command", parsed.command);
+    appendStringLengthShape(out, "description", parsed.description);
+    appendPresenceShape(out, "working_directory", parsed.working_directory, "workingDirectory");
+
+    const notify = parsed.notify_on_output;
+    if (notify && typeof notify === "object" && !Array.isArray(notify)) {
+      out.push("notify:", "present");
+      appendStringLengthShape(out, "pattern", notify.pattern, "notifyPattern");
+      appendStringLengthShape(out, "reason", notify.reason, "notifyReason");
+      if (typeof notify.debounce_ms === "number") out.push("notifyDebounceMs:", notify.debounce_ms);
+    } else {
+      out.push("notify:", notify == null ? "absent" : typeof notify);
+    }
+    return out;
+  }
+
+  if (normalizedToolName === "callmcptool") {
+    appendStringLengthShape(out, "server", parsed.server);
+    appendStringLengthShape(out, "toolName", parsed.toolName);
+    const mcpArgs = parsed.arguments;
+    if (mcpArgs && typeof mcpArgs === "object" && !Array.isArray(mcpArgs)) {
+      out.push("mcpArguments:", "present", "mcpArgKeys:", summarizeJsonArgKeysForLog(JSON.stringify(mcpArgs)));
+    } else {
+      out.push("mcpArguments:", mcpArgs == null ? "absent" : Array.isArray(mcpArgs) ? "array" : typeof mcpArgs);
+    }
+  }
+
+  return out;
 }
 
 function responsesToolStateForLog(toolState, data) {
@@ -2646,13 +2704,20 @@ export default async function handler(req) {
               if (isResponsesToolDoneEvent(responsesEvent)) {
                 const state = responsesToolStateForLog(responsesToolState, json);
                 const argsText = responsesToolArgsForLog(json, state);
+                const toolName = state?.name || json?.name || "(unknown)";
                 diag(openaiCompatResponses ? "OAI_TOOL_CALL_DONE" : "AZURE_TOOL_CALL_DONE",
                      "provider:", providerKey,
-                     "name:", safeLogToken(state?.name || json?.name || "(unknown)"),
+                     "name:", safeLogToken(toolName),
                      "toolIndex:", state?.toolIndex ?? "(none)",
                      "responsesIndex:", json?.output_index ?? "(none)",
                      "argChars:", argsText.length,
                      "argKeys:", summarizeJsonArgKeysForLog(argsText));
+                log(openaiCompatResponses ? "OAI_TOOL_ARG_SHAPE" : "AZURE_TOOL_ARG_SHAPE",
+                    "provider:", providerKey,
+                    "name:", safeLogToken(toolName),
+                    "toolIndex:", state?.toolIndex ?? "(none)",
+                    "responsesIndex:", json?.output_index ?? "(none)",
+                    ...summarizeToolArgShapeForLog(toolName, argsText));
               }
 
               let mapped = null;

@@ -27,6 +27,7 @@ const ENV_KEYS = [
   "AZURE_FOUNDRY_RESOURCE",
   "AZURE_OPENAI_ENDPOINT",
   "CURSORPROXY_API_KEY",
+  "DEBUG",
 ];
 
 // Minimal in-memory KV map with a Redis-like driver shape
@@ -1385,6 +1386,67 @@ describe("openaicompat Responses wire mode — integration", () => {
       .map((toolCall) => toolCall.function?.arguments || "")
       .join("");
     assert.equal(argText, args);
+  });
+
+  it("logs sanitized Shell argument shape in debug mode without argument values", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.DEBUG = "true";
+    const args = JSON.stringify({
+      block_until_ms: 30000,
+      command: "printf shell-secret-value",
+      description: "Run hidden diagnostic",
+      notify_on_output: {
+        pattern: "",
+        reason: "",
+        debounce_ms: 0,
+      },
+      request_smart_mode_approval: false,
+      smart_mode_block_reason: "",
+      working_directory: "/tmp/secret-workspace",
+    });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell_shape\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell_shape\",\"type\":\"function_call\",\"call_id\":\"call_shell_shape\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell_shape\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell_shape", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell_shape\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run shell diagnostic" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    assert.match(bodyText, /shell-secret-value/);
+
+    assert.match(logs, /OAI_TOOL_CALL_DONE .*name: Shell .*argKeys: block_until_ms,command,description,notify_on_output,request_smart_mode_approval,smart_mode_block_reason,working_directory/);
+    assert.match(logs, /OAI_TOOL_ARG_SHAPE .*name: Shell .*shape: object .*keyCount: 7/);
+    assert.match(logs, /OAI_TOOL_ARG_SHAPE .*commandLen: 25 .*descriptionLen: 21 .*workingDirectory: present/);
+    assert.match(logs, /OAI_TOOL_ARG_SHAPE .*notify: present .*notifyPatternLen: 0 .*notifyReasonLen: 0 .*notifyDebounceMs: 0/);
+    assert.doesNotMatch(logs, /shell-secret-value/);
+    assert.doesNotMatch(logs, /secret-workspace/);
+    assert.doesNotMatch(logs, /Run hidden diagnostic/);
   });
 
   it("halo Responses cache mode repairs tool args when done carries missing streamed args", async () => {
