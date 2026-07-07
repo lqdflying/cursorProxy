@@ -7,6 +7,8 @@ alwaysApply: false
 
 ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
 
+Zero-argument tools are intentionally skipped here: `todo_read`.
+
 ### todo_write
 Update the in-session task list for tracking multi-step work.
 
@@ -23,7 +25,7 @@ Update the status of a single todo item by its 0-based index.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | index | integer | Yes | - | 0-based position in the list |
-| status | string | Yes | - | pending, in_progress, or completed |
+| status | string | Yes | - | New status. Allowed values: pending, in_progress, completed |
 
 Example:
 CallMcpTool({ server: "githubmcp", toolName: "todo_update", arguments: { index: 0, status: "completed" } })
@@ -148,7 +150,7 @@ Merge a pull request.
 | repo | string | Yes | - | Repository name |
 | pull_number | integer | Yes | - | PR number |
 | commit_title | string\|null | No | null | Custom commit title |
-| merge_method | string | No | merge | merge, squash, or rebase |
+| merge_method | string | No | merge | Merge strategy. Allowed values: merge, squash, rebase |
 
 Example:
 CallMcpTool({ server: "githubmcp", toolName: "merge_pull_request", arguments: { owner: "octocat", repo: "Hello-World", pull_number: 1, merge_method: "squash" } })
@@ -176,7 +178,7 @@ List recent CI/CD workflow runs.
 | repo | string | Yes | - | Repository name |
 | workflow_id | string\|null | No | null | Filter by workflow filename or ID |
 | branch | string\|null | No | null | Filter by branch |
-| status | string\|null | No | null | queued, in_progress, completed, etc. |
+| status | string\|null | No | null | Optional status filter, for example queued, in_progress, completed, action_required, cancelled, failure, neutral, skipped, stale, success, timed_out, waiting |
 | limit | integer | No | 10 | Maximum runs to return |
 
 Example:

@@ -1,0 +1,232 @@
+---
+description: "MCP tool arguments for axiom — use when calling any axiom tool"
+alwaysApply: false
+---
+
+# MCP Tools: axiom
+
+ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
+
+For Axiom data queries, discover datasets, metric names, tags, and fields before substantive queries. Use the narrowest useful `startTime` and `endTime`; every query scans data.
+
+Zero-argument tools are intentionally skipped here: `listDatasets`, `listNotifiers`, `checkMonitors`, `listDashboards`, `getSavedQueries`.
+
+### queryDataset
+Query event, trace, and log datasets using APL. Do not use this for `otel-metrics-v1`; use `queryMetrics` instead.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| apl | string | Yes | - | APL query string |
+| startTime | string | No | now-30m | Query range start as RFC3339 or relative time |
+| endTime | string | No | now | Query range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "queryDataset", arguments: { apl: "['logs'] | where ['_time'] > ago(5m) | take 10", startTime: "now-5m", endTime: "now" } })
+
+### listMetrics
+List available metric names and metadata in an `otel-metrics-v1` dataset.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| datasetName | string | Yes | - | Metrics dataset name |
+| startTime | string | No | now-30m | Query range start as RFC3339 or relative time |
+| endTime | string | No | now | Query range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "listMetrics", arguments: { datasetName: "otel-metrics-v1", startTime: "now-3h", endTime: "now" } })
+
+### searchMetrics
+Search metric tag values for a known entity and return associated metric names.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| datasetName | string | Yes | - | Metrics dataset name |
+| value | string | Yes | - | Exact entity/tag value to search for, such as service or host name |
+| startTime | string | No | now-30m | Query range start; use at least `now-3h` for recent searchable data |
+| endTime | string | No | now | Query range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "searchMetrics", arguments: { datasetName: "otel-metrics-v1", value: "checkout-service", startTime: "now-3h", endTime: "now" } })
+
+### listMetricTags
+List available metric tags in an `otel-metrics-v1` dataset.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| datasetName | string | Yes | - | Metrics dataset name |
+| startTime | string | No | now-30m | Query range start as RFC3339 or relative time |
+| endTime | string | No | now | Query range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "listMetricTags", arguments: { datasetName: "otel-metrics-v1", startTime: "now-30m", endTime: "now" } })
+
+### getMetricTagValues
+List values for a specific tag in an `otel-metrics-v1` dataset.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| datasetName | string | Yes | - | Metrics dataset name |
+| tag | string | Yes | - | Tag name to list values for |
+| startTime | string | No | now-30m | Query range start as RFC3339 or relative time |
+| endTime | string | No | now | Query range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "getMetricTagValues", arguments: { datasetName: "otel-metrics-v1", tag: "service.name", startTime: "now-30m", endTime: "now" } })
+
+### queryMetrics
+Query OpenTelemetry metrics using MPL.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| mpl | string | Yes | - | MPL query string: `<dataset>:<metric> | <operations>` |
+| datasetName | string | Yes | - | Metrics dataset name |
+| startTime | string | No | now-30m | Query range start as RFC3339 or relative time |
+| endTime | string | No | now | Query range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "queryMetrics", arguments: { datasetName: "otel-metrics-v1", mpl: "`otel-metrics-v1`:`http.server.duration` | align to 5m using avg", startTime: "now-30m", endTime: "now" } })
+
+### createNotifier
+Create a notifier from a JSON payload.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| notifierJson | string | Yes | - | Full notifier JSON string with name and properties; configure one channel such as email, slack, webhook, customWebhook, pagerduty, opsgenie, discord, discordWebhook, or microsoftTeams |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "createNotifier", arguments: { notifierJson: "{\"name\":\"ops-email\",\"properties\":{\"email\":{\"emails\":[\"ops@example.com\"]}}}" } })
+
+### updateNotifier
+Update an existing notifier by ID using a full JSON payload.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| notifierId | string | Yes | - | Notifier ID from `listNotifiers` |
+| notifierJson | string | Yes | - | Full notifier JSON string with name and properties |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "updateNotifier", arguments: { notifierId: "notifier-id", notifierJson: "{\"name\":\"ops-email\",\"properties\":{\"email\":{\"emails\":[\"ops@example.com\"]}}}" } })
+
+### deleteNotifier
+Delete a notifier by ID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| notifierId | string | Yes | - | Notifier ID from `listNotifiers` |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "deleteNotifier", arguments: { notifierId: "notifier-id" } })
+
+### createMonitor
+Create a monitor from a JSON payload.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| monitorJson | string | Yes | - | Full monitor JSON string with name, type, intervalMinutes, rangeMinutes, notifierIds, and at least one of aplQuery or mplQuery |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "createMonitor", arguments: { monitorJson: "{\"name\":\"error-rate\",\"type\":\"Threshold\",\"intervalMinutes\":5,\"rangeMinutes\":15,\"notifierIds\":[],\"aplQuery\":\"['logs'] | summarize count()\"}" } })
+
+### updateMonitor
+Update an existing monitor by ID using a full JSON payload.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| monitorId | string | Yes | - | Monitor ID from `checkMonitors` |
+| monitorJson | string | Yes | - | Full monitor JSON string with name, type, intervalMinutes, rangeMinutes, and at least one of aplQuery or mplQuery |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "updateMonitor", arguments: { monitorId: "monitor-id", monitorJson: "{\"name\":\"error-rate\",\"type\":\"Threshold\",\"intervalMinutes\":5,\"rangeMinutes\":15,\"notifierIds\":[],\"aplQuery\":\"['logs'] | summarize count()\"}" } })
+
+### deleteMonitor
+Delete a monitor by ID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| monitorId | string | Yes | - | Monitor ID from `checkMonitors` |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "deleteMonitor", arguments: { monitorId: "monitor-id" } })
+
+### getMonitorHistory
+Get alert history for a monitor.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| monitorId | string | Yes | - | Monitor ID from `checkMonitors` |
+| startTime | string | No | now-30m | History range start as RFC3339 or relative time |
+| endTime | string | No | now | History range end as RFC3339 or relative time |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "getMonitorHistory", arguments: { monitorId: "monitor-id", startTime: "now-24h", endTime: "now" } })
+
+### createDashboard
+Create a dashboard from a JSON document.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| dashboardJson | string | Yes | - | Full dashboard JSON string with required fields name, owner, charts, layout, refreshTime, schemaVersion, timeWindowStart, and timeWindowEnd |
+| uid | string | No | - | Optional custom dashboard UID |
+| message | string | No | - | Optional audit/change note |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "createDashboard", arguments: { dashboardJson: "{\"name\":\"Ops\",\"owner\":\"X-AXIOM-EVERYONE\",\"charts\":[],\"layout\":[],\"refreshTime\":60,\"schemaVersion\":2,\"timeWindowStart\":\"now-1h\",\"timeWindowEnd\":\"now\"}", message: "Create ops dashboard" } })
+
+### getDashboard
+Get dashboard details by UID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| dashboardId | string | Yes | - | Dashboard UID from `listDashboards` |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "getDashboard", arguments: { dashboardId: "dashboard-uid" } })
+
+### exportDashboard
+Export a dashboard JSON document by UID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| dashboardUid | string | Yes | - | Dashboard UID from `listDashboards` |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "exportDashboard", arguments: { dashboardUid: "dashboard-uid" } })
+
+### updateDashboard
+Update an existing dashboard by UID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| dashboardUid | string | Yes | - | Dashboard UID from `listDashboards` |
+| dashboardJson | string | Yes | - | Full dashboard JSON string |
+| overwrite | boolean | No | true | If false, `version` is required for optimistic concurrency |
+| version | number | No | - | Current dashboard version from `exportDashboard` |
+| message | string | No | - | Optional audit/change note |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "updateDashboard", arguments: { dashboardUid: "dashboard-uid", dashboardJson: "{\"name\":\"Ops\",\"owner\":\"X-AXIOM-EVERYONE\",\"charts\":[],\"layout\":[],\"refreshTime\":60,\"schemaVersion\":2,\"timeWindowStart\":\"now-1h\",\"timeWindowEnd\":\"now\"}", overwrite: true } })
+
+### updateDashboardChart
+Patch a single chart in an existing dashboard.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| dashboardUid | string | Yes | - | Dashboard UID from `listDashboards` |
+| chartId | string | Yes | - | Chart ID inside the dashboard charts array |
+| chartPatchJson | string | Yes | - | JSON merge-patch object for a single chart |
+| overwrite | boolean | No | true | If false, `version` is required for optimistic concurrency |
+| version | number | No | - | Current dashboard version from `exportDashboard` |
+| message | string | No | - | Optional audit/change note |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "updateDashboardChart", arguments: { dashboardUid: "dashboard-uid", chartId: "chart-id", chartPatchJson: "{\"title\":\"Latency p95\"}", overwrite: true } })
+
+### deleteDashboard
+Delete a dashboard by UID.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| dashboardUid | string | Yes | - | Dashboard UID from `listDashboards` |
+
+Example:
+CallMcpTool({ server: "axiom", toolName: "deleteDashboard", arguments: { dashboardUid: "dashboard-uid" } })

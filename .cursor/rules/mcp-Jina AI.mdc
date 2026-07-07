@@ -7,6 +7,8 @@ alwaysApply: false
 
 ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
 
+Zero-argument tools are intentionally skipped here: `show_api_key`, `primer`.
+
 ### extract_pdf
 Extract figures, tables, and equations from PDF documents using layout detection.
 
@@ -15,7 +17,7 @@ Extract figures, tables, and equations from PDF documents using layout detection
 | id | string | No* | - | arXiv paper ID |
 | url | string | No* | - | Direct PDF URL |
 | max_edge | number | No | 1024 | Maximum image edge in pixels |
-| type | string | No | - | Filter by figure, table, equation |
+| type | string | No | - | Comma-separated filter by float type: figure, table, equation |
 
 *Either id or url is required.
 
@@ -86,7 +88,7 @@ Read multiple web pages in parallel (max 5 URLs).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| urls | array | Yes | - | URL configs with url, withAllLinks, withAllImages |
+| urls | array | Yes | - | Up to 5 URL config objects with url plus optional withAllLinks and withAllImages |
 | timeout | number | No | 30000 | Timeout in milliseconds |
 
 Example:
@@ -97,7 +99,7 @@ Run multiple SSRN searches in parallel (max 5 searches).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| searches | array | Yes | - | Search configs with query, num, tbs |
+| searches | array | Yes | - | Up to 5 search config objects with query plus optional num and tbs |
 | timeout | number | No | 30000 | Timeout in milliseconds |
 
 Example:
@@ -108,7 +110,7 @@ Run multiple arXiv searches in parallel (max 5 searches).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| searches | array | Yes | - | Search configs with query, num, tbs |
+| searches | array | Yes | - | Up to 5 search config objects with query plus optional num and tbs |
 | timeout | number | No | 30000 | Timeout in milliseconds |
 
 Example:
@@ -119,7 +121,7 @@ Run multiple web searches in parallel (max 5 searches).
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| searches | array | Yes | - | Search configs with query, num, tbs, location, gl, hl |
+| searches | array | Yes | - | Up to 5 search config objects with query plus optional num, tbs, location, gl, and hl |
 | timeout | number | No | 30000 | Timeout in milliseconds |
 
 Example:

@@ -8,12 +8,12 @@ alwaysApply: false
 ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
 
 ### tavily_research
-Perform comprehensive research on a topic or question. Rate limit: 20 requests/minute.
+Perform comprehensive research on a topic or question. Rate limit: 20 requests per minute.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | input | string | Yes | - | Comprehensive description of the research task |
-| model | string | No | auto | Depth: mini, pro, auto |
+| model | string | No | auto | Depth. Allowed values: mini, pro, auto |
 
 Example:
 CallMcpTool({ server: "tavily", toolName: "tavily_research", arguments: { input: "Latest advancements in quantum computing 2026", model: "pro" } })
@@ -28,8 +28,8 @@ Map a website's structure starting from a base URL.
 | max_breadth | integer | No | 20 | Max links to follow per page |
 | limit | integer | No | 50 | Total links to process |
 | instructions | string | No | "" | Natural language instructions for the crawler |
-| select_paths | array | No | [] | Regex patterns to select URL paths |
-| select_domains | array | No | [] | Regex patterns to restrict domains |
+| select_paths | array | No | [] | Regex patterns to select URL paths, for example `/docs/.*` |
+| select_domains | array | No | [] | Regex patterns to restrict domains, for example `^docs\\.example\\.com$` |
 | allow_external | boolean | No | true | Whether to return external links |
 
 Example:
@@ -44,12 +44,12 @@ Crawl a website starting from a URL and extract page content.
 | max_depth | integer | No | 1 | Max depth to explore |
 | max_breadth | integer | No | 20 | Max links to follow per page |
 | limit | integer | No | 50 | Total links to process |
-| instructions | string | No | "" | Natural language instructions |
-| select_paths | array | No | [] | Regex patterns to select URL paths |
-| select_domains | array | No | [] | Regex patterns to restrict domains |
+| instructions | string | No | "" | Natural language instructions describing which page types to return |
+| select_paths | array | No | [] | Regex patterns to select URL paths, for example `/docs/.*` |
+| select_domains | array | No | [] | Regex patterns to restrict domains, for example `^docs\\.example\\.com$` |
 | allow_external | boolean | No | true | Whether to return external links |
-| extract_depth | string | No | basic | basic or advanced |
-| format | string | No | markdown | markdown or text |
+| extract_depth | string | No | basic | Extraction mode. Allowed values: basic, advanced |
+| format | string | No | markdown | Output format. Allowed values: markdown, text |
 | include_favicon | boolean | No | false | Include favicon URL per result |
 
 Example:
@@ -61,9 +61,9 @@ Extract content from URLs in markdown or text format.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | urls | array | Yes | - | List of URLs to extract |
-| extract_depth | string | No | basic | basic or advanced |
+| extract_depth | string | No | basic | Extraction mode. Allowed values: basic, advanced |
 | include_images | boolean | No | false | Include images from pages |
-| format | string | No | markdown | markdown or text |
+| format | string | No | markdown | Output format. Allowed values: markdown, text |
 | include_favicon | boolean | No | false | Include favicon URLs |
 | query | string | No | "" | Query to rerank content chunks |
 
@@ -77,15 +77,15 @@ Search the web for current information.
 |-------|------|----------|---------|-------------|
 | query | string | Yes | - | Search query |
 | max_results | integer | No | 5 | Maximum results to return |
-| search_depth | string | No | basic | basic, advanced, fast, ultra-fast |
-| topic | string | No | general | Always general |
-| time_range | string\|null | No | null | day, week, month, year |
+| search_depth | string | No | basic | Search depth. Allowed values: basic, advanced, fast, ultra-fast |
+| topic | string | No | general | Constant value: general |
+| time_range | string\|null | No | null | Optional recency window. Allowed values: day, week, month, year, null |
 | include_images | boolean | No | false | Include query-related images |
 | include_image_descriptions | boolean | No | false | Include images with descriptions |
 | include_raw_content | boolean | No | false | Include cleaned HTML per result |
 | include_domains | array | No | [] | Domains to specifically include |
 | exclude_domains | array | No | [] | Domains to specifically exclude |
-| country | string | No | "" | Full country name to boost results |
+| country | string | No | "" | Full country name to boost results; ISO country codes are not supported |
 | include_favicon | boolean | No | false | Include favicon URL per result |
 | start_date | string | No | "" | YYYY-MM-DD |
 | end_date | string | No | "" | YYYY-MM-DD |
