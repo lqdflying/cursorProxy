@@ -426,6 +426,10 @@ function isCursorSubagentToolName(name) {
   return String(name || "").trim().toLowerCase() === "subagent";
 }
 
+function isCursorShellToolName(name) {
+  return String(name || "").trim().toLowerCase() === "shell";
+}
+
 const CURSOR_SUBAGENT_CLOUD_ONLY_ARG_KEYS = new Set([
   "cloud_base_branch",
   "environment",
@@ -450,6 +454,35 @@ function sanitizeCursorSubagentArgsForLocal(rawArgs) {
     return {
       argsText: removed.length > 0 ? JSON.stringify(parsed) : text,
       removed,
+      parseError: false,
+    };
+  } catch {
+    return { argsText: text, removed: [], parseError: true };
+  }
+}
+
+function sanitizeCursorShellArgsForLocal(rawArgs) {
+  const text = typeof rawArgs === "string" ? rawArgs : "";
+  if (!text.trim()) return { argsText: text, removed: [], parseError: false };
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { argsText: text, removed: [], parseError: false };
+    }
+
+    const notify = parsed.notify_on_output;
+    if (!notify || typeof notify !== "object" || Array.isArray(notify)) {
+      return { argsText: text, removed: [], parseError: false };
+    }
+
+    if (typeof notify.pattern === "string" && notify.pattern.trim()) {
+      return { argsText: text, removed: [], parseError: false };
+    }
+
+    delete parsed.notify_on_output;
+    return {
+      argsText: JSON.stringify(parsed),
+      removed: ["notify_on_output"],
       parseError: false,
     };
   } catch {
@@ -2724,10 +2757,12 @@ export default async function handler(req) {
               const preMappedToolState = responsesToolStateForLog(responsesToolState, json);
               const shouldSanitizeSubagentArgs = openaiCompatResponses
                 && isCursorSubagentToolName(preMappedToolState?.name || json?.name);
+              const shouldSanitizeShellArgs = openaiCompatResponses
+                && isCursorShellToolName(preMappedToolState?.name || json?.name);
 
-              if (shouldSanitizeSubagentArgs && isResponsesToolArgDeltaEvent(responsesEvent)) {
+              if ((shouldSanitizeSubagentArgs || shouldSanitizeShellArgs) && isResponsesToolArgDeltaEvent(responsesEvent)) {
                 // Let mapResponsesSSEToOpenAI update partialJson, then suppress
-                // the raw delta so Cursor never sees cloud-only Subagent args.
+                // the raw delta so Cursor never sees args that need local repair.
                 mapResponsesSSEToOpenAI(responsesEvent, json, responsesToolState);
                 continue;
               }
@@ -2735,6 +2770,7 @@ export default async function handler(req) {
               const shouldRepairDefaultToolDoneArgs = openaiCompatResponses
                 && !openAICompatSub2ApiCache
                 && !shouldSanitizeSubagentArgs
+                && !shouldSanitizeShellArgs
                 && isResponsesToolDoneEvent(responsesEvent);
 
               if (shouldSanitizeSubagentArgs && isResponsesToolDoneEvent(responsesEvent)) {
@@ -2749,6 +2785,24 @@ export default async function handler(req) {
                        "argKeys:", summarizeJsonArgKeysForLog(sanitized.argsText));
                 } else if (sanitized.parseError) {
                   diag("OAI_SUBAGENT_ARGS_SANITIZE_SKIP",
+                       "provider:", providerKey,
+                       "name:", safeLogToken(preMappedToolState?.name || json?.name || "(unknown)"),
+                       "reason:", "unparseable");
+                }
+                mapped = mapResponsesToolArgsChunkForProxy(preMappedToolState, sanitized.argsText);
+              } else if (shouldSanitizeShellArgs && isResponsesToolDoneEvent(responsesEvent)) {
+                const argsText = responsesToolArgsForLog(json, preMappedToolState);
+                const sanitized = sanitizeCursorShellArgsForLocal(argsText);
+                if (sanitized.removed.length > 0) {
+                  diag("OAI_SHELL_ARGS_SANITIZED",
+                       "provider:", providerKey,
+                       "name:", safeLogToken(preMappedToolState?.name || json?.name || "(unknown)"),
+                       "toolIndex:", preMappedToolState?.toolIndex ?? "(none)",
+                       "removed:", sanitized.removed.map((key) => safeLogToken(key)).join(","),
+                       "reason:", "empty_pattern",
+                       "argKeys:", summarizeJsonArgKeysForLog(sanitized.argsText));
+                } else if (sanitized.parseError) {
+                  diag("OAI_SHELL_ARGS_SANITIZE_SKIP",
                        "provider:", providerKey,
                        "name:", safeLogToken(preMappedToolState?.name || json?.name || "(unknown)"),
                        "reason:", "unparseable");

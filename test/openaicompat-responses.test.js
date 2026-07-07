@@ -1438,15 +1438,84 @@ describe("openaicompat Responses wire mode — integration", () => {
     });
 
     assert.equal(res.status, 200);
-    assert.match(bodyText, /shell-secret-value/);
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    const sanitized = JSON.parse(argText);
+    assert.equal(sanitized.command, "printf shell-secret-value");
+    assert.equal(sanitized.working_directory, "/tmp/secret-workspace");
+    assert.equal(sanitized.notify_on_output, undefined);
 
     assert.match(logs, /OAI_TOOL_CALL_DONE .*name: Shell .*argKeys: block_until_ms,command,description,notify_on_output,request_smart_mode_approval,smart_mode_block_reason,working_directory/);
     assert.match(logs, /OAI_TOOL_ARG_SHAPE .*name: Shell .*shape: object .*keyCount: 7/);
     assert.match(logs, /OAI_TOOL_ARG_SHAPE .*commandLen: 25 .*descriptionLen: 21 .*workingDirectory: present/);
     assert.match(logs, /OAI_TOOL_ARG_SHAPE .*notify: present .*notifyPatternLen: 0 .*notifyReasonLen: 0 .*notifyDebounceMs: 0/);
+    assert.match(logs, /OAI_SHELL_ARGS_SANITIZED .*removed: notify_on_output .*reason: empty_pattern .*argKeys: block_until_ms,command,description,request_smart_mode_approval,smart_mode_block_reason,working_directory/);
     assert.doesNotMatch(logs, /shell-secret-value/);
     assert.doesNotMatch(logs, /secret-workspace/);
     assert.doesNotMatch(logs, /Run hidden diagnostic/);
+  });
+
+  it("preserves Shell notify_on_output when pattern is non-empty", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const args = JSON.stringify({
+      command: "pwd",
+      working_directory: "/tmp",
+      notify_on_output: {
+        pattern: "READY",
+        reason: "startup",
+        debounce_ms: 5000,
+      },
+    });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell_notify\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell_notify\",\"type\":\"function_call\",\"call_id\":\"call_shell_notify\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell_notify\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell_notify", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell_notify\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run shell with watcher" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.deepEqual(JSON.parse(argText), JSON.parse(args));
+    assert.doesNotMatch(logs, /OAI_SHELL_ARGS_SANITIZED/);
   });
 
   it("halo Responses cache mode repairs tool args when done carries missing streamed args", async () => {
@@ -1497,22 +1566,22 @@ describe("openaicompat Responses wire mode — integration", () => {
   it("sub2api mode does not use the default done-argument repair", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
-    const args = JSON.stringify({ command: "pwd", working_directory: "/tmp" });
+    const args = JSON.stringify({ server: "example", toolName: "lookup", arguments: { id: 1 } });
     const stream = [
       "event: response.created",
-      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
       "",
       "event: response.output_item.added",
-      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell\",\"type\":\"function_call\",\"call_id\":\"call_shell\",\"name\":\"Shell\"}}",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_mcp\",\"type\":\"function_call\",\"call_id\":\"call_mcp\",\"name\":\"CallMcpTool\"}}",
       "",
       "event: response.function_call_arguments.delta",
-      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell\",\"delta\":\"\"}",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_mcp\",\"delta\":\"\"}",
       "",
       "event: response.function_call_arguments.done",
-      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell", arguments: args })}`,
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_mcp", arguments: args })}`,
       "",
       "event: response.completed",
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell\",\"status\":\"completed\",\"error\":null}}",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp\",\"status\":\"completed\",\"error\":null}}",
       "",
     ].join("\n");
     global.fetch = async () => new Response(stream, {
@@ -1537,6 +1606,67 @@ describe("openaicompat Responses wire mode — integration", () => {
       .map((toolCall) => toolCall.function?.arguments || "")
       .join("");
     assert.equal(argText, "");
+  });
+
+  it("sub2api mode sanitizes Shell notify_on_output with empty pattern", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const args = JSON.stringify({
+      command: "pwd",
+      working_directory: "/tmp",
+      notify_on_output: {
+        pattern: "",
+        reason: "",
+        debounce_ms: 0,
+      },
+    });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell_sub2api\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell_sub2api\",\"type\":\"function_call\",\"call_id\":\"call_shell_sub2api\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell_sub2api\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell_sub2api", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell_sub2api\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run pwd" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.deepEqual(JSON.parse(argText), {
+      command: "pwd",
+      working_directory: "/tmp",
+    });
+    assert.match(logs, /OAI_SHELL_ARGS_SANITIZED .*removed: notify_on_output .*reason: empty_pattern/);
   });
 
   it("maps Responses output to Chat Completions choices in the response", async () => {
