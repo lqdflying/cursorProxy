@@ -1,0 +1,103 @@
+---
+description: "Use when checking real production cursorProxy logs in Axiom for troubleshooting, release validation, or tool-call debugging"
+alwaysApply: false
+---
+
+# Axiom Production Log Investigation
+
+Use the `user-axiom` MCP server for real Docker production logs. The production log dataset is `cursorproxy` and its kind is `axiom:events:v1`, so use `queryDataset` with APL. Do not use metrics tools on this dataset; they should report that it is not a metrics dataset.
+
+## Required Workflow
+
+1. Read the Axiom MCP rule and the target tool schema before calling tools:
+   - `.cursor/rules/mcp-axiom.mdc`
+   - MCP descriptor: `user-axiom/tools/queryDataset.json`
+2. Use `CallMcpTool` with `server: "user-axiom"`, `toolName: "queryDataset"`, and explicit `arguments`.
+3. Keep `startTime` and `endTime` narrow. For normal incidents, start with `now-30m` to `now`.
+4. Summarize findings. Do not dump request bodies, prompts, tool arguments, or payload content unless the user explicitly needs a specific line.
+
+## Baseline Queries
+
+Recent volume:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| summarize events=count() by bin(['_time'], 5m)
+| order by ['_time'] desc
+```
+
+Source breakdown:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| summarize events=count() by ['container_name'], ['stream']
+| order by events desc
+```
+
+Concrete failure indicators:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['stream'] == "stderr"
+   or isnotempty(['error.message'])
+   or ['message'] has_cs "RES 4"
+   or ['message'] has_cs "RES 5"
+   or ['message'] has_cs "UPSTREAM_ERROR"
+   or ['message'] has_cs "status: failed"
+   or ['message'] has_cs "status: incomplete"
+| project ['_time'], ['container_name'], ['stream'], ['message'], ['error.type'], ['error.code'], ['error.message']
+| order by ['_time'] desc
+| take 50
+```
+
+## Tool-Call Debug Review
+
+For Cursor tool-call issues, count lifecycle logs and compare starts to completions:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| summarize starts=countif(['message'] has_cs "OAI_TOOL_CALL_START"),
+            dones=countif(['message'] has_cs "OAI_TOOL_CALL_DONE"),
+            shapes=countif(['message'] has_cs "OAI_TOOL_ARG_SHAPE"),
+            shellSanitized=countif(['message'] has_cs "OAI_SHELL_ARGS_SANITIZED"),
+            upstream400=countif(['message'] has_cs "UPSTREAM_STATUS 400"),
+            retry200=countif(['message'] has_cs "UPSTREAM_STATUS_PREV_RETRY 200")
+```
+
+Break down starts and completions by tool:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['message'] has_cs "OAI_TOOL_CALL_START"
+| extend tool = extract("name: ([^ ]+)", 1, ['message'])
+| summarize starts=count() by tool
+| order by starts desc
+```
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['message'] has_cs "OAI_TOOL_CALL_DONE"
+| extend tool = extract("name: ([^ ]+)", 1, ['message'])
+| summarize dones=count() by tool
+| order by dones desc
+```
+
+## Interpretation Rules
+
+- `starts == dones == shapes` is the basic healthy tool-call signal.
+- `TOOLS_FIXED ... dropped: 0` means tool schema normalization kept all tools.
+- `OAI_SHELL_ARGS_SANITIZED` with `removed: notify_on_output reason: empty_pattern` is expected cleanup, not a failure.
+- A single `UPSTREAM_STATUS 400` followed by `OAI_PREV_RESP_UNSUPPORTED_RETRY` and `UPSTREAM_STATUS_PREV_RETRY 200` is recovered previous-response fallback, not a user-visible failure.
+- Repeated `OAI_PREV_RESP_UNSUPPORTED_SKIP provider: openaicompat mode: stateless` after such a retry means the proxy suppressed the unsupported path and continued stateless.
+- `AZURE_RESPONSE_COMPLETED status: completed error: (none) incomplete: (none)` is a clean stream completion even though the title contains the word `error`.
+- Treat long successful `RES 200 ... ms:` values as performance signals, not correctness failures.
+
+## Post-Release Check
+
+After a new version is pushed or released, use this Axiom path for real production validation when the user asks for runtime evidence. Check recent volume, non-200/error indicators, stream completion status, and tool-call lifecycle counts against the `cursorproxy` dataset.
