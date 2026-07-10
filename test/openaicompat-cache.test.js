@@ -100,6 +100,7 @@ describe("openaicompat cache helpers", () => {
 
   it("gates auto prompt_cache_key injection to GPT-5/Codex models", () => {
     assert.equal(shouldAutoInjectPromptCacheKeyForCompat("gpt-5.5"), true);
+    assert.equal(shouldAutoInjectPromptCacheKeyForCompat("gpt-5.6-sol"), true);
     assert.equal(shouldAutoInjectPromptCacheKeyForCompat("codex-mini"), true);
     assert.equal(shouldAutoInjectPromptCacheKeyForCompat("gpt-4o"), false);
   });

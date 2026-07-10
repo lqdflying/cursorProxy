@@ -902,7 +902,7 @@ export default async function handler(req) {
   }
 
   // Compatible-provider alias resolution. Maps "compatible-<name>" model ids
-  // to upstream model names (e.g. compatible-gpt-5.5 → gpt-5.5).
+  // to upstream model names (e.g. compatible-gpt-5.6 -> gpt-5.6-sol).
   let compatAliasInfo = null;
   let compatAliasPublicId = "";
   if (providerKey === "openaicompat" || providerKey === "anthropiccompat") {
@@ -1602,7 +1602,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, azureopenai, azureanthropic, openaicompat, or anthropiccompat (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, cursorproxy/compatible-gpt-5.5, or cursorproxy/fireworks/kimi-k2p7-code).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, azureopenai, azureanthropic, openaicompat, or anthropiccompat (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, cursorproxy/compatible-gpt-5.6, or cursorproxy/fireworks/kimi-k2p7-code).`,
       "unknown_provider",
       "invalid_request_error"
     );

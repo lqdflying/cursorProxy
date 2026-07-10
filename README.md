@@ -94,6 +94,7 @@ Common optional settings:
 - `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4` switches GLM from the default China Coding Plan endpoint to global Z.AI.
 - `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, `UPSTREAM_FIREWORKS`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
 - `OPENAICOMPAT_WIRE_API=responses` switches the openai-compatible provider from Chat Completions (default) to the OpenAI Responses API with `previous_response_id` state chaining. Optional `OPENAICOMPAT_REASONING_EFFORT=xhigh` forces Responses reasoning effort. Requires a KV backend. See [Compatible Providers](https://github.com/lqdflying/cursorProxy/wiki/Compatible-Providers).
+- `compatible-gpt-5.6` is a Responses-mode alias for compatible upstreams that expose `gpt-5.6-sol`. Use `OPENAICOMPAT_WIRE_API=responses`; Chat mode forwards the same upstream model to `/v1/chat/completions` and will fail if the provider only supports GPT-5.6 on `/v1/responses`.
 
 Full references:
 

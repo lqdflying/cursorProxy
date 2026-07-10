@@ -6,7 +6,7 @@ Validate that the `openaicompat` provider, when `OPENAICOMPAT_WIRE_API=responses
 
 ## Provider And Model
 
-- Cursor model: `compatible-gpt-5.5` (alias → `gpt-5.5` upstream)
+- Cursor model: `compatible-gpt-5.6` (alias → `gpt-5.6-sol` upstream)
 - Provider route: unified `https://<host>/v1` (alias auto-routes to `openaicompat`) or explicit `https://<host>/openaicompat/v1`
 - Deployment: production, Docker, or EdgeOne with `OPENAICOMPAT_API_KEY` set and `OPENAICOMPAT_WIRE_API=responses`
 - Cursor mode: agent/chat mode that sends streaming chat completions
@@ -234,7 +234,7 @@ comm -23 \
 
 ## Notes
 
-- The `compatible-gpt-5.5` alias resolves to upstream model `gpt-5.5` and maps the response model back to `cursorproxy/compatible-gpt-5.5`. Verify this with the `COMPATIBLE_ALIAS_RESOLVED` log line.
+- The `compatible-gpt-5.6` alias resolves to upstream model `gpt-5.6-sol` and maps the response model back to `cursorproxy/compatible-gpt-5.6`. Verify this with the `COMPATIBLE_ALIAS_RESOLVED alias: compatible-gpt-5.6 upstream: gpt-5.6-sol` log line.
 - The upstream endpoint MUST support the OpenAI Responses API (`/v1/responses`, `store:true`) for this mode to work. If the upstream rejects HTTP `previous_response_id` with the known WebSocket-only error, the proxy retries stateless as described in Test 7; other unsupported Responses API errors are surfaced upstream and are not proxy bugs.
 - This is **state chaining** via `previous_response_id`, NOT `OPENAICOMPAT_REASONING_CACHE` (which is Chat-mode-only reasoning injection) and NOT prompt-cache hints.
 - Automated coverage lives in `test/openaicompat-wire-api.test.js` (pure helper unit tests) and `test/openaicompat-responses.test.js` (integration tests with mocked fetch + in-memory KV). This manual case verifies the full Cursor → proxy → upstream → Cursor loop end-to-end.

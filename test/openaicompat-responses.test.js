@@ -1696,14 +1696,14 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(body.choices[0].message.content, "Hello from Responses API");
   });
 
-  // ─── Alias path: compatible-gpt-5.5 ─────────────────────────────────────
+  // ─── Alias path: compatible-gpt-5.6 ─────────────────────────────────────
 
-  it("compatible-gpt-5.5 alias routes to openaicompat and maps response model back", async () => {
+  it("compatible-gpt-5.6 alias routes to openaicompat Responses and maps response model back", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    mockFetchResponses({
+    const captured = mockFetchResponses({
       id: "resp_abc",
       object: "response",
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       status: "completed",
       output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
     });
@@ -1712,15 +1712,17 @@ describe("openaicompat Responses wire mode — integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: "cursorproxy/compatible-gpt-5.5",
+        model: "cursorproxy/compatible-gpt-5.6",
         messages: [{ role: "user", content: "hi" }],
       }),
     }));
 
     assert.equal(res.status, 200);
+    assert.ok(captured.url.endsWith("/v1/responses"), `expected responses endpoint, got: ${captured.url}`);
+    assert.equal(captured.body.model, "gpt-5.6-sol");
     const body = await res.json();
-    // Response model should reflect the public alias, not the upstream gpt-5.5
-    assert.equal(body.model, "cursorproxy/compatible-gpt-5.5");
+    // Response model should reflect the public alias, not the upstream gpt-5.6-sol
+    assert.equal(body.model, "cursorproxy/compatible-gpt-5.6");
   });
 
   // ─── Alias path: cursor-openai-5.5 ────────────────────────────────────────
