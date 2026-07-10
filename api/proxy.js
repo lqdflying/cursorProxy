@@ -1,6 +1,6 @@
 export const config = { runtime: "edge" };
 
-import { kvDelete, kvGet, kvSet } from "../lib/kv.js";
+import { kvGet, kvSet } from "../lib/kv.js";
 import {
   mapAnthropicResponseToOpenAI,
   mapAnthropicSSEToOpenAI,
@@ -33,10 +33,8 @@ import {
   isOpenAICompatChatCacheRemoteMode,
   isOpenAICompatHaloCacheMode,
   isOpenAICompatSub2ApiCacheMode,
-  markOpenAICompatPreviousResponseUnsupportedScope,
   openAICompatChatCachedTokens,
   openAICompatCacheHitModeValidValues,
-  openAICompatPreviousResponseFailureKind,
   openaicompatConversationHash,
   normalizeOpenAICompatChatCacheUsage,
   openAICompatReasoningEffortEnv,
@@ -97,7 +95,7 @@ import {
   isUnsafeUpstreamPath,
   upstreamApiKey,
 } from "../lib/providers.js";
-import { cloneJson, prepareResponsesChain } from "../lib/responses-chain.js";
+import { prepareResponsesChain, retryPreviousResponseFailure } from "../lib/responses-chain.js";
 
 // Re-export for direct unit testing (test/proxy-strict-probe.test.js).
 export { strictToolStats };
@@ -1138,67 +1136,30 @@ export default async function handler(req) {
     }
   }
 
-  // Some OpenAI-compatible Responses gateways reject or lose
-  // previous_response_id state. Retry once in stateless mode with the full
-  // input array so Cursor gets an answer. Unsupported upstreams are suppressed
-  // for a TTL; stale IDs are deleted so the retry can refresh the oairesp key.
-  if (
-    openaiCompatResponses
-    && parsedBody?.previous_response_id
-    && openAICompatStatelessRetryInput
-    && (upstreamRes.status === 400 || upstreamRes.status === 404)
-  ) {
-    const errText = await upstreamRes.clone().text().catch(() => "");
-    const previousResponseFailureKind = openAICompatPreviousResponseFailureKind(upstreamRes.status, errText);
-    if (
-      previousResponseFailureKind &&
-      (previousResponseFailureKind !== "tool_output_missing" || !openAICompatSub2ApiCache)
-    ) {
-      if (previousResponseFailureKind === "unsupported") {
-        markOpenAICompatPreviousResponseUnsupportedScope(respIdChainScope);
-        azureReplyKey = null;
-      } else if (previousResponseFailureKind === "not_found" && respIdPreviousKvKey) {
-        await kvDelete(respIdPreviousKvKey);
-      }
-      const retryBody = cloneJson(parsedBody);
-      retryBody.input = cloneJson(openAICompatStatelessRetryInput);
-      delete retryBody.previous_response_id;
-      const retryNormalized = normalizeOpenAICompatResponsesInputContent(providerKey, retryBody).parsedBody;
-      const retryBodyText = JSON.stringify(retryNormalized);
-      const retryTag = previousResponseFailureKind === "unsupported"
-        ? "OAI_PREV_RESP_UNSUPPORTED_RETRY"
-        : previousResponseFailureKind === "tool_output_missing"
-          ? "OAI_TOOL_OUTPUT_RETRY"
-          : "OAI_PREV_RESP_NOT_FOUND_RETRY";
-      diag(retryTag,
-        "status:", upstreamRes.status,
-        "inputItems:", retryNormalized.input?.length || 0);
-      try {
-        upstreamRes = await fetchUpstream(retryBodyText);
-        parsedBody = retryNormalized;
-        bodyText = retryBodyText;
-        contentType = upstreamRes.headers.get("content-type") || "";
-        isStream = contentType.includes("text/event-stream");
-        log("UPSTREAM_STATUS_PREV_RETRY", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
-      } catch (err) {
-        const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
-        log("UPSTREAM_PREV_RETRY_ERROR", err?.name, err?.message);
-        return new Response(
-          JSON.stringify({
-            error: {
-              message: isTimeout
-                ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting) during previous_response_id stateless retry`
-                : `Upstream previous_response_id stateless retry failed: ${err?.message}`,
-              type: "upstream_error",
-              code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
-            },
-          }),
-          {
-            status: 504,
-            headers: { "content-type": "application/json" },
-          }
-        );
-      }
+  // Stateless retry for gateways that reject or lose previous_response_id
+  // state (see lib/responses-chain.js). Assemble downstream stream state from
+  // the retried response when it ran.
+  {
+    const retry = await retryPreviousResponseFailure({
+      upstreamRes,
+      parsedBody,
+      providerKey,
+      openaiCompatResponses,
+      openAICompatSub2ApiCache,
+      statelessRetryInput: openAICompatStatelessRetryInput,
+      chainScope: respIdChainScope,
+      previousKvKey: respIdPreviousKvKey,
+      fetchUpstream,
+      connectTimeoutMs,
+    });
+    if (retry.errorResponse) return retry.errorResponse;
+    if (retry.handled) {
+      upstreamRes = retry.upstreamRes;
+      parsedBody = retry.parsedBody;
+      bodyText = retry.bodyText;
+      contentType = retry.contentType;
+      isStream = retry.isStream;
+      if (retry.clearReplyKey) azureReplyKey = null;
     }
   }
 
