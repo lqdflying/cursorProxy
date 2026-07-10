@@ -1499,7 +1499,7 @@ describe("openaicompat Responses wire mode — integration", () => {
         index: 0,
         function: { arguments: shellArgs },
       },
-      expectedToolIndexSequence: [0, 0, 1, 1, 1],
+      expectedToolIndexSequence: [0, 0, 1, 1],
       expectSingleShellIdentity: true,
     });
     await replayScenario({
@@ -1593,6 +1593,250 @@ describe("openaicompat Responses wire mode — integration", () => {
       && Boolean(chunk.choices[0].delta.tool_calls[0].function?.arguments));
     assert.ok(taskDoneIndex >= 0 && taskDoneIndex < finishIndex,
       "deferred Task arguments must be released before finish_reason=tool_calls");
+  });
+
+  it("sanitizes invalid optional GPT-5.6 Task arguments for local execution", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const taskArgs = JSON.stringify({
+      description: "Verify standalone subagent launch",
+      prompt: "Inspect the workspace without editing.",
+      model: "",
+      resume: "",
+      readonly: true,
+      subagent_type: "explore",
+      file_attachments: [],
+      environment: "local",
+      cloud_base_branch: "",
+      interrupt: false,
+      run_in_background: false,
+    });
+    const midpoint = Math.floor(taskArgs.length / 2);
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_task_local\",\"status\":\"in_progress\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_task_local\",\"type\":\"function_call\",\"call_id\":\"call_task_local\",\"name\":\"Task\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 2,
+        item_id: "fc_task_local",
+        delta: taskArgs.slice(0, midpoint),
+      })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 2,
+        item_id: "fc_task_local",
+        delta: taskArgs.slice(midpoint),
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 2,
+        item_id: "fc_task_local",
+        arguments: taskArgs,
+      })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_task_local\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: response, logs } = await captureConsoleLogs(async () => {
+      const handlerResponse = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "cursorproxy/compatible-gpt-5.6",
+          messages: [{ role: "user", content: "Start a local Task" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await handlerResponse.text();
+      return handlerResponse;
+    });
+
+    assert.equal(response.status, 200);
+    assert.doesNotMatch(bodyText, /cloud_base_branch/);
+    assert.match(
+      logs,
+      /OAI_TASK_ARGS_SANITIZED .*name: Task .*removed: cloud_base_branch,model,resume/,
+    );
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const taskToolCalls = chunks.flatMap((chunk) =>
+      chunk.choices?.[0]?.delta?.tool_calls || []);
+    assert.deepEqual(taskToolCalls.map((toolCall) => toolCall.index), [0, 0]);
+    assert.deepEqual(taskToolCalls[0], {
+      index: 0,
+      id: "call_task_local",
+      type: "function",
+      function: { name: "Task", arguments: "" },
+    });
+    assert.deepEqual(taskToolCalls[1], {
+      index: 0,
+      function: {
+        arguments: JSON.stringify({
+          description: "Verify standalone subagent launch",
+          prompt: "Inspect the workspace without editing.",
+          readonly: true,
+          subagent_type: "explore",
+          file_attachments: [],
+          environment: "local",
+          interrupt: false,
+          run_in_background: false,
+        }),
+      },
+    });
+  });
+
+  it("preserves valid GPT-5.6 cloud Task arguments", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const taskArgs = JSON.stringify({
+      description: "Inspect cloud branch",
+      prompt: "Inspect without editing.",
+      model: "composer-2.5-fast",
+      resume: "agent_previous",
+      readonly: true,
+      subagent_type: "explore",
+      file_attachments: [],
+      environment: "cloud",
+      cloud_base_branch: "main",
+      interrupt: false,
+      run_in_background: true,
+    });
+    const stream = [
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_task_cloud\",\"type\":\"function_call\",\"call_id\":\"call_task_cloud\",\"name\":\"Task\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 2,
+        item_id: "fc_task_cloud",
+        delta: taskArgs,
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 2,
+        item_id: "fc_task_cloud",
+        arguments: taskArgs,
+      })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_task_cloud\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const response = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "cursorproxy/compatible-gpt-5.6",
+        messages: [{ role: "user", content: "Start a cloud Task" }],
+        stream: true,
+      }),
+    }));
+    const bodyText = await response.text();
+    const taskArgumentText = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)))
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(taskArgumentText), JSON.parse(taskArgs));
+  });
+
+  it("preserves GPT-5.5 Task arguments unchanged", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const taskArgs = JSON.stringify({
+      description: "Verify standalone subagent launch",
+      prompt: "Inspect the workspace without editing.",
+      model: "",
+      resume: "",
+      readonly: true,
+      subagent_type: "explore",
+      file_attachments: [],
+      environment: "local",
+      cloud_base_branch: "",
+      interrupt: false,
+      run_in_background: false,
+    });
+    const stream = [
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_task_gpt55\",\"type\":\"function_call\",\"call_id\":\"call_task_gpt55\",\"name\":\"Task\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 2,
+        item_id: "fc_task_gpt55",
+        delta: taskArgs,
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 2,
+        item_id: "fc_task_gpt55",
+        arguments: taskArgs,
+      })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_task_gpt55\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: response, logs } = await captureConsoleLogs(async () => {
+      const handlerResponse = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "Start a local Task" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await handlerResponse.text();
+      return handlerResponse;
+    });
+    const taskArgumentText = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)))
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+
+    assert.equal(response.status, 200);
+    assert.equal(taskArgumentText, taskArgs);
+    assert.doesNotMatch(logs, /OAI_TASK_ARGS_SANITIZED/);
   });
 
   it("sanitizes Cursor Subagent cloud-only arguments before forwarding the tool call", async () => {
