@@ -13,7 +13,7 @@ alwaysApply: false
 | Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `lib/providers.js` |
 | `azureopenai` body sanitizer / tool format / mappers | `lib/azure-openai.js` |
 | `azureanthropic` body sanitizer / input remap / content-type fix / mappers | `lib/azure-anthropic.js` |
-| Streaming SSE pump that calls the mappers above | inline IIFE in `api/proxy.js` |
+| Streaming SSE pump that calls the mappers above | `lib/stream-pump.js` (`startStreamPump`, called from `api/proxy.js`) |
 | Reasoning bridge gating (`reasoningProviders`) | `injectStoredReasoning()` in `lib/reasoning.js` |
 | Model prefix stripping (`modelIdParts`, `withPublicResponseModel`, `providerFromModel`) | `lib/models.js` |
 

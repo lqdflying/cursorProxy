@@ -133,7 +133,7 @@ Docker then gets the same `[cursorProxy:proxy] REQ ... / RES ...` lines from `di
 - **Secrets:** all credentials via env vars. Never hardcode, never commit, never put in `vercel.json`
 
 ## Streaming
-- Preserve both streaming (`text/event-stream`) and non-streaming JSON paths in `api/proxy.js`
+- Preserve both streaming (`text/event-stream`, `lib/stream-pump.js`) and non-streaming JSON paths (`api/proxy.js`)
 - Vercel-only code (e.g. AbortController timeout) is gated on `process.env.VERCEL` — never apply unconditionally
 
 ## Docker Compose (`docker-compose.yml`)
