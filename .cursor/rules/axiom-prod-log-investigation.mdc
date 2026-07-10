@@ -95,7 +95,7 @@ Break down starts and completions by tool:
 - `OAI_SHELL_ARGS_SANITIZED` with `removed: notify_on_output reason: empty_pattern` is expected cleanup, not a failure.
 - A single `UPSTREAM_STATUS 400` followed by `OAI_PREV_RESP_UNSUPPORTED_RETRY` and `UPSTREAM_STATUS_PREV_RETRY 200` is recovered previous-response fallback, not a user-visible failure.
 - Repeated `OAI_PREV_RESP_UNSUPPORTED_SKIP provider: openaicompat mode: stateless` after such a retry means the proxy suppressed the unsupported path and continued stateless.
-- `AZURE_RESPONSE_COMPLETED status: completed error: (none) incomplete: (none)` is a clean stream completion even though the title contains the word `error`.
+- `AZURE_RESPONSE_COMPLETED status: completed` is a clean stream completion. Optional `error:` and `incomplete:` fields appear only when the upstream response contains them.
 - Treat long successful `RES 200 ... ms:` values as performance signals, not correctness failures.
 
 ## Post-Release Check

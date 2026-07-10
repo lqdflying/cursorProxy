@@ -101,7 +101,7 @@ PREV_RESP_ID_FOUND key: conv:...
 INPUT_CHAIN provider: azureopenai inputItems: 1 trimmed: yes prevResp: resp_...
 AZURE_INPUT_SHAPE ... itemTypes: custom_tool_call_output:1
 UPSTREAM_STATUS 200 provider: azureopenai stream: true
-AZURE_RESPONSE_COMPLETED status: completed error: (none)
+AZURE_RESPONSE_COMPLETED status: completed
 RES 200 provider: azureopenai
 ```
 
@@ -141,7 +141,7 @@ Expected Vercel logs:
 PREV_RESP_ID_FOUND key: conv:...
 INPUT_CHAIN provider: azureopenai inputItems: 1 trimmed: yes prevResp: resp_...
 UPSTREAM_STATUS 200 provider: azureopenai stream: true
-AZURE_RESPONSE_COMPLETED status: completed error: (none)
+AZURE_RESPONSE_COMPLETED status: completed
 RES 200 provider: azureopenai
 ```
 
