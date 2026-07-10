@@ -1,6 +1,6 @@
 ---
 description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers azureopenai (gpt-5.5) and azureanthropic (claude-sonnet-4-6).
-globs: api/proxy.js,lib/models.js,lib/reasoning.js,lib/azure-openai.js,lib/azure-anthropic.js
+globs: api/proxy.js,lib/models.js,lib/reasoning.js,lib/azure-openai.js,lib/azure-anthropic.js,lib/providers.js,lib/responses-chain.js,lib/stream-pump.js
 alwaysApply: false
 ---
 
@@ -10,10 +10,10 @@ alwaysApply: false
 
 | Concern | Module |
 |---|---|
-| Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `api/proxy.js` |
+| Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `lib/providers.js` |
 | `azureopenai` body sanitizer / tool format / mappers | `lib/azure-openai.js` |
 | `azureanthropic` body sanitizer / input remap / content-type fix / mappers | `lib/azure-anthropic.js` |
-| Streaming SSE pump that calls the mappers above | inline IIFE in `api/proxy.js` |
+| Streaming SSE pump that calls the mappers above | `lib/stream-pump.js` (`startStreamPump`, called from `api/proxy.js`) |
 | Reasoning bridge gating (`reasoningProviders`) | `injectStoredReasoning()` in `lib/reasoning.js` |
 | Model prefix stripping (`modelIdParts`, `withPublicResponseModel`, `providerFromModel`) | `lib/models.js` |
 
@@ -79,7 +79,7 @@ Discovery (`GET /v1/models`) is independent — list `gpt-general` (or `cursorpr
 - **Model field**: `cursorproxy/` (or legacy `azure/`) prefix is stripped by `modelIdParts()` / `normalizeParsedBodyModel()` (in `lib/models.js`) before the request body reaches Azure; bare deployment name stays in request body.
 - **Token limit**: `max_tokens` / `max_completion_tokens` → `max_output_tokens`.
 - **Reasoning effort**: flat `reasoning_effort` → nested `reasoning.effort`; env `AZURE_OPENAI_REASONING_EFFORT` overrides any client-sent effort.
-- **State**: `store=false` is injected by the sanitizer when omitted. `api/proxy.js` sets `store=true` for conversation-shaped Azure OpenAI requests (`messages` or array `input`) so `previous_response_id` chaining can work. **Exception**: a client that explicitly sends `store:false` is honoured as a privacy/compliance opt-out — the proxy skips the prior-turn KV lookup and the response-id write, and a conflicting `background:true` is rejected with HTTP 400 (`store_background_conflict`) instead of being silently flipped to `store:true`.
+- **State**: `store=false` is injected by the sanitizer when omitted. `lib/responses-chain.js` (`prepareResponsesChain`, called from `api/proxy.js`) sets `store=true` for conversation-shaped Azure OpenAI requests (`messages` or array `input`) so `previous_response_id` chaining can work. **Exception**: a client that explicitly sends `store:false` is honoured as a privacy/compliance opt-out — the proxy skips the prior-turn KV lookup and the response-id write, and a conflicting `background:true` is rejected with HTTP 400 (`store_background_conflict`) instead of being silently flipped to `store:true`.
 
 ### azureanthropic ONLY
 - **Model field**: Kept in body (Anthropic requires it)
@@ -102,9 +102,9 @@ truncation, metadata, prompt_cache_key,
 prompt_cache_retention, safety_identifier,
 service_tier, text
 ```
-- `previous_response_id` MUST be in the whitelist — without it the sanitizer drops the chaining ID set by `proxy.js` and every turn becomes stateless (silent token regression).
+- `previous_response_id` MUST be in the whitelist — without it the sanitizer drops the chaining ID set by `lib/responses-chain.js` and every turn becomes stateless (silent token regression).
 - `max_tokens` / `max_completion_tokens` → remapped to `max_output_tokens`
-- `background:true` requires `store:true`; do not let the sanitizer inject `store:false` for background jobs. A client request that combines `store:false` with `background:true` is incompatible and is rejected as a 400 in `proxy.js` before reaching the sanitizer.
+- `background:true` requires `store:true`; do not let the sanitizer inject `store:false` for background jobs. A client request that combines `store:false` with `background:true` is incompatible and is rejected as a 400 in `lib/responses-chain.js` before reaching the sanitizer.
 - `temperature` and other sampling params are stripped for reasoning models only; standard models preserve supported user-set params
 - `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias` → stripped for reasoning models
 - Env override: `AZURE_OPENAI_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) — forces `reasoning.effort` for reasoning models even when the client sends a value; model support varies (`none` and `xhigh` are not universal)
@@ -149,7 +149,7 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 Azure Responses API supports server-side conversation state via `previous_response_id`. Instead of sending the full conversation history on every turn, the proxy sends only new messages plus `previous_response_id`, and Azure replays prior state server-side. This cuts reasoning token costs significantly.
 
 > [!NOTE]
-> The same chaining machinery is shared by the **OpenAI-compatible Responses mode** (`OPENAICOMPAT_WIRE_API=responses`). The gating condition in `api/proxy.js` is `providerKey === "azureopenai" || openaiCompatResponses`. The KV namespace prefix and cache version are parameterized: Azure uses `azresp:` / `AZURE_OPENAI_RESPONSE_CACHE_VERSION` (`v7`); openaicompat uses `oairesp:` / `OPENAICOMPAT_RESPONSE_CACHE_VERSION` (`v1`). The variable names inside the block (`azureReplyKey`, `azureResponseId`, `azureScope`, etc.) are provider-generic despite the legacy "azure" prefix — do not assume they are Azure-only. The openaicompat WebSocket-only fallback is scope-local and process-local; it must not change the Azure path or any other openaicompat scope that supports HTTP `previous_response_id`.
+> The same chaining machinery is shared by the **OpenAI-compatible Responses mode** (`OPENAICOMPAT_WIRE_API=responses`). The gating condition in `api/proxy.js` is `providerKey === "azureopenai" || openaiCompatResponses`; the block body lives in `lib/responses-chain.js` (`prepareResponsesChain`). The KV namespace prefix and cache version are parameterized: Azure uses `azresp:` / `AZURE_OPENAI_RESPONSE_CACHE_VERSION` (`v7`); openaicompat uses `oairesp:` / `OPENAICOMPAT_RESPONSE_CACHE_VERSION` (`v1`). The variable names inside the block (`azureReplyKey`, `azureResponseId`, `azureScope`, etc.) are provider-generic despite the legacy "azure" prefix — do not assume they are Azure-only. The openaicompat WebSocket-only fallback is scope-local and process-local; it must not change the Azure path or any other openaicompat scope that supports HTTP `previous_response_id`.
 
 ### Lifecycle
 
@@ -168,7 +168,7 @@ Turn 1 (first message):                    Turn 2 (second message):
 
 ### Key design decisions
 
-- **`store=true` by default, with a single explicit opt-out**: Even on first turns and KV-miss fallbacks, `store=true` is set so the next turn's `previous_response_id` lookup can resolve. The sanitizer's default `store=false` is overridden in `api/proxy.js` before the sanitizer runs. The only exception is a client request with `store:false`: that path skips the prior-turn KV lookup, skips the response-id KV write, and forwards `store:false` upstream untouched. A simultaneous `background:true` is rejected as a 400 (`store_background_conflict`) since Azure background responses cannot run without server-side stored state.
+- **`store=true` by default, with a single explicit opt-out**: Even on first turns and KV-miss fallbacks, `store=true` is set so the next turn's `previous_response_id` lookup can resolve. The sanitizer's default `store=false` is overridden in `lib/responses-chain.js` before the sanitizer runs. The only exception is a client request with `store:false`: that path skips the prior-turn KV lookup, skips the response-id KV write, and forwards `store:false` upstream untouched. A simultaneous `background:true` is rejected as a 400 (`store_background_conflict`) since Azure background responses cannot run without server-side stored state.
 - **Hash is computed from FULL input before trimming**: `conversationHash(hashItems, hashItems.length, scope)` hashes ALL items up to and including the last assistant turn. The next request hashes `slice(0, lastAssistantIdx)` to derive the same key. This is why `upTo=lastAssistantIdx` matches `upTo=messages.length` from the prior turn.
 - **Two input formats supported**: Both legacy `messages` (Chat Completions) and native `input` (Responses API) are handled. The native path skips the `normalizeAzureInput` tool-call conversion since items are already in Responses format.
 - **Trim boundary**: After KV hit, only items after `lastAssistantIdx` are forwarded. The assistant's own response items plus all subsequent user/tool items are preserved.
@@ -254,12 +254,12 @@ Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thin
 |---|---|
 | Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `lib/cache.js` |
 | Write — non-streaming | `api/proxy.js` non-streaming branch: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` BEFORE `mapAnthropicResponseToOpenAI` runs (the mapper discards thinking blocks). |
-| Write — streaming | `api/proxy.js` streaming IIFE: `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
+| Write — streaming | `lib/stream-pump.js` (`startStreamPump`): `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
 | Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `lib/reasoning.js`) AFTER the reasoning bridge runs, gated on `parsedBody.thinking?.type` being a non-disabled value. |
-| SSE suppression | `api/proxy.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
+| SSE suppression | `lib/stream-pump.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
 | Key prefix | `asst:` — distinct from `conv:` (reasoning bridge) and `azresp:conv:` (Azure response ID chaining) |
 
-Do not pin specific line numbers in this table — the streaming IIFE in `proxy.js` is large and frequently refactored; describe the call site by feature/condition instead.
+Do not pin specific line numbers in this table — the streaming pump (`lib/stream-pump.js`) is large and frequently refactored; describe the call site by feature/condition instead.
 
 ### Why a separate hash function
 
@@ -342,7 +342,7 @@ Turn 1 (no cache):                         Turn 2 (cache hit):
 
 ## Anthropic SSE → OpenAI SSE Stream Transformation
 
-Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `lib/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming IIFE in `api/proxy.js` to thread tool_use blocks across events.
+Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `lib/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming pump in `lib/stream-pump.js` to thread tool_use blocks across events.
 
 ### Event Format Overview
 

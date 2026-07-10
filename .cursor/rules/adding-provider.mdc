@@ -8,7 +8,7 @@ alwaysApply: false
 
 Provider routing is replicated in multiple places. Adding a provider requires updating ALL of these:
 
-1. **`api/proxy.js` — `PROVIDERS` map**
+1. **`lib/providers.js` — `PROVIDERS` map**
    ```js
    newprovider: {
      url: process.env.UPSTREAM_NEWPROVIDER || "https://api.newprovider.com",
@@ -48,7 +48,7 @@ Reasoning helpers live in **`lib/reasoning.js`**, not `api/proxy.js`.
 
 ## Vision support
 
-- Extend `requiresVisionBridge(providerKey, bareModel)` in `api/proxy.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo), gate on model id inside the helper.
+- Extend `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo), gate on model id inside the helper.
 - Also update `lib/edgeone.js` URL regex and unknown-provider error string in `api/proxy.js`.
 - The vision bridge orchestration lives in `lib/vision-bridge.js` (`convertImagesToText`); the upstream HTTP call lives in `lib/vision.js` (`describeImage`). Neither needs editing for a new provider.
 
@@ -58,7 +58,7 @@ If the new provider is an Azure Foundry deployment:
 
 - Body sanitizers live in `lib/azure-openai.js` (`sanitizeAzureOpenAIBody`, `normalizeAzureOpenAITools`) and `lib/azure-anthropic.js` (`sanitizeAzureAnthropicBody`, `remapAnthropicInput`, `normalizeAnthropicContentTypes`)
 - Response/SSE mappers live in the same files (`mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `mapAnthropicResponseToOpenAI`, `mapAnthropicSSEToOpenAI`)
-- Add provider-specific URL construction via `buildUrl()` inside the `PROVIDERS` map in `api/proxy.js`
+- Add provider-specific URL construction via `buildUrl()` inside the `PROVIDERS` map in `lib/providers.js`
 - Reasoning model detection logic lives in `isAzureReasoningModel()` in `lib/azure-openai.js`
 
 ## Compatible providers (openaicompat, anthropiccompat)
@@ -69,7 +69,7 @@ These are generic passthrough providers for any OpenAI- or Anthropic-compatible 
 - **Model aliases**: defined in `COMPATIBLE_MODEL_ALIASES` in `lib/models.js`. To add new aliases, add entries to the map and they'll automatically route and resolve.
 - **Anthropic response mapping**: `anthropiccompat` reuses `mapAnthropicResponseToOpenAI` / `mapAnthropicSSEToOpenAI` from `lib/azure-anthropic.js`. The `ANTHROPIC_PROVIDERS` set in that file gates `remapAnthropicInput` and `normalizeAnthropicContentTypes`.
 - **Body sanitization**: `anthropiccompat` runs through `sanitizeAzureAnthropicBody` (gated by `ANTHROPIC_PROVIDERS`) to strip OpenAI-only fields (`stream_options`, etc.) and remap `instructions`→`system`, `reasoning_effort`→`output_config.effort`, `max_completion_tokens`→`max_tokens`. `openaicompat` normalizes Anthropic-flat tools (`{name, input_schema}` → `{type:"function", function:{...}}`) and is otherwise passthrough. The Azure-specific env defaults (`AZURE_ANTHROPIC_THINKING` / `AZURE_ANTHROPIC_EFFORT`) are gated to `azureanthropic` only.
-- **Opt-in caching**: `OPENAICOMPAT_REASONING_CACHE=true` adds `openaicompat` to `reasoningProviders` in `lib/reasoning.js` (hit-only on miss — never fabricates placeholder reasoning, since `openaicompat` points at arbitrary endpoints whose models may reject `reasoning_content`). `ANTHROPICCOMPAT_THINKING_CACHE=true` enables Claude thinking cache for `anthropiccompat` in `api/proxy.js`.
+- **Opt-in caching**: `OPENAICOMPAT_REASONING_CACHE=true` adds `openaicompat` to `reasoningProviders` in `lib/reasoning.js` (hit-only on miss — never fabricates placeholder reasoning, since `openaicompat` points at arbitrary endpoints whose models may reject `reasoning_content`). `ANTHROPICCOMPAT_THINKING_CACHE=true` enables Claude thinking cache for `anthropiccompat` (stream-side write in `lib/stream-pump.js`, non-stream write in `api/proxy.js`).
 - **Chat cache modes** (`openaicompat` only): `OPENAICOMPAT_CHAT_CACHE_MODE=facade` stays on `/v1/chat/completions`, forces stream usage chunks when needed, and normalizes provider cache-hit counters into `usage.prompt_tokens_details.cached_tokens` without KV or prompt key injection. `OPENAICOMPAT_CHAT_CACHE_MODE=remote` also stays on `/v1/chat/completions`, preserves/injects `prompt_cache_key` so a SubAPI-like upstream can own state/cache mapping, and must not use `previous_response_id`, message trimming, or `oairesp:` KV. Both are ignored when `OPENAICOMPAT_WIRE_API=responses`.
 - **Responses wire mode** (`openaicompat` only): `OPENAICOMPAT_WIRE_API=responses` (default `chat`) switches the upstream call from `/v1/chat/completions` to `/v1/responses`, reuses the generic Responses API mappers/sanitizer from `lib/azure-openai.js` (`mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `sanitizeAzureOpenAIBody` — gated via `isOpenAICompatResponses()` so Azure-specific env overrides don't leak), and enables codex-style `previous_response_id` chaining under a **distinct** KV namespace (`oairesp:conv:<sha>`, scope `openaicompat:v1:upstreamBase:model:user`). `OPENAICOMPAT_REASONING_EFFORT` forces nested `reasoning.effort` in Responses mode and flat `reasoning_effort` in Chat mode; it must not affect Azure or other providers. The generic env accepts `max`, which GPT-5.6 supports in Responses mode for its hardest quality-first workloads, but `max` must remain opt-in and model-dependent rather than becoming a global default because compatible upstreams may reject unsupported effort values. Reasoning injection (`OPENAICOMPAT_REASONING_CACHE`) is Chat-mode-only and stays excluded in Responses mode. See `.cursor/rules/azure-foundry.mdc` for the shared chaining block.
 - **GPT-5.6 alias limitation**: `compatible-gpt-5.6` maps to upstream `gpt-5.6-sol` and is intended for `OPENAICOMPAT_WIRE_API=responses`. Do not document or test it as Chat Completions support unless the selected upstream provider explicitly confirms `gpt-5.6-sol` works on `/v1/chat/completions`; otherwise Chat mode forwards the same model to `/v1/chat/completions` and the upstream rejects it.
