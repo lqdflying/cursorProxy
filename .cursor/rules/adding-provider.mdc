@@ -8,7 +8,7 @@ alwaysApply: false
 
 Provider routing is replicated in multiple places. Adding a provider requires updating ALL of these:
 
-1. **`api/proxy.js` — `PROVIDERS` map**
+1. **`lib/providers.js` — `PROVIDERS` map**
    ```js
    newprovider: {
      url: process.env.UPSTREAM_NEWPROVIDER || "https://api.newprovider.com",
@@ -58,7 +58,7 @@ If the new provider is an Azure Foundry deployment:
 
 - Body sanitizers live in `lib/azure-openai.js` (`sanitizeAzureOpenAIBody`, `normalizeAzureOpenAITools`) and `lib/azure-anthropic.js` (`sanitizeAzureAnthropicBody`, `remapAnthropicInput`, `normalizeAnthropicContentTypes`)
 - Response/SSE mappers live in the same files (`mapResponsesToOpenAI`, `mapResponsesSSEToOpenAI`, `mapAnthropicResponseToOpenAI`, `mapAnthropicSSEToOpenAI`)
-- Add provider-specific URL construction via `buildUrl()` inside the `PROVIDERS` map in `api/proxy.js`
+- Add provider-specific URL construction via `buildUrl()` inside the `PROVIDERS` map in `lib/providers.js`
 - Reasoning model detection logic lives in `isAzureReasoningModel()` in `lib/azure-openai.js`
 
 ## Compatible providers (openaicompat, anthropiccompat)

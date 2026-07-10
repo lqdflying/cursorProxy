@@ -10,7 +10,7 @@ alwaysApply: false
 
 | Concern | Module |
 |---|---|
-| Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `api/proxy.js` |
+| Provider URL/auth/path remap (`buildUrl`) + `PROVIDERS` map | `lib/providers.js` |
 | `azureopenai` body sanitizer / tool format / mappers | `lib/azure-openai.js` |
 | `azureanthropic` body sanitizer / input remap / content-type fix / mappers | `lib/azure-anthropic.js` |
 | Streaming SSE pump that calls the mappers above | inline IIFE in `api/proxy.js` |
