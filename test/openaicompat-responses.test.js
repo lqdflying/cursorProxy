@@ -514,10 +514,10 @@ describe("openaicompat Responses wire mode — integration", () => {
 
   it("responses mode injects OPENAICOMPAT_REASONING_EFFORT as nested reasoning effort", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
     process.env.AZURE_OPENAI_REASONING_EFFORT = "minimal";
     const captured = mockFetchResponses({
-      id: "resp_abc", object: "response", model: "gpt-5.5", status: "completed",
+      id: "resp_abc", object: "response", model: "gpt-5.6-sol", status: "completed",
       output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
     });
 
@@ -526,15 +526,15 @@ describe("openaicompat Responses wire mode — integration", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "gpt-5.5",
+          model: "gpt-5.6-sol",
           messages: [{ role: "user", content: "hello" }],
         }),
       }));
     });
 
-    assert.deepEqual(captured.body.reasoning, { effort: "xhigh" });
+    assert.deepEqual(captured.body.reasoning, { effort: "max" });
     assert.equal(captured.body.reasoning_effort, undefined);
-    assert.match(logs, /REASONING_EFFORT effort: xhigh provider: openaicompat source: openaicompat_env/);
+    assert.match(logs, /REASONING_EFFORT effort: max provider: openaicompat source: openaicompat_env/);
   });
 
   it("responses mode OPENAICOMPAT_REASONING_EFFORT wins over flat and nested client effort", async () => {
@@ -624,6 +624,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.deepEqual(calls[1].reasoning, { effort: "low" });
     assert.equal((logs.match(/OPENAICOMPAT_REASONING_EFFORT_INVALID/g) || []).length, 1);
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
+    assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*valid: none\|minimal\|low\|medium\|high\|xhigh\|max/);
   });
 
   it("chat mode injects OPENAICOMPAT_REASONING_EFFORT as flat reasoning_effort", async () => {
@@ -712,6 +713,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(calls[1].reasoning_effort, "low");
     assert.equal((logs.match(/OPENAICOMPAT_REASONING_EFFORT_INVALID/g) || []).length, 1);
     assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*raw: turbo .*fallback: client/);
+    assert.match(logs, /OPENAICOMPAT_REASONING_EFFORT_INVALID .*valid: none\|minimal\|low\|medium\|high\|xhigh\|max/);
   });
 
   it("chat mode drops apply_patch in all known shapes", async () => {
@@ -830,6 +832,39 @@ describe("openaicompat Responses wire mode — integration", () => {
 
     assert.equal(capturedBody.reasoning, undefined,
       "OPENAICOMPAT_REASONING_EFFORT must not leak into Azure OpenAI");
+  });
+
+  it("Azure OpenAI does not accept max from AZURE_OPENAI_REASONING_EFFORT", async () => {
+    process.env.AZURE_OPENAI_REASONING_EFFORT = "max";
+    process.env.AZURE_FOUNDRY_API_KEY = "azure-test-key";
+    process.env.AZURE_OPENAI_ENDPOINT = "https://azure.example.com";
+    let capturedBody = null;
+    global.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "resp_azure_max",
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await handler(new Request("http://localhost/api/proxy?provider=azureopenai&path=chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        reasoning_effort: "high",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }));
+
+    assert.deepEqual(capturedBody.reasoning, { effort: "high" },
+      "invalid Azure max env must preserve the client effort");
   });
 
   it("responses mode converts array text parts to input_text without changing string content", async () => {

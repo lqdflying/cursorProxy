@@ -7,12 +7,14 @@ import {
   deriveOpenAICompatSessionAnchor,
   deriveOpenAIContentSessionSeed,
   hasInvalidOpenAICompatCacheHitModeEnv,
+  hasInvalidOpenAICompatReasoningEffortEnv,
   isOpenAICompatChatCacheRemoteMode,
   normalizeOpenAICompatChatCacheUsage,
   normalizeCompatSeedJSON,
   openAICompatChatCacheMode,
   openAICompatCacheHitMode,
   openAICompatChatCachedTokens,
+  openAICompatReasoningEffortEnv,
   shouldAutoInjectPromptCacheKeyForCompat,
 } from "../lib/openaicompat-cache.js";
 
@@ -54,6 +56,16 @@ describe("openaicompat cache helpers", () => {
     assert.equal(isOpenAICompatChatCacheRemoteMode(), true);
     process.env.OPENAICOMPAT_CHAT_CACHE_MODE = "bogus";
     assert.equal(openAICompatChatCacheMode(), "passthrough");
+  });
+
+  it("accepts max reasoning effort and reports invalid values", () => {
+    process.env.OPENAICOMPAT_REASONING_EFFORT = " max ";
+    assert.equal(openAICompatReasoningEffortEnv(), "max");
+    assert.equal(hasInvalidOpenAICompatReasoningEffortEnv(), false);
+
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "bogus";
+    assert.equal(openAICompatReasoningEffortEnv(), "");
+    assert.equal(hasInvalidOpenAICompatReasoningEffortEnv(), true);
   });
 
   it("extracts raw Chat cache hit counters from provider-specific usage fields", () => {
@@ -126,14 +138,14 @@ describe("openaicompat cache helpers", () => {
 
   it("uses effective env reasoning effort when deriving prompt cache keys", async () => {
     const req = {
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
       reasoning_effort: "low",
       messages: [{ role: "user", content: "hi" }],
     };
-    const low = await deriveCompatPromptCacheKey(req, "gpt-5.5");
-    process.env.OPENAICOMPAT_REASONING_EFFORT = "high";
-    const high = await deriveCompatPromptCacheKey(req, "gpt-5.5");
-    assert.notEqual(low, high);
+    const low = await deriveCompatPromptCacheKey(req, "gpt-5.6-sol");
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
+    const max = await deriveCompatPromptCacheKey(req, "gpt-5.6-sol");
+    assert.notEqual(low, max);
   });
 
   it("derives session anchors by explicit header, prompt key, then content seed", async () => {

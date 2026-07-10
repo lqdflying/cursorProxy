@@ -16,7 +16,7 @@ Validate that the `openaicompat` provider, when `OPENAICOMPAT_WIRE_API=responses
 - Required env vars:
   - `OPENAICOMPAT_API_KEY` set to a valid key for an OpenAI-compatible endpoint that supports `/v1/responses` and `store:true`. Endpoints that also support HTTP `previous_response_id` should exercise the cache-hit path; endpoints that reject it with the known WebSocket-only error should exercise Test 7's stateless fallback.
   - `OPENAICOMPAT_WIRE_API=responses`
-  - Optional: `OPENAICOMPAT_REASONING_EFFORT=xhigh` to force nested `reasoning.effort` for Responses requests.
+  - Optional: `OPENAICOMPAT_REASONING_EFFORT=max` to force GPT-5.6's hardest quality-first reasoning tier as nested `reasoning.effort` in Responses mode. Expect higher cost and latency; other models or upstreams may reject it.
   - A KV backend configured (`REDIS_URL` for Docker, `KV_URL` + `KV_TOKEN` for Vercel/Upstash, or an EdgeOne KV binding). Without KV, chaining silently degrades to stateless mode.
 - Required deployment state: deployed and reachable from Cursor.
 - Required files or workspace state: a tiny file under `.cursor/tmp/` for any edit/apply tests (keep prompts low-risk).
@@ -46,7 +46,7 @@ RES 200 provider: openaicompat ms: <n>
 ```
 
 > The `PREV_RESP_ID_MISS` is expected on the first turn — there is no prior response ID to chain from. The response ID is written to KV under `oairesp:conv:<sha>` after the stream completes.
-> If `OPENAICOMPAT_REASONING_EFFORT=xhigh` is set, logs should also include `REASONING_EFFORT effort: xhigh provider: openaicompat source: openaicompat_env`. `AZURE_OPENAI_REASONING_EFFORT` must not produce that line for `openaicompat`.
+> If `OPENAICOMPAT_REASONING_EFFORT=max` is set, logs should also include `REASONING_EFFORT effort: max provider: openaicompat source: openaicompat_env`. `AZURE_OPENAI_REASONING_EFFORT` must not produce that line for `openaicompat`.
 
 ### Test 2 — Second turn (cache hit, trimmed input)
 

@@ -975,7 +975,7 @@ export default async function handler(req) {
       diag("OPENAICOMPAT_REASONING_EFFORT_INVALID",
            "raw:", process.env.OPENAICOMPAT_REASONING_EFFORT,
            "fallback:", "client",
-           "valid:", "none|minimal|low|medium|high|xhigh");
+           "valid:", "none|minimal|low|medium|high|xhigh|max");
     }
   }
 
