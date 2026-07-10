@@ -1,6 +1,6 @@
 ---
 description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers azureopenai (gpt-5.5) and azureanthropic (claude-sonnet-4-6).
-globs: api/proxy.js,lib/models.js,lib/reasoning.js,lib/azure-openai.js,lib/azure-anthropic.js
+globs: api/proxy.js,lib/models.js,lib/reasoning.js,lib/azure-openai.js,lib/azure-anthropic.js,lib/providers.js,lib/responses-chain.js,lib/stream-pump.js
 alwaysApply: false
 ---
 
@@ -254,12 +254,12 @@ Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thin
 |---|---|
 | Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `lib/cache.js` |
 | Write — non-streaming | `api/proxy.js` non-streaming branch: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` BEFORE `mapAnthropicResponseToOpenAI` runs (the mapper discards thinking blocks). |
-| Write — streaming | `api/proxy.js` streaming IIFE: `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
+| Write — streaming | `lib/stream-pump.js` (`startStreamPump`): `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
 | Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `lib/reasoning.js`) AFTER the reasoning bridge runs, gated on `parsedBody.thinking?.type` being a non-disabled value. |
-| SSE suppression | `api/proxy.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
+| SSE suppression | `lib/stream-pump.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
 | Key prefix | `asst:` — distinct from `conv:` (reasoning bridge) and `azresp:conv:` (Azure response ID chaining) |
 
-Do not pin specific line numbers in this table — the streaming IIFE in `proxy.js` is large and frequently refactored; describe the call site by feature/condition instead.
+Do not pin specific line numbers in this table — the streaming pump (`lib/stream-pump.js`) is large and frequently refactored; describe the call site by feature/condition instead.
 
 ### Why a separate hash function
 
@@ -342,7 +342,7 @@ Turn 1 (no cache):                         Turn 2 (cache hit):
 
 ## Anthropic SSE → OpenAI SSE Stream Transformation
 
-Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `lib/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming IIFE in `api/proxy.js` to thread tool_use blocks across events.
+Azure Anthropic returns SSE streams with **named events** that differ significantly from OpenAI's format. The `mapAnthropicSSEToOpenAI()` function in `lib/azure-anthropic.js` performs the conversion, using `anthropicToolState` (a `Map<index, {id, name, partialJson}>`) tracked inside the streaming pump in `lib/stream-pump.js` to thread tool_use blocks across events.
 
 ### Event Format Overview
 

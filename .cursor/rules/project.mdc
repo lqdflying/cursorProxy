@@ -6,7 +6,13 @@ alwaysApply: true
 # cursorProxy Core Context
 
 - `cursorProxy` is an edge-compatible multi-provider AI proxy for DeepSeek, Kimi, MiniMax, Xiaomi MiMo, GLM / ZHIPU AI, Azure Foundry, and generic OpenAI/Anthropic-compatible endpoints.
-- `api/proxy.js` is the main entrypoint and holds the provider orchestration.
+- `api/proxy.js` is the main entrypoint and holds the provider orchestration (auth, model/alias resolution, body sanitization, header assembly, fetch + retries, non-streaming response mapping). Its extracted concerns live in `lib/`:
+  - `lib/providers.js` — `PROVIDERS` registry, `buildUrl()` URL/path remapping, `upstreamApiKey`, upstream path safety.
+  - `lib/responses-chain.js` — `previous_response_id` KV chaining (`prepareResponsesChain`) and the stateless retry (`retryPreviousResponseFailure`) for azureopenai + openaicompat Responses mode.
+  - `lib/stream-pump.js` — the streaming SSE pump (`startStreamPump`): per-provider SSE transforms, reasoning/thinking accumulation + KV writes, stream timeout.
+  - `lib/strict-tools.js` — strict-tool stats probe (`strictToolStats` is re-exported from `api/proxy.js` for tests).
+  - `lib/cursor-tools.js` — Cursor Subagent/Task/Shell tool-arg sanitizers and Responses tool-arg remappers.
+  - `lib/log-shapes.js` — log-formatting helpers (no logging side effects).
 - `lib/models.js` handles model parsing, public/private model IDs, and provider routing.
 - Azure adapters live in `lib/azure-openai.js` and `lib/azure-anthropic.js`.
 - Kimi K2.x request sanitization lives in `lib/kimi.js` (`sanitizeKimiBody`); default Kimi model is `kimi-k2.7-code`.

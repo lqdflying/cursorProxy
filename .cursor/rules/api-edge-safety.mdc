@@ -15,7 +15,7 @@ alwaysApply: false
 3. **No Buffer-only APIs.** Use `TextEncoder`/`TextDecoder`, `crypto.subtle`, `Request`/`Response`.
 4. **Top-level `await` is OK** (Edge Runtime and Node 18+ both support it).
 5. **`export const config = { runtime: "edge" }`** in `api/proxy.js` is required for Vercel — do NOT remove it. (Only `proxy.js` carries this — it's the entry point. Helper modules don't need it.)
-6. **Default export of `proxy.js`** (`handler(req)`) is the public surface consumed by Vercel, `server.js` (Docker), and `edge-functions/_shared/proxy.js`. Do NOT rename or change its signature.
+6. **Default export of `proxy.js`** (`handler(req)`) is the public surface consumed by Vercel, `server.js` (Docker), and `cloud-functions/shared/proxy.js`. Do NOT rename or change its signature. The named `strictToolStats` export is a re-export from `lib/strict-tools.js` kept for direct unit testing.
 
 ## KV backends (lib/kv.js)
 
