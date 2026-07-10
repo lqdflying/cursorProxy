@@ -28,12 +28,16 @@ import {
   deriveOpenAICompatSessionAnchor,
   hasInvalidOpenAICompatCacheHitModeEnv,
   hasInvalidOpenAICompatReasoningEffortEnv,
+  hasOpenAICompatPreviousResponseUnsupportedScope,
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
   isOpenAICompatHaloCacheMode,
   isOpenAICompatSub2ApiCacheMode,
+  markOpenAICompatPreviousResponseUnsupportedScope,
   openAICompatChatCachedTokens,
   openAICompatCacheHitModeValidValues,
+  openAICompatPreviousResponseFailureKind,
+  openaicompatConversationHash,
   normalizeOpenAICompatChatCacheUsage,
   openAICompatReasoningEffortEnv,
   shouldAutoInjectPromptCacheKeyForCompat,
@@ -102,7 +106,6 @@ const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
 const OPENAICOMPAT_RESPONSE_CACHE_VERSION = "v1";
 let proxyAuthWarningLogged = false;
 let openAICompatChatReasoningEffortInvalidLogged = false;
-const openAICompatPreviousResponseUnsupportedScopes = new Map();
 
 // Soft caps for per-stream string accumulators. These prevent a runaway
 // reasoning model from OOMing a single Vercel Edge instance during a long
@@ -131,94 +134,12 @@ if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
   diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
 }
 
-// Canonicalized conversation hash for openaicompat. Cursor may send tool_calls
-// inside assistant messages in Anthropic format ({type:"tool_use", name, input})
-// on some turns and OpenAI format ({type:"function", function:{name, arguments}})
-// on others, so normalize to OpenAI format before hashing for stable keys.
-// Anthropic tool_use blocks carry call arguments in `input` (the args actually
-// invoked), not in schema fields — map `input`→`arguments` so the cache key
-// reflects what was actually called, not just the tool name.
-async function openaicompatConversationHash(messages, upTo, scope) {
-  const normalized = messages.slice(0, upTo).map((m) => {
-    if (m.role !== "assistant" || !Array.isArray(m.tool_calls)) return m;
-    return {
-      ...m,
-      tool_calls: m.tool_calls.map((tc) => {
-        if (tc.function) return tc;
-        const args = tc.input != null
-          ? (typeof tc.input === "string" ? tc.input : JSON.stringify(tc.input))
-          : (tc.arguments != null ? String(tc.arguments) : "");
-        return {
-          type: "function",
-          function: { name: tc.name || "", arguments: args },
-        };
-      }),
-    };
-  });
-  return normalizedConversationHash(normalized, normalized.length, scope, "conv:");
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function cloneJson(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
-}
-
-function openAICompatUnsupportedScopeTtlMs() {
-  const raw = parseInt(process.env.KV_TTL_SECONDS || "", 10);
-  const ttlSeconds = Number.isFinite(raw) && raw > 0 ? raw : 7200;
-  return ttlSeconds * 1000;
-}
-
-function markOpenAICompatPreviousResponseUnsupportedScope(scope) {
-  if (!scope) return;
-  openAICompatPreviousResponseUnsupportedScopes.set(
-    scope,
-    Date.now() + openAICompatUnsupportedScopeTtlMs()
-  );
-}
-
-function hasOpenAICompatPreviousResponseUnsupportedScope(scope) {
-  if (!scope) return false;
-  const expiresAt = openAICompatPreviousResponseUnsupportedScopes.get(scope);
-  if (!expiresAt) return false;
-  if (Date.now() > expiresAt) {
-    openAICompatPreviousResponseUnsupportedScopes.delete(scope);
-    return false;
-  }
-  return true;
-}
-
-function openAICompatPreviousResponseFailureKind(status, bodyText) {
-  const lower = String(bodyText || "").toLowerCase();
-  if (status === 400 && lower.includes("previous_response_id")) {
-    if (
-      lower.includes("unsupported parameter") ||
-      lower.includes("only supported on responses websocket") ||
-      lower.includes("not supported")
-    ) {
-      return "unsupported";
-    }
-  }
-  if (
-    (status === 400 || status === 404) &&
-    (
-      lower.includes("previous_response_not_found") ||
-      (lower.includes("previous response") && lower.includes("not found"))
-    )
-  ) {
-    return "not_found";
-  }
-  if (
-    status === 400 &&
-    lower.includes("no tool call found") &&
-    lower.includes("function call output")
-  ) {
-    return "tool_output_missing";
-  }
-  return null;
 }
 
 function expandResponsesInputToolCallStart(items, start) {
