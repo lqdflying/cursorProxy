@@ -48,7 +48,7 @@ Reasoning helpers live in **`lib/reasoning.js`**, not `api/proxy.js`.
 
 ## Vision support
 
-- Extend `requiresVisionBridge(providerKey, bareModel)` in `api/proxy.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo), gate on model id inside the helper.
+- Extend `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo), gate on model id inside the helper.
 - Also update `lib/edgeone.js` URL regex and unknown-provider error string in `api/proxy.js`.
 - The vision bridge orchestration lives in `lib/vision-bridge.js` (`convertImagesToText`); the upstream HTTP call lives in `lib/vision.js` (`describeImage`). Neither needs editing for a new provider.
 

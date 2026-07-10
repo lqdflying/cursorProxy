@@ -64,7 +64,7 @@ import {
 import { sanitizeGlmBody } from "../lib/glm.js";
 import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
 import { sanitizeKimiBody } from "../lib/kimi.js";
-import { convertImagesToText } from "../lib/vision-bridge.js";
+import { convertImagesToText, requiresVisionBridge } from "../lib/vision-bridge.js";
 import {
   isResponsesToolArgDeltaEvent,
   isResponsesToolDoneEvent,
@@ -129,27 +129,6 @@ function diag(...args) {
 // Confirm at cold start that the opt-in cache flag was honored.
 if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
   diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
-}
-
-const MIMO_MULTIMODAL = new Set(["mimo-v2.5", "mimo-v2-omni"]);
-const GLM_MULTIMODAL = new Set(["glm-5v-turbo"]);
-
-function requiresVisionBridge(providerKey, bareModel) {
-  if (providerKey === "deepseek") return true;
-  if (providerKey === "minimax") {
-    const m = (bareModel || "").toLowerCase();
-    if (m.startsWith("minimax-m3")) return false; // M3 is natively multimodal
-    return true; // M2.x still needs the bridge
-  }
-  if (providerKey === "mimo") {
-    const m = (bareModel || "").toLowerCase();
-    return !MIMO_MULTIMODAL.has(m);
-  }
-  if (providerKey === "glm") {
-    const m = (bareModel || "").toLowerCase();
-    return !GLM_MULTIMODAL.has(m);
-  }
-  return false;
 }
 
 // Canonicalized conversation hash for openaicompat. Cursor may send tool_calls
