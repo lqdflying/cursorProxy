@@ -76,6 +76,17 @@ import {
   summarizeToolArgShapeForLog,
   summarizeToolChoiceForLog,
 } from "../lib/log-shapes.js";
+import {
+  isCursorShellToolName,
+  isCursorSubagentToolName,
+  isCursorTaskToolName,
+  mapMissingResponsesToolArgsForProxy,
+  mapResponsesToolArgsChunkForProxy,
+  mapResponsesToolArgsContinuationForProxy,
+  sanitizeCursorShellArgsForLocal,
+  sanitizeCursorSubagentArgsForLocal,
+  sanitizeCursorTaskArgs,
+} from "../lib/cursor-tools.js";
 
 const DEBUG = process.env.DEBUG === "true";
 const AZURE_OPENAI_RESPONSE_CACHE_VERSION = "v7";
@@ -311,164 +322,6 @@ function log(...args) {
 
 function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
-}
-
-function isCursorSubagentToolName(name) {
-  return String(name || "").trim().toLowerCase() === "subagent";
-}
-
-function isCursorTaskToolName(name) {
-  return String(name || "").trim().toLowerCase() === "task";
-}
-
-function isCursorShellToolName(name) {
-  return String(name || "").trim().toLowerCase() === "shell";
-}
-
-const CURSOR_SUBAGENT_CLOUD_ONLY_ARG_KEYS = new Set([
-  "cloud_base_branch",
-  "environment",
-  "file_attachments",
-]);
-
-function sanitizeCursorSubagentArgsForLocal(rawArgs) {
-  const text = typeof rawArgs === "string" ? rawArgs : "";
-  if (!text.trim()) return { argsText: text, removed: [], parseError: false };
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { argsText: text, removed: [], parseError: false };
-    }
-    const removed = [];
-    for (const key of CURSOR_SUBAGENT_CLOUD_ONLY_ARG_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
-        delete parsed[key];
-        removed.push(key);
-      }
-    }
-    return {
-      argsText: removed.length > 0 ? JSON.stringify(parsed) : text,
-      removed,
-      parseError: false,
-    };
-  } catch {
-    return { argsText: text, removed: [], parseError: true };
-  }
-}
-
-function sanitizeCursorTaskArgs(rawArgs) {
-  const text = typeof rawArgs === "string" ? rawArgs : "";
-  if (!text.trim()) return { argsText: text, removed: [], parseError: false };
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { argsText: text, removed: [], parseError: false };
-    }
-
-    const removed = [];
-    const environment = typeof parsed.environment === "string"
-      ? parsed.environment.trim().toLowerCase()
-      : "";
-    const cloudBaseBranch = parsed.cloud_base_branch;
-    const shouldRemoveCloudBaseBranch = Object.prototype.hasOwnProperty.call(
-      parsed,
-      "cloud_base_branch",
-    ) && (
-      environment !== "cloud"
-      || typeof cloudBaseBranch !== "string"
-      || !cloudBaseBranch.trim()
-    );
-    if (shouldRemoveCloudBaseBranch) {
-      delete parsed.cloud_base_branch;
-      removed.push("cloud_base_branch");
-    }
-
-    for (const key of ["model", "resume"]) {
-      if (!Object.prototype.hasOwnProperty.call(parsed, key)) continue;
-      const value = parsed[key];
-      if (value != null && (typeof value !== "string" || value.trim())) continue;
-      delete parsed[key];
-      removed.push(key);
-    }
-
-    return {
-      argsText: removed.length > 0 ? JSON.stringify(parsed) : text,
-      removed,
-      parseError: false,
-    };
-  } catch {
-    return { argsText: text, removed: [], parseError: true };
-  }
-}
-
-function sanitizeCursorShellArgsForLocal(rawArgs) {
-  const text = typeof rawArgs === "string" ? rawArgs : "";
-  if (!text.trim()) return { argsText: text, removed: [], parseError: false };
-  try {
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { argsText: text, removed: [], parseError: false };
-    }
-
-    const notify = parsed.notify_on_output;
-    if (!notify || typeof notify !== "object" || Array.isArray(notify)) {
-      return { argsText: text, removed: [], parseError: false };
-    }
-
-    if (typeof notify.pattern === "string" && notify.pattern.trim()) {
-      return { argsText: text, removed: [], parseError: false };
-    }
-
-    delete parsed.notify_on_output;
-    return {
-      argsText: JSON.stringify(parsed),
-      removed: ["notify_on_output"],
-      parseError: false,
-    };
-  } catch {
-    return { argsText: text, removed: [], parseError: true };
-  }
-}
-
-function mapResponsesToolArgsChunkForProxy(state, argsText) {
-  return {
-    choices: [{
-      index: 0,
-      delta: {
-        tool_calls: [{
-          index: state?.toolIndex ?? 0,
-          id: state?.id || "",
-          type: "function",
-          function: { name: state?.name || "", arguments: argsText },
-        }],
-      },
-    }],
-  };
-}
-
-function mapResponsesToolArgsContinuationForProxy(state, argsText) {
-  return {
-    choices: [{
-      index: 0,
-      delta: {
-        tool_calls: [{
-          index: state.toolIndex,
-          function: { arguments: argsText },
-        }],
-      },
-    }],
-  };
-}
-
-function mapMissingResponsesToolArgsForProxy(state, finalArgsText) {
-  if (!state || typeof finalArgsText !== "string") return null;
-  const priorArgs = state.partialJson || "";
-  if (finalArgsText === priorArgs) return null;
-  if (!finalArgsText.startsWith(priorArgs)) return null;
-  const suffix = finalArgsText.slice(priorArgs.length);
-  if (!suffix) return null;
-  state.partialJson = finalArgsText;
-  return mapResponsesToolArgsChunkForProxy(state, suffix);
 }
 
 // Confirm at cold start that the opt-in cache flag was honored.
