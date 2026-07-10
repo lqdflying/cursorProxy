@@ -15,6 +15,7 @@ Use the `user-axiom` MCP server for real Docker production logs. The production 
 2. Use `CallMcpTool` with `server: "user-axiom"`, `toolName: "queryDataset"`, and explicit `arguments`.
 3. Keep `startTime` and `endTime` narrow. For normal incidents, start with `now-30m` to `now`.
 4. Summarize findings. Do not dump request bodies, prompts, tool arguments, or payload content unless the user explicitly needs a specific line.
+5. Report all absolute timestamps and incident windows in Singapore Time (`SGT`, `UTC+8`). Convert Axiom's UTC `_time` values with date rollover accounted for. Do not expose raw UTC or `Z` timestamps unless the user explicitly requests UTC; if requested, show UTC after the primary SGT value.
 
 ## Baseline Queries
 

@@ -9,6 +9,12 @@ ALWAYS include `arguments` in CallMcpTool calls. NEVER send empty `{}`.
 
 For Axiom data queries, discover datasets, metric names, tags, and fields before substantive queries. Use the narrowest useful `startTime` and `endTime`; every query scans data.
 
+## Reporting Time Zone
+
+- Axiom may return `_time` and RFC3339 timestamps in UTC. Keep query bounds in UTC or relative time when convenient, but convert every absolute timestamp and time range in user-facing reports to Singapore Time (`SGT`, `UTC+8`).
+- Label reported times explicitly, for example `2026-07-10 23:05 SGT (UTC+8)`, and account for date rollover during conversion.
+- Do not present raw UTC or `Z` timestamps in normal reports. If the user explicitly requests UTC, show it after the primary SGT value.
+
 Zero-argument tools are intentionally skipped here: `listDatasets`, `listNotifiers`, `checkMonitors`, `listDashboards`, `getSavedQueries`.
 
 ### queryDataset
