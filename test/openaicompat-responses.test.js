@@ -1389,6 +1389,7 @@ describe("openaicompat Responses wire mode — integration", () => {
       requestModel,
       expectedUpstreamModel,
       expectedFinalShellToolCall,
+      expectedToolIndexSequence,
       expectSingleShellIdentity,
     }) {
       let outboundBody = null;
@@ -1424,6 +1425,11 @@ describe("openaicompat Responses wire mode — integration", () => {
         .map((line) => JSON.parse(line.slice(6)));
       const emittedToolCalls = parsedDataLines.flatMap((chunk) =>
         (chunk.choices?.[0]?.delta?.tool_calls || []).map((toolCall) => ({ toolCall })));
+      assert.deepEqual(
+        emittedToolCalls.map(({ toolCall }) => toolCall.index),
+        expectedToolIndexSequence,
+        `${requestModel} should preserve the expected downstream tool chunk order`,
+      );
 
       const identityBearingStartCalls = emittedToolCalls
         .map(({ toolCall }) => toolCall)
@@ -1493,6 +1499,7 @@ describe("openaicompat Responses wire mode — integration", () => {
         index: 0,
         function: { arguments: shellArgs },
       },
+      expectedToolIndexSequence: [0, 0, 1, 1, 1],
       expectSingleShellIdentity: true,
     });
     await replayScenario({
@@ -1504,8 +1511,88 @@ describe("openaicompat Responses wire mode — integration", () => {
         type: "function",
         function: { name: "Shell", arguments: shellArgs },
       },
+      expectedToolIndexSequence: [0, 1, 1, 1, 0],
       expectSingleShellIdentity: false,
     });
+  });
+
+  it("releases deferred GPT-5.6 tool chunks when Shell never completes", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const taskArgs = JSON.stringify({
+      description: "Inspect workspace",
+      prompt: "Inspect without edits.",
+      readonly: true,
+      run_in_background: false,
+      subagent_type: "explore",
+    });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_incomplete_shell\",\"status\":\"in_progress\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc_shell_incomplete\",\"type\":\"function_call\",\"call_id\":\"call_shell_incomplete\",\"name\":\"Shell\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":5,\"item\":{\"id\":\"fc_task_after_shell\",\"type\":\"function_call\",\"call_id\":\"call_task_after_shell\",\"name\":\"Task\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 5,
+        item_id: "fc_task_after_shell",
+        delta: taskArgs,
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 5,
+        item_id: "fc_task_after_shell",
+        arguments: taskArgs,
+      })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_incomplete_shell\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const response = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "cursorproxy/compatible-gpt-5.6",
+        messages: [{ role: "user", content: "Inspect the workspace" }],
+        stream: true,
+      }),
+    }));
+    const bodyText = await response.text();
+    const dataLines = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: "));
+    const chunks = dataLines
+      .filter((line) => line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const emittedToolCalls = chunks.flatMap((chunk) =>
+      chunk.choices?.[0]?.delta?.tool_calls || []);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(emittedToolCalls.map((toolCall) => toolCall.index), [0, 1, 1]);
+    const taskArgumentText = emittedToolCalls
+      .filter((toolCall) => toolCall.index === 1)
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.deepEqual(JSON.parse(taskArgumentText), JSON.parse(taskArgs));
+    const finishIndex = chunks.findIndex((chunk) =>
+      chunk.choices?.[0]?.finish_reason === "tool_calls");
+    const taskDoneIndex = chunks.findIndex((chunk) =>
+      chunk.choices?.[0]?.delta?.tool_calls?.[0]?.index === 1
+      && Boolean(chunk.choices[0].delta.tool_calls[0].function?.arguments));
+    assert.ok(taskDoneIndex >= 0 && taskDoneIndex < finishIndex,
+      "deferred Task arguments must be released before finish_reason=tool_calls");
   });
 
   it("sanitizes Cursor Subagent cloud-only arguments before forwarding the tool call", async () => {

@@ -2392,6 +2392,37 @@ export default async function handler(req) {
     // response.function_call_arguments.delta to OpenAI tool_calls.
     const responsesToolState = new Map(); // call_id -> { id, name, partialJson }
     let responsesToolCallSeen = false;
+    const serializeGpt56ShellToolChunks = openaiCompatResponses
+      && upstreamModelName === "gpt-5.6-sol";
+    let pendingGpt56ShellToolIndex = null;
+    const deferredGpt56ToolChunks = [];
+
+    async function flushDeferredGpt56ToolChunks(reason) {
+      if (deferredGpt56ToolChunks.length === 0) {
+        pendingGpt56ShellToolIndex = null;
+        return;
+      }
+
+      const deferredChunks = deferredGpt56ToolChunks.splice(0);
+      diag("OAI_GPT56_TOOL_CHUNKS_REORDERED",
+           "shellIndex:", pendingGpt56ShellToolIndex ?? "(none)",
+           "deferred:", deferredChunks.length,
+           "reason:", reason);
+      pendingGpt56ShellToolIndex = null;
+
+      for (const deferredChunk of deferredChunks) {
+        const publicDeferredChunk = withPublicResponseModel(
+          deferredChunk,
+          responseModelName,
+          Boolean(azureAliasInfo) || Boolean(compatAliasInfo),
+        );
+        await writer.write(
+          encoder.encode(
+            "data: " + JSON.stringify(stripResponseChunk(publicDeferredChunk)) + "\n\n"
+          )
+        );
+      }
+    }
 
     // Track Claude thinking blocks for KV caching (azureanthropic + adaptive thinking).
     // Store the content_block object from content_block_start directly, then mutate
@@ -2631,12 +2662,14 @@ export default async function handler(req) {
             await cacheClaudeThinking();
             logAzureStreamSummary("[DONE]");
             logOpenAICompatChatStreamSummary("[DONE]");
+            await flushDeferredGpt56ToolChunks("done");
             await writer.write(encoder.encode("data: [DONE]\n\n"));
             continue;
           }
 
           try {
             let json = JSON.parse(data);
+            let flushDeferredToolChunksAfterCurrent = false;
 
             // Transform Anthropic SSE events into OpenAI-compatible format.
             // Anthropic uses events like content_block_delta with delta.text_delta,
@@ -2737,6 +2770,7 @@ export default async function handler(req) {
                 azureResponseTerminalStatus = "failed";
                 await cacheReasoningSnapshot(true);
                 logAzureStreamSummary("error");
+                await flushDeferredGpt56ToolChunks("error");
                 await writer.write(encoder.encode("data: " + JSON.stringify({
                   error: {
                     message: errMessage,
@@ -2850,6 +2884,30 @@ export default async function handler(req) {
                          "responsesIndex:", json?.output_index ?? "(none)");
                   }
                 }
+
+                const firstMappedTool = mappedToolCalls?.[0];
+                const mappedToolIndex = firstMappedTool?.index;
+                const isGpt56ShellStart = serializeGpt56ShellToolChunks
+                  && responsesEvent === "response.output_item.added"
+                  && isCursorShellToolName(firstMappedTool?.function?.name)
+                  && Number.isInteger(mappedToolIndex);
+                if (isGpt56ShellStart && pendingGpt56ShellToolIndex == null) {
+                  pendingGpt56ShellToolIndex = mappedToolIndex;
+                } else if (
+                  pendingGpt56ShellToolIndex != null
+                  && Number.isInteger(mappedToolIndex)
+                  && mappedToolIndex !== pendingGpt56ShellToolIndex
+                ) {
+                  deferredGpt56ToolChunks.push(mapped);
+                  continue;
+                }
+
+                const isPendingGpt56ShellDone = serializeGpt56ShellToolChunks
+                  && responsesEvent === "response.function_call_arguments.done"
+                  && mappedToolIndex === pendingGpt56ShellToolIndex;
+                if (isPendingGpt56ShellDone) {
+                  flushDeferredToolChunksAfterCurrent = true;
+                }
                 json = mapped;
               } else {
                 // Capture the response ID from the first SSE event so we can
@@ -2882,6 +2940,7 @@ export default async function handler(req) {
                   await cacheReasoningSnapshot(true);
                   await cacheAzResponseId();
                   logAzureStreamSummary(responsesEvent);
+                  await flushDeferredGpt56ToolChunks("terminal");
                   if (responsesStreamIncludeUsage && completed.usage) {
                     const usage = mapResponsesUsageToOpenAI(completed.usage);
                     if (usage) {
@@ -2953,6 +3012,9 @@ export default async function handler(req) {
                 "data: " + JSON.stringify(stripResponseChunk(json)) + "\n\n"
               )
             );
+            if (flushDeferredToolChunksAfterCurrent) {
+              await flushDeferredGpt56ToolChunks("shell_done");
+            }
           } catch {
             if (openAICompatChatStreamDiag) {
               openAICompatChatStreamStats.parseErrors++;
@@ -2975,6 +3037,7 @@ export default async function handler(req) {
         streamReadError = true;
         diag("STREAM_READ_ERROR", err?.name, err?.message);
         try {
+          await flushDeferredGpt56ToolChunks("read_error");
           const errMsg = JSON.stringify({
             error: {
               message: `Upstream stream interrupted: ${err?.message || err?.name || "unknown error"}`,
@@ -2996,6 +3059,7 @@ export default async function handler(req) {
           log("LOW_CONTENT_WARNING", "reasoning:", reasoningChars, "content:", accContent.length);
         }
         try {
+          await flushDeferredGpt56ToolChunks("timeout");
           const timeoutMsg = JSON.stringify({
             error: {
               message: `Stream timed out after ${effectiveTimeoutSec}s. The model was still generating (reasoning: ${reasoningChars} chars, content: ${accContent.length} chars). Retry with a smaller prompt, or increase STREAM_TIMEOUT_SECONDS.`,

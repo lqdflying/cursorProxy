@@ -204,9 +204,10 @@ OAI_TOOL_CALL_START provider: openaicompat name: Shell ... toolIndex: 0 ...
 OAI_TOOL_CALL_DONE provider: openaicompat name: Shell ... toolIndex: 0 ... argKeys: command,...
 OAI_TOOL_CALL_START provider: openaicompat name: Task ... toolIndex: 1 ...
 OAI_TOOL_CALL_DONE provider: openaicompat name: Task ... toolIndex: 1 ... argKeys: description,prompt,readonly,subagent_type,...
+OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: 0 deferred: <n> reason: shell_done
 ```
 
-> Exact upstream Responses `output_index` values may vary. The transformed tool calls must still use dense Chat indexes beginning at `0`, and argument ownership must remain separate: Shell arguments belong only to dense `toolIndex: 0`, while Subagent/Task arguments belong only to dense `toolIndex: 1`.
+> Exact upstream Responses `output_index` values may vary. The transformed tool calls must still use dense Chat indexes beginning at `0`, and argument ownership must remain separate: Shell arguments belong only to dense `toolIndex: 0`, while Subagent/Task arguments belong only to dense `toolIndex: 1`. For GPT-5.6, the downstream Shell start and complete arguments must be contiguous before Task index `1` chunks; returning from index `1` to a late Shell index `0` continuation is not Cursor-compatible even when each payload reconstructs independently.
 >
 > `OAI_TOOL_CALL_DONE` argument-shape logs establish that the proxy parsed the upstream/model arguments for each tool. They do not by themselves prove that Cursor correctly assembled the transformed downstream stream; confirm the visible Shell command, both tool starts, and both completions in Cursor.
 
@@ -228,6 +229,7 @@ Regression signs:
 - A blank Shell card showing only `$`.
 - A second Shell identity chunk.
 - Missing per-index arguments or Shell and subagent arguments cross-contaminated between indexes.
+- Downstream tool chunks returning from Task index `1` to a late Shell index `0` continuation.
 - Failure to start either tool.
 - `OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0` combined with Cursor reporting that a tool or subagent failed to start.
 - A transformed stream without a terminal Chat chunk containing `finish_reason:"tool_calls"` before `data: [DONE]`.
