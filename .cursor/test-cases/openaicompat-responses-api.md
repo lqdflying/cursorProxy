@@ -178,21 +178,37 @@ RES 200 provider: openaicompat ms: <n>
 
 ### Test 9 — Tool/subagent stream mapping
 
-In Cursor agent mode, ask for a task that causes the model to call a tool or start a subagent.
+In Cursor agent mode with `compatible-gpt-5.6` selected, paste this exact prompt:
+
+```text
+Dispatch exactly two independent tool calls in parallel in the same assistant turn, and start both calls concurrently:
+
+1. Use Shell directly to run `pwd` in the current workspace. This must be a direct Shell call, not Shell invoked through a subagent.
+2. Start one read-only explore subagent that inspects the current workspace and reports the top-level purpose of the project without editing any files.
+
+Do not use Shell through the subagent. Do not run either call before the other; dispatch both together so their tool streams overlap. Wait for both calls to complete, then briefly report both results.
+```
 
 Expected behavior:
 
-- Cursor starts/runs the requested tool or subagent instead of reporting a tool-start failure.
+- The Shell card displays the non-empty `pwd` command, not only `$`, and Shell executes it.
+- The read-only explore subagent starts, inspects the workspace without editing, and reports the project's top-level purpose.
+- Both calls start from the same assistant turn and both complete.
 - Logs may show `functionArgDeltas: <n>` and `content: 0` for a pure tool-call turn; that is valid as long as Cursor executes the tool.
 - If the upstream emits a `Subagent` tool call containing local-incompatible cloud keys, the proxy strips only those keys before Cursor sees the final arguments delta.
 
-Regression signs:
+Expected per-tool diagnostics:
 
 ```text
-OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0
+OAI_TOOL_CALL_START provider: openaicompat name: Shell ... toolIndex: 0 ...
+OAI_TOOL_CALL_DONE provider: openaicompat name: Shell ... toolIndex: 0 ... argKeys: command,...
+OAI_TOOL_CALL_START provider: openaicompat name: Task ... toolIndex: 1 ...
+OAI_TOOL_CALL_DONE provider: openaicompat name: Task ... toolIndex: 1 ... argKeys: description,prompt,readonly,subagent_type,...
 ```
 
-combined with Cursor UI reporting that a tool/subagent failed to start. In that case inspect the transformed downstream SSE: Responses `output_index` values must be remapped to dense Chat `tool_calls[].index` values starting at `0`, and the stream must include a terminal Chat chunk with `finish_reason:"tool_calls"` before `data: [DONE]`.
+> Exact upstream Responses `output_index` values may vary. The transformed tool calls must still use dense Chat indexes beginning at `0`, and argument ownership must remain separate: Shell arguments belong only to dense `toolIndex: 0`, while Subagent/Task arguments belong only to dense `toolIndex: 1`.
+>
+> `OAI_TOOL_CALL_DONE` argument-shape logs establish that the proxy parsed the upstream/model arguments for each tool. They do not by themselves prove that Cursor correctly assembled the transformed downstream stream; confirm the visible Shell command, both tool starts, and both completions in Cursor.
 
 Expected logs for the known local Subagent compatibility path:
 
@@ -200,6 +216,21 @@ Expected logs for the known local Subagent compatibility path:
 OAI_TOOL_CALL_DONE provider: openaicompat name: Subagent ... argKeys: cloud_base_branch,description,environment,file_attachments,...
 OAI_SUBAGENT_ARGS_SANITIZED provider: openaicompat name: Subagent ... removed: cloud_base_branch,environment,file_attachments
 ```
+
+GPT-5.5 compatibility baseline:
+
+1. Select `compatible-gpt-5.5`.
+2. Start a fresh Cursor agent-mode conversation and replay the exact prompt above without changes.
+3. Require the current working behavior to remain intact: the non-empty Shell command executes, the read-only explore subagent starts, and both calls complete. This is a compatibility baseline; downstream chunk internals do not need to match GPT-5.6 exactly.
+
+Regression signs:
+
+- A blank Shell card showing only `$`.
+- A second Shell identity chunk.
+- Missing per-index arguments or Shell and subagent arguments cross-contaminated between indexes.
+- Failure to start either tool.
+- `OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0` combined with Cursor reporting that a tool or subagent failed to start.
+- A transformed stream without a terminal Chat chunk containing `finish_reason:"tool_calls"` before `data: [DONE]`.
 
 ## Negative signs
 

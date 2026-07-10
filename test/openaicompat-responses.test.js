@@ -1275,6 +1275,239 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.doesNotMatch(logs, /inspect/, "tool-call diagnostics must not log argument values");
   });
 
+  it("preserves interleaved Shell and Task calls across GPT-5.6 and GPT-5.5 streams", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const shellPayload = {
+      command: "pwd",
+      description: "Inspect workspace",
+      working_directory: "/tmp",
+      block_until_ms: 30000,
+    };
+    const taskPayload = {
+      description: "Inspect workspace",
+      prompt: "Inspect the workspace without edits.",
+      readonly: true,
+      run_in_background: false,
+      subagent_type: "explore",
+    };
+    const shellArgs = JSON.stringify(shellPayload);
+    const taskArgs = JSON.stringify(taskPayload);
+    const shellSplitIndex = Math.floor(shellArgs.length / 2);
+    const taskSplitIndex = Math.floor(taskArgs.length / 2);
+    const stream = [
+      "event: response.created",
+      `data: ${JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_interleaved_tools", status: "in_progress" },
+      })}`,
+      "",
+      "event: response.output_item.added",
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 2,
+        item: {
+          id: "fc_shell",
+          type: "function_call",
+          call_id: "call_shell",
+          name: "Shell",
+        },
+      })}`,
+      "",
+      "event: response.output_item.added",
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 5,
+        item: {
+          id: "fc_task",
+          type: "function_call",
+          call_id: "call_task",
+          name: "Task",
+        },
+      })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 2,
+        item_id: "fc_shell",
+        delta: shellArgs.slice(0, shellSplitIndex),
+      })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 5,
+        item_id: "fc_task",
+        delta: taskArgs.slice(0, taskSplitIndex),
+      })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 2,
+        item_id: "fc_shell",
+        delta: shellArgs.slice(shellSplitIndex),
+      })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 5,
+        item_id: "fc_task",
+        delta: taskArgs.slice(taskSplitIndex),
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 2,
+        item_id: "fc_shell",
+        arguments: shellArgs,
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 5,
+        item_id: "fc_task",
+        arguments: taskArgs,
+      })}`,
+      "",
+      "event: response.completed",
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_interleaved_tools",
+          status: "completed",
+          error: null,
+        },
+      })}`,
+      "",
+    ].join("\n");
+
+    async function replayScenario({
+      requestModel,
+      expectedUpstreamModel,
+      expectedFinalShellToolCall,
+      expectSingleShellIdentity,
+    }) {
+      let outboundBody = null;
+      global.fetch = async (_url, init) => {
+        outboundBody = JSON.parse(init.body);
+        return new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      };
+
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: requestModel,
+          messages: [{ role: "user", content: "Inspect the workspace" }],
+          stream: true,
+        }),
+      }));
+      const bodyText = await response.text();
+
+      assert.equal(response.status, 200, `${requestModel} should return HTTP 200`);
+      assert.equal(outboundBody.model, expectedUpstreamModel,
+        `${requestModel} should resolve to the expected upstream model`);
+
+      const orderedDataLines = bodyText
+        .split("\n")
+        .filter((line) => line.startsWith("data: "));
+      const doneDataLineIndex = orderedDataLines.indexOf("data: [DONE]");
+      const parsedDataLines = orderedDataLines
+        .filter((line) => line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice(6)));
+      const emittedToolCalls = parsedDataLines.flatMap((chunk) =>
+        (chunk.choices?.[0]?.delta?.tool_calls || []).map((toolCall) => ({ toolCall })));
+
+      const identityBearingStartCalls = emittedToolCalls
+        .map(({ toolCall }) => toolCall)
+        .filter((toolCall) => toolCall.function?.arguments === "");
+      assert.deepEqual(identityBearingStartCalls, [
+        {
+          index: 0,
+          id: "call_shell",
+          type: "function",
+          function: { name: "Shell", arguments: "" },
+        },
+        {
+          index: 1,
+          id: "call_task",
+          type: "function",
+          function: { name: "Task", arguments: "" },
+        },
+      ], `${requestModel} should emit each identity-bearing start chunk exactly once`);
+
+      const argumentsByToolIndex = new Map();
+      for (const { toolCall } of emittedToolCalls) {
+        const argumentDelta = toolCall.function?.arguments;
+        if (typeof argumentDelta !== "string") continue;
+        const existingArguments = argumentsByToolIndex.get(toolCall.index) || "";
+        argumentsByToolIndex.set(toolCall.index, existingArguments + argumentDelta);
+      }
+      assert.deepEqual(JSON.parse(argumentsByToolIndex.get(0)), shellPayload,
+        `${requestModel} should reconstruct Shell arguments by dense index 0`);
+      assert.deepEqual(JSON.parse(argumentsByToolIndex.get(1)), taskPayload,
+        `${requestModel} should reconstruct Task arguments by dense index 1`);
+
+      const finishReasonDataLineIndex = orderedDataLines.findIndex((line) => {
+        if (line === "data: [DONE]") return false;
+        const chunk = JSON.parse(line.slice(6));
+        return chunk.choices?.[0]?.finish_reason === "tool_calls";
+      });
+      assert.ok(finishReasonDataLineIndex >= 0,
+        `${requestModel} should emit finish_reason=tool_calls`);
+      assert.ok(doneDataLineIndex > finishReasonDataLineIndex,
+        `${requestModel} should emit finish_reason=tool_calls before [DONE]`);
+
+      const finalShellToolCall = emittedToolCalls
+        .map(({ toolCall }) => toolCall)
+        .filter((toolCall) =>
+          toolCall.index === 0 && Boolean(toolCall.function?.arguments))
+        .at(-1);
+      assert.deepEqual(finalShellToolCall, expectedFinalShellToolCall,
+        `${requestModel} should preserve the expected final Shell chunk shape`);
+
+      if (expectSingleShellIdentity) {
+        const identityBearingShellCalls = emittedToolCalls
+          .map(({ toolCall }) => toolCall)
+          .filter((toolCall) => toolCall.index === 0)
+          .filter((toolCall) =>
+            Object.hasOwn(toolCall, "id")
+            || Object.hasOwn(toolCall, "type")
+            || Object.hasOwn(toolCall.function || {}, "name"));
+        assert.equal(identityBearingShellCalls.length, 1,
+          "GPT-5.6 should emit only one identity-bearing Shell tool call");
+      }
+    }
+
+    await replayScenario({
+      requestModel: "cursorproxy/compatible-gpt-5.6",
+      expectedUpstreamModel: "gpt-5.6-sol",
+      expectedFinalShellToolCall: {
+        index: 0,
+        function: { arguments: shellArgs },
+      },
+      expectSingleShellIdentity: true,
+    });
+    await replayScenario({
+      requestModel: "gpt-5.5",
+      expectedUpstreamModel: "gpt-5.5",
+      expectedFinalShellToolCall: {
+        index: 0,
+        id: "call_shell",
+        type: "function",
+        function: { name: "Shell", arguments: shellArgs },
+      },
+      expectSingleShellIdentity: false,
+    });
+  });
+
   it("sanitizes Cursor Subagent cloud-only arguments before forwarding the tool call", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const args = JSON.stringify({

@@ -506,6 +506,20 @@ function mapResponsesToolArgsChunkForProxy(state, argsText) {
   };
 }
 
+function mapResponsesToolArgsContinuationForProxy(state, argsText) {
+  return {
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: state.toolIndex,
+          function: { arguments: argsText },
+        }],
+      },
+    }],
+  };
+}
+
 function mapMissingResponsesToolArgsForProxy(state, finalArgsText) {
   if (!state || typeof finalArgsText !== "string") return null;
   const priorArgs = state.partialJson || "";
@@ -2807,7 +2821,13 @@ export default async function handler(req) {
                        "name:", safeLogToken(preMappedToolState?.name || json?.name || "(unknown)"),
                        "reason:", "unparseable");
                 }
-                mapped = mapResponsesToolArgsChunkForProxy(preMappedToolState, sanitized.argsText);
+                const shouldMapArgumentsOnlyContinuation = upstreamModelName === "gpt-5.6-sol"
+                  && responsesEvent === "response.function_call_arguments.done"
+                  && preMappedToolState
+                  && Number.isInteger(preMappedToolState.toolIndex);
+                mapped = shouldMapArgumentsOnlyContinuation
+                  ? mapResponsesToolArgsContinuationForProxy(preMappedToolState, sanitized.argsText)
+                  : mapResponsesToolArgsChunkForProxy(preMappedToolState, sanitized.argsText);
               } else if (shouldRepairDefaultToolDoneArgs) {
                 mapped = mapMissingResponsesToolArgsForProxy(
                   preMappedToolState,
