@@ -31,6 +31,7 @@ import {
   openaicompatConversationHash,
   normalizeOpenAICompatChatCacheUsage,
   openAICompatReasoningEffortEnv,
+  openAICompatReasoningEffortForModel,
 } from "../lib/openaicompat-cache.js";
 import {
   isModelDiscoveryRequest,
@@ -327,7 +328,10 @@ export default async function handler(req) {
   }
 
   if (providerKey === "openaicompat" && pathParam === "chat/completions" && !openaiCompatResponses && parsedBody) {
-    const chatReasoningEffort = openAICompatReasoningEffortEnv();
+    const chatReasoningEffort = openAICompatReasoningEffortForModel(
+      upstreamModelName || parsedBody.model,
+      openAICompatReasoningEffortEnv()
+    );
     if (chatReasoningEffort) {
       if (parsedBody.reasoning_effort !== chatReasoningEffort) {
         parsedBody.reasoning_effort = chatReasoningEffort;

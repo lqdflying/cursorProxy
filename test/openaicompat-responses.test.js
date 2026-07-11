@@ -537,6 +537,30 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /REASONING_EFFORT effort: max provider: openaicompat source: openaicompat_env/);
   });
 
+  it("responses mode falls back from env max to xhigh for GPT-5.5", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
+    const captured = mockFetchResponses({
+      id: "resp_gpt55", object: "response", model: "gpt-5.5", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+    });
+
+    const { logs } = await captureConsoleLogs(async () => {
+      await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }));
+    });
+
+    assert.deepEqual(captured.body.reasoning, { effort: "xhigh" });
+    assert.equal(captured.body.reasoning_effort, undefined);
+    assert.match(logs, /REASONING_EFFORT effort: xhigh provider: openaicompat source: openaicompat_env/);
+  });
+
   it("responses mode OPENAICOMPAT_REASONING_EFFORT wins over flat and nested client effort", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_REASONING_EFFORT = "high";
@@ -652,6 +676,33 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(captured.body.reasoning, undefined);
     assert.equal(captured.body.reasoning_effort, "xhigh");
     assert.ok(captured.body.messages, "chat mode should keep messages array");
+    assert.match(logs, /OAI_CHAT_REASONING_EFFORT provider: openaicompat effort: xhigh source: openaicompat_env/);
+  });
+
+  it("chat mode falls back from env max to xhigh for GPT-5.5", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
+    const captured = mockFetchResponses({
+      id: "chat_gpt55_max_fallback",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+    });
+
+    const { logs } = await captureConsoleLogs(async () => {
+      await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      }));
+    });
+
+    assert.ok(captured.url.endsWith("/v1/chat/completions"), `expected chat/completions, got: ${captured.url}`);
+    assert.equal(captured.body.reasoning, undefined);
+    assert.equal(captured.body.reasoning_effort, "xhigh");
     assert.match(logs, /OAI_CHAT_REASONING_EFFORT provider: openaicompat effort: xhigh source: openaicompat_env/);
   });
 

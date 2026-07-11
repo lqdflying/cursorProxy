@@ -15,6 +15,7 @@ import {
   openAICompatCacheHitMode,
   openAICompatChatCachedTokens,
   openAICompatReasoningEffortEnv,
+  openAICompatReasoningEffortForModel,
   shouldAutoInjectPromptCacheKeyForCompat,
 } from "../lib/openaicompat-cache.js";
 
@@ -66,6 +67,24 @@ describe("openaicompat cache helpers", () => {
     process.env.OPENAICOMPAT_REASONING_EFFORT = "bogus";
     assert.equal(openAICompatReasoningEffortEnv(), "");
     assert.equal(hasInvalidOpenAICompatReasoningEffortEnv(), true);
+  });
+
+  it("falls back from max to xhigh for GPT-5.5 models only", () => {
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
+    for (const model of [
+      "gpt-5.5",
+      "gpt5.5",
+      "gpt-5.5-mini",
+      "compatible-gpt-5.5",
+      "cursorproxy/compatible-gpt-5.5",
+      "cursor-openai-5.5",
+    ]) {
+      assert.equal(openAICompatReasoningEffortForModel(model), "xhigh", model);
+    }
+
+    assert.equal(openAICompatReasoningEffortForModel("gpt-5.6-sol"), "max");
+    assert.equal(openAICompatReasoningEffortForModel("compatible-gpt-5.6"), "max");
+    assert.equal(openAICompatReasoningEffortForModel("gpt-5.50"), "max");
   });
 
   it("extracts raw Chat cache hit counters from provider-specific usage fields", () => {
@@ -146,6 +165,23 @@ describe("openaicompat cache helpers", () => {
     process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
     const max = await deriveCompatPromptCacheKey(req, "gpt-5.6-sol");
     assert.notEqual(low, max);
+  });
+
+  it("uses xhigh in GPT-5.5 prompt cache keys when env max falls back", async () => {
+    const req = {
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hi" }],
+    };
+
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "xhigh";
+    const xhigh = await deriveCompatPromptCacheKey(req, "gpt-5.5");
+    const aliasXhigh = await deriveCompatPromptCacheKey({ ...req, model: "compatible-gpt-5.5" }, "compatible-gpt-5.5");
+    process.env.OPENAICOMPAT_REASONING_EFFORT = "max";
+    const maxFallback = await deriveCompatPromptCacheKey(req, "gpt-5.5");
+    const aliasFallback = await deriveCompatPromptCacheKey({ ...req, model: "compatible-gpt-5.5" }, "compatible-gpt-5.5");
+
+    assert.equal(maxFallback, xhigh);
+    assert.equal(aliasFallback, aliasXhigh);
   });
 
   it("derives session anchors by explicit header, prompt key, then content seed", async () => {
