@@ -169,6 +169,11 @@ response-ID lookup:
   and retries stateless so the successful retry can refresh the chain;
 - suppresses unsupported `previous_response_id` scopes for `KV_TTL_SECONDS`.
 
+For Halo-style gateways, `OPENAICOMPAT_CACHE_HIT_MODE=halo` keeps the same
+`prompt_cache_key + Session_id + store:true` shape but tries
+`previous_response_id` first on tool-output turns and only falls back to
+stateless replay on the known tool-output rejection.
+
 ### Reasoning (conv:) — configurable delays
 
 ```mermaid
@@ -265,7 +270,7 @@ cache version is incremented after a breaking schema change.
 | `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `oairesp:`, `claude_thinking:`) |
 | `OPENAICOMPAT_WIRE_API` | `chat` | `chat` activates Chat Completions passthrough/facade behavior; `responses` activates `/v1/responses` remap and `oairesp:` chaining |
 | `OPENAICOMPAT_CHAT_CACHE_MODE` | `passthrough` | Chat mode only. `facade` normalizes raw Chat cache-hit usage and forces upstream stream usage chunks; ignored when `OPENAICOMPAT_WIRE_API=responses` |
-| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only. `sub2api` enables prompt cache key injection, session anchors, stale previous-response cleanup, and unsupported-scope TTLs; ignored when `OPENAICOMPAT_WIRE_API=chat` |
+| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only. `default` uses normal `store:true` plus `previous_response_id` chaining and the default tool-output retry. `sub2api` adds GPT-5/Codex prompt cache key injection, session anchors, stale previous-response cleanup, and unsupported-scope TTLs. `halo` preserves prompt cache/session hints and keeps tool-output turns stateful first with a stateless fallback on the known tool-output rejection; ignored when `OPENAICOMPAT_WIRE_API=chat` |
 | `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
 | `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |
