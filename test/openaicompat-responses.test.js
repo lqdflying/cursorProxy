@@ -2213,6 +2213,164 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(argText, args);
   });
 
+  it("halo Responses cache mode strips empty GetMcpTools filters before forwarding to Cursor", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
+    const args = JSON.stringify({ server: "", toolName: "", pattern: "" });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp_tools\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_mcp_tools\",\"type\":\"function_call\",\"call_id\":\"call_mcp_tools\",\"name\":\"GetMcpTools\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_mcp_tools\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_mcp_tools", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp_tools\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "discover mcp" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.deepEqual(JSON.parse(argText), {});
+    assert.match(logs, /OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools toolIndex: 0 removed: server,toolName,pattern argKeys: \(none\)/);
+  });
+
+  it("halo Responses cache mode preserves non-empty GetMcpTools filters", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
+    const args = JSON.stringify({ server: "user-axiom", toolName: "queryDataset", pattern: "logs" });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp_tools_filtered\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_mcp_tools_filtered\",\"type\":\"function_call\",\"call_id\":\"call_mcp_tools_filtered\",\"name\":\"GetMcpTools\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_mcp_tools_filtered\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_mcp_tools_filtered", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp_tools_filtered\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "discover axiom mcp" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.deepEqual(JSON.parse(argText), JSON.parse(args));
+    assert.doesNotMatch(logs, /OAI_GET_MCP_TOOLS_ARGS_SANITIZED/);
+  });
+
+  it("does not strip empty GetMcpTools filters outside halo Responses cache mode", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const args = JSON.stringify({ server: "", toolName: "", pattern: "" });
+
+    async function runCase(label, cacheMode, delta) {
+      if (cacheMode) process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+      else delete process.env.OPENAICOMPAT_CACHE_HIT_MODE;
+
+      const stream = [
+        "event: response.created",
+        `data: ${JSON.stringify({ type: "response.created", response: { id: `resp_mcp_tools_${label}`, status: "in_progress", model: "gpt-5.5" } })}`,
+        "",
+        "event: response.output_item.added",
+        `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 1, item: { id: `fc_mcp_tools_${label}`, type: "function_call", call_id: `call_mcp_tools_${label}`, name: "GetMcpTools" } })}`,
+        "",
+        "event: response.function_call_arguments.delta",
+        `data: ${JSON.stringify({ type: "response.function_call_arguments.delta", output_index: 1, item_id: `fc_mcp_tools_${label}`, delta })}`,
+        "",
+        "event: response.function_call_arguments.done",
+        `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: `fc_mcp_tools_${label}`, arguments: args })}`,
+        "",
+        "event: response.completed",
+        `data: ${JSON.stringify({ type: "response.completed", response: { id: `resp_mcp_tools_${label}`, status: "completed", error: null } })}`,
+        "",
+      ].join("\n");
+      global.fetch = async () => new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+
+      let bodyText = "";
+      const { result: res, logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: `discover mcp ${label}` }], stream: true }),
+        }));
+        bodyText = await response.text();
+        return response;
+      });
+
+      assert.equal(res.status, 200);
+      const chunks = bodyText
+        .split("\n")
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice(6)));
+      const argText = chunks
+        .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+        .map((toolCall) => toolCall.function?.arguments || "")
+        .join("");
+      assert.deepEqual(JSON.parse(argText), JSON.parse(args));
+      assert.doesNotMatch(logs, /OAI_GET_MCP_TOOLS_ARGS_SANITIZED/);
+    }
+
+    await runCase("default", "", "");
+    await runCase("sub2api", "sub2api", args);
+  });
+
   it("sub2api mode does not use the default done-argument repair", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";

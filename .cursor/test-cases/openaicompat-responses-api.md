@@ -237,6 +237,45 @@ Regression signs:
 - `OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0` combined with Cursor reporting that a tool or subagent failed to start.
 - A transformed stream without a terminal Chat chunk containing `finish_reason:"tool_calls"` before `data: [DONE]`.
 
+### Test 10 — Halo MCP discovery with empty filters
+
+Set `OPENAICOMPAT_CACHE_HIT_MODE=halo` for this case.
+
+In Cursor agent mode with `compatible-gpt-5.5` selected and at least one MCP server enabled, start a fresh conversation. Paste this prompt:
+
+```text
+Discover the available MCP tools, then tell me the names of the first three tools you can see. Do not call any tool other than the MCP discovery/catalog tool.
+```
+
+Expected behavior:
+
+- Cursor discovers MCP tools without a long visible retry loop.
+- If the model emits `GetMcpTools` with empty placeholder filters, Cursor still receives a broad catalog request and the MCP tool list eventually appears.
+- The response should not need to explain that it is retrying because an empty-argument form is sensitive.
+
+Expected diagnostics when the empty-filter repair path is exercised:
+
+```text
+OAI_TOOL_CALL_START provider: openaicompat name: GetMcpTools ...
+OAI_TOOL_CALL_DONE provider: openaicompat name: GetMcpTools ... argKeys: server,toolName,pattern
+OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools ... removed: server,toolName,pattern argKeys: (none)
+OAI_STREAM_SUMMARY reason: response.completed ... functionArgDeltas: <n>
+RES 200 provider: openaicompat ms: <n>
+```
+
+Baseline preservation check:
+
+- If `GetMcpTools` carries non-empty `server`, `toolName`, or `pattern` filters, those fields must remain present downstream.
+- In that filtered case, `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` should not appear for the call.
+- With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`, empty `GetMcpTools` filters are not rewritten by this halo-specific repair. Those modes should keep their existing behavior.
+
+Regression signs:
+
+- Cursor repeatedly calls `GetMcpTools` with empty `server`, `toolName`, and `pattern` but never receives a usable catalog.
+- Cursor-visible text says it is retrying the catalog request without placeholder fields.
+- Production logs show `OAI_TOOL_CALL_DONE provider: openaicompat name: GetMcpTools ... argKeys: server,toolName,pattern` for empty filters without a matching `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` line.
+- Non-empty MCP discovery filters are stripped, causing a targeted catalog lookup to turn into an unfiltered lookup.
+
 ## Negative signs
 
 ```text
@@ -246,6 +285,7 @@ OAI_STREAM_ERROR ... invalid_enum_value ... Invalid value: 'text'
 previous_response_id is only supported on Responses WebSocket v2 # should be retried stateless, not returned to Cursor
 previous_response_not_found                            # stale or mismatched response ID replayed against wrong scope
 /v1/v1/responses                                       # URL normalization bug — trailing /v1 in UPSTREAM_OPENAICOMPAT not stripped
+GetMcpTools empty filters repeatedly reach Cursor without OAI_GET_MCP_TOOLS_ARGS_SANITIZED
 ```
 
 ## KV key stability cross-check
