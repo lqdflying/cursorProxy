@@ -2966,7 +2966,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
   });
 
-  it("halo Responses cache mode keeps tool outputs stateful first and retries stateless on the known tool-output error", async () => {
+  it("halo Responses cache mode sends tool outputs stateless first", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
     const kv = makeInMemoryKv();
@@ -2994,25 +2994,11 @@ describe("openaicompat Responses wire mode — integration", () => {
       const body = JSON.parse(init.body);
       calls.push(body);
       sessions.push(new Headers(init.headers).get("Session_id"));
-      if (calls.length === 1) {
-        assert.equal(body.previous_response_id, "resp_tool_call");
-        assert.equal(body.input.length, 1, "halo mode should try previous_response_id first for tool-output turns");
-        assert.equal(body.input[0].type, "function_call_output");
-        assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
-        return new Response(JSON.stringify({
-          error: {
-            message: "No tool call found for function call output with call_id call_1.",
-            type: "invalid_request_error",
-            param: "input",
-            code: null,
-          },
-        }), { status: 400, headers: { "content-type": "application/json" } });
-      }
-
-      assert.equal(body.previous_response_id, undefined, "stateless retry should drop previous_response_id after the tool-output error");
-      assert.equal(body.input.length, 3, "retry should restore the full tool-call exchange");
+      assert.equal(body.previous_response_id, undefined, "halo mode should skip previous_response_id for tool-output turns");
+      assert.equal(body.input.length, 3, "halo mode should send the full tool-call exchange first");
       assert.equal(body.input[1].type, "function_call");
       assert.equal(body.input[2].type, "function_call_output");
+      assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
       return new Response(JSON.stringify({
         id: "resp_tool_done",
         object: "response",
@@ -3044,15 +3030,15 @@ describe("openaicompat Responses wire mode — integration", () => {
     })));
 
     assert.equal(res.status, 200);
-    assert.equal(calls.length, 2);
-    assert.deepEqual(sessions, ["halo-session-1", "halo-session-1"]);
-    assert.match(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL provider: openaicompat inputItems: 1 toolOutputs: 1/);
-    assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS/);
-    assert.match(logs, /OAI_TOOL_OUTPUT_RETRY status: 400 inputItems: 3/);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(sessions, ["halo-session-1"]);
+    assert.match(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS provider: openaicompat inputItems: 3 toolOutputs: 1/);
+    assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL/);
+    assert.doesNotMatch(logs, /OAI_TOOL_OUTPUT_RETRY/);
     assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
   });
 
-  it("halo Responses cache mode keeps native input tool outputs stateful first and retries stateless on the known tool-output error", async () => {
+  it("halo Responses cache mode sends native input tool outputs stateless first", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
     const kv = makeInMemoryKv();
@@ -3082,25 +3068,11 @@ describe("openaicompat Responses wire mode — integration", () => {
       const body = JSON.parse(init.body);
       calls.push(body);
       sessions.push(new Headers(init.headers).get("Session_id"));
-      if (calls.length === 1) {
-        assert.equal(body.previous_response_id, "resp_native_tool_call");
-        assert.equal(body.input.length, 1, "halo mode should try previous_response_id first for native tool-output turns");
-        assert.equal(body.input[0].type, "function_call_output");
-        assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
-        return new Response(JSON.stringify({
-          error: {
-            message: "No tool call found for function call output with call_id call_1.",
-            type: "invalid_request_error",
-            param: "input",
-            code: null,
-          },
-        }), { status: 400, headers: { "content-type": "application/json" } });
-      }
-
-      assert.equal(body.previous_response_id, undefined, "stateless retry should drop previous_response_id after the tool-output error");
+      assert.equal(body.previous_response_id, undefined, "halo mode should skip previous_response_id for native tool-output turns");
       assert.equal(body.input.length, 3);
       assert.equal(body.input[1].type, "function_call");
       assert.equal(body.input[2].type, "function_call_output");
+      assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
       return new Response(JSON.stringify({
         id: "resp_native_tool_done",
         object: "response",
@@ -3124,11 +3096,11 @@ describe("openaicompat Responses wire mode — integration", () => {
     })));
 
     assert.equal(res.status, 200);
-    assert.equal(calls.length, 2);
-    assert.deepEqual(sessions, ["halo-session-1", "halo-session-1"]);
-    assert.match(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL provider: openaicompat inputItems: 1 toolOutputs: 1/);
-    assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS/);
-    assert.match(logs, /OAI_TOOL_OUTPUT_RETRY status: 400 inputItems: 3/);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(sessions, ["halo-session-1"]);
+    assert.match(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS provider: openaicompat inputItems: 3 toolOutputs: 1/);
+    assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL/);
+    assert.doesNotMatch(logs, /OAI_TOOL_OUTPUT_RETRY/);
     assert.equal([...kv.store.values()].includes("resp_native_tool_done"), true, "native stateless response should refresh the chain");
   });
 
