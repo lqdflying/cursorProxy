@@ -9,10 +9,13 @@ import {
   hasInvalidOpenAICompatCacheHitModeEnv,
   hasInvalidOpenAICompatReasoningEffortEnv,
   isOpenAICompatChatCacheRemoteMode,
+  isOpenAICompatHaloCacheMode,
+  isOpenAICompatHaloCompatibleCacheMode,
   normalizeOpenAICompatChatCacheUsage,
   normalizeCompatSeedJSON,
   openAICompatChatCacheMode,
   openAICompatCacheHitMode,
+  openAICompatCacheHitModeValidValues,
   openAICompatChatCachedTokens,
   openAICompatReasoningEffortEnv,
   openAICompatReasoningEffortForModel,
@@ -42,9 +45,34 @@ describe("openaicompat cache helpers", () => {
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = " halo ";
     assert.equal(openAICompatCacheHitMode(), "halo");
     assert.equal(hasInvalidOpenAICompatCacheHitModeEnv(), false);
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = " passion8 ";
+    assert.equal(openAICompatCacheHitMode(), "passion8");
+    assert.equal(hasInvalidOpenAICompatCacheHitModeEnv(), false);
+    assert.equal(openAICompatCacheHitModeValidValues(), "default|sub2api|halo|passion8");
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "remote";
     assert.equal(openAICompatCacheHitMode(), "");
     assert.equal(hasInvalidOpenAICompatCacheHitModeEnv(), true);
+  });
+
+  it("distinguishes exact halo from Halo-compatible cache modes", () => {
+    const modeCases = [
+      { rawMode: "", parsedMode: "default", exactHalo: false, haloCompatible: false },
+      { rawMode: "sub2api", parsedMode: "sub2api", exactHalo: false, haloCompatible: false },
+      { rawMode: "halo", parsedMode: "halo", exactHalo: true, haloCompatible: true },
+      { rawMode: "passion8", parsedMode: "passion8", exactHalo: false, haloCompatible: true },
+      { rawMode: "invalid", parsedMode: "", exactHalo: false, haloCompatible: false },
+    ];
+
+    for (const modeCase of modeCases) {
+      process.env.OPENAICOMPAT_CACHE_HIT_MODE = modeCase.rawMode;
+      assert.equal(openAICompatCacheHitMode(), modeCase.parsedMode, modeCase.rawMode || "default");
+      assert.equal(isOpenAICompatHaloCacheMode(), modeCase.exactHalo, modeCase.rawMode || "default");
+      assert.equal(
+        isOpenAICompatHaloCompatibleCacheMode(),
+        modeCase.haloCompatible,
+        modeCase.rawMode || "default"
+      );
+    }
   });
 
   it("parses chat cache mode with safe fallback", () => {

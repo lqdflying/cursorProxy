@@ -237,9 +237,10 @@ Regression signs:
 - `OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0` combined with Cursor reporting that a tool or subagent failed to start.
 - A transformed stream without a terminal Chat chunk containing `finish_reason:"tool_calls"` before `data: [DONE]`.
 
-### Test 10 — Halo MCP discovery with empty filters
+### Test 10 — Halo-compatible MCP discovery with empty filters
 
-Set `OPENAICOMPAT_CACHE_HIT_MODE=halo` for this case.
+Run this case twice: once with `OPENAICOMPAT_CACHE_HIT_MODE=halo` and once with
+`OPENAICOMPAT_CACHE_HIT_MODE=passion8`.
 
 In Cursor agent mode with `compatible-gpt-5.5` selected and at least one MCP server enabled, start a fresh conversation. Paste this prompt:
 
@@ -267,7 +268,10 @@ Baseline preservation check:
 
 - If `GetMcpTools` carries non-empty `server`, `toolName`, or `pattern` filters, those fields must remain present downstream.
 - In that filtered case, `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` should not appear for the call.
-- With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`, empty `GetMcpTools` filters are not rewritten by this halo-specific repair. Those modes should keep their existing behavior.
+- Both `halo` and `passion8` remove only empty `GetMcpTools` filters.
+- With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`, empty
+  `GetMcpTools` filters are not rewritten. Those modes keep their existing
+  behavior.
 
 Regression signs:
 
@@ -276,9 +280,12 @@ Regression signs:
 - Production logs show `OAI_TOOL_CALL_DONE provider: openaicompat name: GetMcpTools ... argKeys: server,toolName,pattern` for empty filters without a matching `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` line.
 - Non-empty MCP discovery filters are stripped, causing a targeted catalog lookup to turn into an unfiltered lookup.
 
-### Test 11 — Halo MCP tool call nested arguments
+### Test 11 — Halo nested MCP repair and passion8 preservation
 
-Set `OPENAICOMPAT_CACHE_HIT_MODE=halo` for this case. Use a deployment with the Tavily MCP server enabled and authenticated in Cursor.
+Use a deployment with the Tavily MCP server enabled and authenticated in
+Cursor. Run the same prompt once with
+`OPENAICOMPAT_CACHE_HIT_MODE=halo`, then once with
+`OPENAICOMPAT_CACHE_HIT_MODE=passion8`.
 
 In Cursor agent mode with `compatible-gpt-5.5` selected, start a fresh conversation. Paste this prompt:
 
@@ -289,10 +296,16 @@ First discover the Tavily MCP server/tool schema. Then call the Tavily search MC
 Expected behavior:
 
 - Cursor discovers `user-tavily / tavily_search`.
-- The subsequent `CallMcpTool` wrapper carries nested MCP arguments with `arguments.query` populated.
-- Tavily returns search results or a genuine Tavily upstream/auth error. It must not fail locally with `query: Missing required argument` caused by `arguments: {}`.
+- With `halo`, cursorProxy widens only
+  `CallMcpTool.parameters.properties.arguments`; the wrapper carries
+  `arguments.query`, and Tavily returns results or a genuine upstream/auth
+  error instead of a local `query: Missing required argument`.
+- With `passion8`, cursorProxy preserves the incoming `CallMcpTool` schema
+  byte-for-byte at the nested `arguments` property. This is the expected
+  negative/preservation case for an already-working vendor whose
+  pre-commit-`2111555` Halo behavior must remain unchanged.
 
-Expected diagnostics:
+Expected diagnostics for `halo`:
 
 ```text
 OAI_CALL_MCP_TOOL_SCHEMA_FIXED provider: openaicompat count: 1
@@ -311,12 +324,21 @@ Preservation checks:
 
 - Existing `GetMcpTools` empty-filter behavior from Test 10 remains unchanged.
 - Normal non-MCP tool calls should not log `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` and should preserve their argument schema and streamed arguments unchanged.
-- With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`, `CallMcpTool` schema widening is not expected.
+- `passion8` must not widen
+  `CallMcpTool.parameters.properties.arguments` and must not log
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; the vendor's original nested schema is
+  preserved.
+- With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`,
+  `CallMcpTool` schema widening is also not expected.
+- Both `halo` and `passion8` retain ordinary done-argument repair and the
+  established Task, Subagent, Shell, and `GetMcpTools` argument sanitizers.
 
 Regression signs:
 
 - `OAI_TOOL_ARG_SHAPE ... name: CallMcpTool ... mcpArguments: present mcpArgKeys: (none)` immediately followed by Cursor/MCP validation reporting `query: Missing required argument`.
 - `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` appears for non-MCP tool definitions.
+- `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` appears in the `passion8` run.
+- The `passion8` outbound `CallMcpTool` schema differs from the incoming schema.
 - The log line includes raw query text or other nested MCP argument values; only key names and counts should appear.
 
 ## Negative signs
@@ -328,8 +350,9 @@ OAI_STREAM_ERROR ... invalid_enum_value ... Invalid value: 'text'
 previous_response_id is only supported on Responses WebSocket v2 # should be retried stateless, not returned to Cursor
 previous_response_not_found                            # stale or mismatched response ID replayed against wrong scope
 /v1/v1/responses                                       # URL normalization bug — trailing /v1 in UPSTREAM_OPENAICOMPAT not stripped
-GetMcpTools empty filters repeatedly reach Cursor without OAI_GET_MCP_TOOLS_ARGS_SANITIZED
-CallMcpTool reaches Cursor with mcpArgKeys: (none) when the MCP tool requires query
+GetMcpTools empty filters repeatedly reach Cursor without OAI_GET_MCP_TOOLS_ARGS_SANITIZED in halo or passion8
+halo CallMcpTool reaches Cursor with mcpArgKeys: (none) when the MCP tool requires query
+passion8 emits OAI_CALL_MCP_TOOL_SCHEMA_FIXED or changes the nested arguments schema
 ```
 
 ## KV key stability cross-check
@@ -356,6 +379,12 @@ comm -23 \
 
 - The `compatible-gpt-5.6` alias resolves to upstream model `gpt-5.6-sol` and maps the response model back to `cursorproxy/compatible-gpt-5.6`. Verify this with the `COMPATIBLE_ALIAS_RESOLVED alias: compatible-gpt-5.6 upstream: gpt-5.6-sol` log line.
 - The upstream endpoint MUST support the OpenAI Responses API (`/v1/responses`, `store:true`) for this mode to work. If the upstream rejects HTTP `previous_response_id` with the known WebSocket-only error, the proxy retries stateless as described in Test 7; other unsupported Responses API errors are surfaced upstream and are not proxy bugs.
-- Halo-style Responses mode sends tool-output turns stateless first to avoid the known `previous_response_id` tool-output rejection.
+- `halo` and `passion8` share `halo_*` prompt-cache-key derivation,
+  `Session_id` forwarding, `OAI_RESP_HALO_*` diagnostics, the `"halo"`
+  `oairesp:` KV scope, stateless-first legacy/native tool-output handling,
+  `GetMcpTools` empty-filter cleanup, and ordinary done-argument repair.
+  Only `halo` widens `CallMcpTool.parameters.properties.arguments` and emits
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` preserves the pre-`2111555`
+  nested MCP schema.
 - This is **state chaining** via `previous_response_id`, NOT `OPENAICOMPAT_REASONING_CACHE` (which is Chat-mode-only reasoning injection) and NOT prompt-cache hints.
 - Automated coverage lives in `test/openaicompat-wire-api.test.js` (pure helper unit tests) and `test/openaicompat-responses.test.js` (integration tests with mocked fetch + in-memory KV). This manual case verifies the full Cursor → proxy → upstream → Cursor loop end-to-end.

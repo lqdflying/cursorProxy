@@ -191,11 +191,31 @@ Implementation lives in `lib/reasoning.js` (helpers + `injectStoredReasoning` or
 
 ## OpenAI-compatible Responses cache-hit mode
 
-`OPENAICOMPAT_CACHE_HIT_MODE=sub2api` is an opt-in extension of `OPENAICOMPAT_WIRE_API=responses`. It must have no effect in default Chat Completions wire mode, and it must only run on the `chat/completions` path that is remapped to upstream `/v1/responses`.
+`OPENAICOMPAT_CACHE_HIT_MODE` accepts
+`default|sub2api|halo|passion8` and is an extension of
+`OPENAICOMPAT_WIRE_API=responses`. It must have no effect in default Chat
+Completions wire mode, and it must only run on the `chat/completions` path
+that is remapped to upstream `/v1/responses`.
 
-- Preserve default `oairesp:` behavior when the env var is unset or invalid. Do not change default cache scope shape, key version, or request mutation unless `OPENAICOMPAT_CACHE_HIT_MODE=sub2api` is active.
+- Invalid values return HTTP 400 in Responses mode. Preserve default
+  `oairesp:` behavior when the env var is unset. Do not change the default
+  cache scope shape, key version, or request mutation unless a non-default
+  mode is active.
 - In sub2api mode, preserve explicit client `prompt_cache_key`; otherwise derive and forward `compat_cc_<hash>` only for GPT-5/Codex-like models.
 - Session anchors are scoped in priority order: `session_id` header, `conversation_id` header, `prompt_cache_key`, then content-derived `compat_cs_<hash>`. Include the anchor only in sub2api-mode `oairesp:` scope.
+- `halo` and `passion8` are Halo-compatible modes. Both intentionally share
+  `halo_*` `prompt_cache_key` derivation, `Session_id` forwarding,
+  `OAI_RESP_HALO_*` diagnostics, the literal `"halo"` `oairesp:` scope,
+  stateless-first legacy/native tool-output handling, `GetMcpTools`
+  empty-filter cleanup, and ordinary done-argument repair.
+- The only `halo`/`passion8` difference is nested MCP schema repair. Exact
+  `halo` widens `CallMcpTool.parameters.properties.arguments` and may emit
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` must not widen that schema or
+  emit that diagnostic.
+- `passion8` exists to preserve pre-commit-`2111555` Halo behavior for an
+  already-working vendor. Keep `halo` for vendors whose probes and production
+  evidence show they need nested `CallMcpTool` schema repair. Do not generalize
+  either mode to all compatible providers.
 - `store:false` remains the privacy opt-out: no prior response lookup, no `previous_response_id`, and no response-ID KV write.
 - Stale `previous_response_id` failures (`previous_response_not_found` / previous response not found) should delete the stale KV key and retry stateless so the successful retry can refresh the chain. Unsupported HTTP `previous_response_id` gateways should be suppressed for a TTL, not permanently.
 - Responses usage mapping should preserve `input_tokens_details.cached_tokens` as Chat Completions `usage.prompt_tokens_details.cached_tokens`; stream usage is emitted only when the client asks for `stream_options.include_usage`.

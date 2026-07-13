@@ -25,6 +25,7 @@ import {
   hasInvalidOpenAICompatReasoningEffortEnv,
   isOpenAICompatChatCacheFacadeMode,
   isOpenAICompatChatCacheRemoteMode,
+  isOpenAICompatHaloCompatibleCacheMode,
   isOpenAICompatHaloCacheMode,
   isOpenAICompatSub2ApiCacheMode,
   openAICompatCacheHitModeValidValues,
@@ -101,7 +102,7 @@ export default async function handler(req) {
   let respIdChainScope = null;
   let openAICompatStatelessRetryInput = null;
   let openAICompatChatRemoteSession = null;
-  let openAICompatResponsesHaloSession = null;
+  let openAICompatResponsesHaloCompatibleSession = null;
   const authErr = checkProxyAuth(req);
   if (authErr) return authErr;
   if (!cleanEnvValue("CURSORPROXY_API_KEY") && !proxyAuthWarningLogged) {
@@ -182,6 +183,8 @@ export default async function handler(req) {
     );
   }
   const openAICompatSub2ApiCache = openaiCompatResponses && isOpenAICompatSub2ApiCacheMode();
+  const openAICompatResponsesHaloCompatibleCache = openaiCompatResponses
+    && isOpenAICompatHaloCompatibleCacheMode();
   const openAICompatResponsesHaloCache = openaiCompatResponses && isOpenAICompatHaloCacheMode();
   const openAICompatChatCacheFacade = providerKey === "openaicompat"
     && pathParam === "chat/completions"
@@ -375,7 +378,7 @@ export default async function handler(req) {
     }
   }
 
-  if (openAICompatResponsesHaloCache && parsedBody) {
+  if (openAICompatResponsesHaloCompatibleCache && parsedBody) {
     const haloPromptCache = await deriveOpenAICompatResponsesHaloPromptCacheKey(
       req,
       parsedBody,
@@ -390,12 +393,12 @@ export default async function handler(req) {
            "provider:", providerKey,
            "source:", haloPromptCache.source,
            "key:", haloPromptCache.key.slice(0, 24) + "...");
-      openAICompatResponsesHaloSession = await deriveOpenAICompatChatRemoteSessionHeader(req, haloPromptCache);
-      if (openAICompatResponsesHaloSession.value) {
+      openAICompatResponsesHaloCompatibleSession = await deriveOpenAICompatChatRemoteSessionHeader(req, haloPromptCache);
+      if (openAICompatResponsesHaloCompatibleSession.value) {
         diag("OAI_RESP_HALO_SESSION",
              "provider:", providerKey,
-             "source:", openAICompatResponsesHaloSession.source,
-             "hash:", openAICompatResponsesHaloSession.hash || "(none)");
+             "source:", openAICompatResponsesHaloCompatibleSession.source,
+             "hash:", openAICompatResponsesHaloCompatibleSession.hash || "(none)");
       }
     }
   }
@@ -411,7 +414,7 @@ export default async function handler(req) {
       upstreamModelName,
       openaiCompatResponses,
       openAICompatSub2ApiCache,
-      openAICompatResponsesHaloCache,
+      openAICompatResponsesHaloCompatibleCache,
     });
     if (chain.errorResponse) return chain.errorResponse;
     if (chain.changed) bodyText = JSON.stringify(parsedBody);
@@ -962,8 +965,8 @@ export default async function handler(req) {
   if (openAICompatChatCacheRemote && openAICompatChatRemoteSession?.value) {
     headers.set("Session_id", openAICompatChatRemoteSession.value);
   }
-  if (openAICompatResponsesHaloCache && openAICompatResponsesHaloSession?.value) {
-    headers.set("Session_id", openAICompatResponsesHaloSession.value);
+  if (openAICompatResponsesHaloCompatibleCache && openAICompatResponsesHaloCompatibleSession?.value) {
+    headers.set("Session_id", openAICompatResponsesHaloCompatibleSession.value);
   }
 
   if (providerKey === "openaicompat" && pathParam === "chat/completions" && !openaiCompatResponses) {
@@ -1234,7 +1237,7 @@ export default async function handler(req) {
     providerKey,
     openaiCompatResponses,
     openAICompatSub2ApiCache,
-    openAICompatResponsesHaloCache,
+    openAICompatResponsesHaloCompatibleCache,
     openAICompatChatCacheUsageFacade,
     responsesStreamIncludeUsage,
     upstreamModelName,

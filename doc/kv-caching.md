@@ -42,6 +42,7 @@ flowchart LR
     subgraph "oairesp: — OpenAI-compatible response IDs"
         OK["oairesp:conv:\n<sha256(openaicompat:v1:upstream:model:user:messages)>"]
         OK2["sub2api mode:\n<sha256(openaicompat:v1:sub2api:upstream:model:session:user:messages)>"]
+        OK3["halo + passion8 modes:\n<sha256(openaicompat:v1:halo:upstream:model:prompt-key:user:messages)>"]
         OV["Value: response ID string\n(e.g. resp_abc123)"]
     end
 
@@ -169,10 +170,23 @@ response-ID lookup:
   and retries stateless so the successful retry can refresh the chain;
 - suppresses unsupported `previous_response_id` scopes for `KV_TTL_SECONDS`.
 
-For Halo-style gateways, `OPENAICOMPAT_CACHE_HIT_MODE=halo` keeps the same
-`prompt_cache_key + Session_id + store:true` shape but sends tool-output turns
-stateless first to avoid the known `previous_response_id` tool-output
-rejection.
+`OPENAICOMPAT_CACHE_HIT_MODE=halo` and
+`OPENAICOMPAT_CACHE_HIT_MODE=passion8` are Responses-mode-only,
+Halo-compatible paths. Both:
+
+- derive or preserve `halo_*` `prompt_cache_key` values and forward or derive
+  `Session_id`;
+- emit `OAI_RESP_HALO_*` diagnostics;
+- use the same `"halo"` `oairesp:` scope, so switching between them does not
+  create a separate KV namespace;
+- send legacy and native tool-output turns stateless first;
+- retain `GetMcpTools` empty-filter cleanup and ordinary done-argument repair.
+
+The only difference is the nested MCP schema repair. `halo` widens
+`CallMcpTool.parameters.properties.arguments` and may emit
+`OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` does neither. Use `passion8` only
+to preserve the pre-`2111555` Halo behavior of an already-working vendor. Keep
+`halo` for vendors that need the nested MCP schema repair.
 
 ### Reasoning (conv:) — configurable delays
 
@@ -227,6 +241,7 @@ flowchart TD
     subgraph "oairesp: scope"
         OS["oairesp:conv:\nopenaicompat : v1 : upstream-base : model : user"]
         OS2["sub2api mode:\nopenaicompat : v1 : sub2api : upstream-base : model : session-anchor : user"]
+        OS3["halo + passion8 modes:\nopenaicompat : v1 : halo : upstream-base : model : prompt-cache-key : user"]
     end
 
     subgraph "claude_thinking: scope"
@@ -239,7 +254,7 @@ flowchart TD
 
     note1["Azure scope includes deployment name:\nchanging AZURE_OPENAI_GENERAL_ALIAS_TARGET\nyields a fresh bucket — prevents 400 errors\nfrom replaying IDs across deployments"]
 
-    note2["OpenAI-compatible scope includes upstream base and model:\nchanging UPSTREAM_OPENAICOMPAT, path tenant, or model\nyields a fresh bucket — prevents replaying IDs\nagainst the wrong gateway/model.\nsub2api mode also includes a session anchor."]
+    note2["OpenAI-compatible scope includes upstream base and model:\nchanging UPSTREAM_OPENAICOMPAT, path tenant, or model\nyields a fresh bucket — prevents replaying IDs\nagainst the wrong gateway/model.\nsub2api includes a session anchor;\nhalo and passion8 share the halo scope and prompt key."]
 
     AS --- note1
     OS --- note2
@@ -270,7 +285,7 @@ cache version is incremented after a breaking schema change.
 | `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `oairesp:`, `claude_thinking:`) |
 | `OPENAICOMPAT_WIRE_API` | `chat` | `chat` activates Chat Completions passthrough/facade behavior; `responses` activates `/v1/responses` remap and `oairesp:` chaining |
 | `OPENAICOMPAT_CHAT_CACHE_MODE` | `passthrough` | Chat mode only. `facade` normalizes raw Chat cache-hit usage and forces upstream stream usage chunks; ignored when `OPENAICOMPAT_WIRE_API=responses` |
-| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only. `default` uses normal `store:true` plus `previous_response_id` chaining and the default tool-output retry. `sub2api` adds GPT-5/Codex prompt cache key injection, session anchors, stale previous-response cleanup, and unsupported-scope TTLs. `halo` preserves prompt cache/session hints and sends tool-output turns stateless first to avoid known `previous_response_id` tool-output rejection; ignored when `OPENAICOMPAT_WIRE_API=chat` |
+| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only: `default`, `sub2api`, `halo`, or `passion8`. `sub2api` adds GPT-5/Codex cache hints and session-scoped fallback handling. `halo` and `passion8` share Halo-compatible prompt/session, `"halo"` KV scope, diagnostics, stateless-first tool output, and ordinary argument repairs; only `halo` widens the nested `CallMcpTool` schema. Invalid values return 400 in Responses mode; ignored in Chat mode. |
 | `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
 | `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |

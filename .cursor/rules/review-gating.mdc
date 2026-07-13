@@ -23,8 +23,19 @@ Before committing a fix, enumerate the distinct input shapes the code can receiv
 - Per-index reconstruction does not prove Cursor compatibility when chunks move backward between active tool indexes. Assert the exact downstream index order: if a client requires each tool's start and arguments to be contiguous, a sequence such as `0,1,1,0` must be serialized to `0,0,1,1` for the affected resolved model only. Any deferred-chunk path must also test terminal, error, and timeout release so an incomplete earlier tool cannot hide later tools.
 - Model-specific compatibility fixes must gate on the resolved upstream model identity, not the client alias or response model. Preserve an exact-shape or byte-for-byte baseline test for a known-working neighboring model such as GPT-5.5.
 - Tool-name compatibility gates must test every actual client tool name independently. `Task` and `Subagent` are distinct names: a sanitizer gated only on `Subagent` does not protect `Task`. For model-specific Task repair, replay the exact production optional-field shape, preserve valid local and cloud fields, and prove the neighboring model's payload remains byte-for-byte unchanged.
-- Cache-mode compatibility fixes must gate on the exact mode that production evidence proves broken. If `OPENAICOMPAT_CACHE_HIT_MODE=halo` needs a Cursor stream repair but default Responses or `sub2api` already work, pass the specific mode flag through the call chain and add negative tests proving neighboring modes stay unchanged. A shared symptom such as `GetMcpTools` `keyCount: 3` is not enough by itself to widen the fix; require a visible failure, retry loop, or mode-specific log sequence.
-- Cursor wrapper tools can fail before the real MCP/server tool is called. For `CallMcpTool`, `mcpArguments: present mcpArgKeys: (none)` plus a local required-field validation error means the nested `arguments` map was empty at the Cursor wrapper boundary, not that the target MCP server rejected the request. Fix restrictive wrapper schemas at tool-definition normalization time (for example, widening only `CallMcpTool.parameters.properties.arguments`), not by guessing or reconstructing runtime values from prompts. Gate the repair by the proven provider/cache mode, and add tests proving non-MCP tools, populated wrapper args, and neighboring cache modes are unchanged.
+- Cache-mode compatibility fixes must gate on the exact capability that
+  production evidence proves broken. `halo` and `passion8` intentionally share
+  Halo prompt/session behavior, the `"halo"` `oairesp:` scope,
+  `OAI_RESP_HALO_*` diagnostics, stateless-first legacy/native tool output,
+  `GetMcpTools` empty-filter cleanup, and ordinary done-argument repair. Only
+  exact `halo` may widen `CallMcpTool.parameters.properties.arguments` and emit
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` is the negative preservation
+  case for pre-commit-`2111555` vendor behavior. Add positive tests for shared
+  capabilities and byte-for-byte negative tests for excluded capabilities. A
+  shared symptom such as `GetMcpTools` `keyCount: 3` is not enough by itself to
+  widen a repair; require a visible failure, retry loop, or mode-specific log
+  sequence.
+- Cursor wrapper tools can fail before the real MCP/server tool is called. For `CallMcpTool`, `mcpArguments: present mcpArgKeys: (none)` plus a local required-field validation error means the nested `arguments` map was empty at the Cursor wrapper boundary, not that the target MCP server rejected the request. Fix restrictive wrapper schemas at tool-definition normalization time (for example, widening only `CallMcpTool.parameters.properties.arguments`), not by guessing or reconstructing runtime values from prompts. Gate the repair by the proven provider/cache mode, and add tests proving non-MCP tools, populated wrapper args, and neighboring cache modes are unchanged. In the accepted Responses matrix, this widening belongs to exact `halo`, not `passion8`.
 - Production `OAI_TOOL_CALL_DONE` and argument-shape logs prove upstream/model arguments reached and were parsed by the proxy. They do not prove Cursor assembled the transformed downstream SSE correctly; review must reconstruct downstream chunks and validate visible execution.
 
 To verify: run `node --input-type=module -e "import { fn } from './api/file.js'; ..."` with each input shape before committing.

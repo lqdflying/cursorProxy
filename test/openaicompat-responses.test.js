@@ -95,6 +95,72 @@ describe("openaicompat Responses wire mode — integration", () => {
     }
   }
 
+  function mockResponsesFunctionCallStream({
+    responseId,
+    toolName,
+    argumentsText,
+    delta = "",
+  }) {
+    const itemId = `fc_${responseId}`;
+    const stream = [
+      "event: response.created",
+      `data: ${JSON.stringify({
+        type: "response.created",
+        response: { id: responseId, status: "in_progress", model: "gpt-5.5" },
+      })}`,
+      "",
+      "event: response.output_item.added",
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 1,
+        item: {
+          id: itemId,
+          type: "function_call",
+          call_id: `call_${responseId}`,
+          name: toolName,
+        },
+      })}`,
+      "",
+      "event: response.function_call_arguments.delta",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.delta",
+        output_index: 1,
+        item_id: itemId,
+        delta,
+      })}`,
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({
+        type: "response.function_call_arguments.done",
+        output_index: 1,
+        item_id: itemId,
+        arguments: argumentsText,
+      })}`,
+      "",
+      "event: response.completed",
+      `data: ${JSON.stringify({
+        type: "response.completed",
+        response: { id: responseId, status: "completed", error: null },
+      })}`,
+      "",
+    ].join("\n");
+
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }
+
+  function streamedChatToolArguments(bodyText) {
+    return bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)))
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+  }
+
   // ─── Default (chat mode): no Responses remap ────────────────────────────
 
   it("default chat mode posts to /v1/chat/completions (no remap)", async () => {
@@ -2168,49 +2234,31 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.doesNotMatch(logs, /OAI_SHELL_ARGS_SANITIZED/);
   });
 
-  it("halo Responses cache mode repairs tool args when done carries missing streamed args", async () => {
+  it("Halo-compatible Responses cache modes repair tool args when done carries missing streamed args", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
     const args = JSON.stringify({ command: "pwd", working_directory: "/tmp" });
-    const stream = [
-      "event: response.created",
-      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_shell\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
-      "",
-      "event: response.output_item.added",
-      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_shell\",\"type\":\"function_call\",\"call_id\":\"call_shell\",\"name\":\"Shell\"}}",
-      "",
-      "event: response.function_call_arguments.delta",
-      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_shell\",\"delta\":\"\"}",
-      "",
-      "event: response.function_call_arguments.done",
-      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_shell", arguments: args })}`,
-      "",
-      "event: response.completed",
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_shell\",\"status\":\"completed\",\"error\":null}}",
-      "",
-    ].join("\n");
-    global.fetch = async () => new Response(stream, {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
 
-    const res = await handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "run pwd" }], stream: true }),
-    }));
+    for (const cacheMode of ["halo", "passion8"]) {
+      process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+      mockResponsesFunctionCallStream({
+        responseId: `resp_shell_${cacheMode}`,
+        toolName: "Shell",
+        argumentsText: args,
+      });
 
-    assert.equal(res.status, 200);
-    const bodyText = await res.text();
-    const chunks = bodyText
-      .split("\n")
-      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
-      .map((line) => JSON.parse(line.slice(6)));
-    const argText = chunks
-      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
-      .map((toolCall) => toolCall.function?.arguments || "")
-      .join("");
-    assert.equal(argText, args);
+      const res = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: `run pwd in ${cacheMode}` }],
+          stream: true,
+        }),
+      }));
+
+      assert.equal(res.status, 200, cacheMode);
+      assert.equal(streamedChatToolArguments(await res.text()), args, cacheMode);
+    }
   });
 
   it("halo Responses cache mode widens only CallMcpTool nested MCP arguments schema", async () => {
@@ -2291,16 +2339,8 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OAI_CALL_MCP_TOOL_SCHEMA_FIXED provider: openaicompat count: 1/);
   });
 
-  it("non-halo Responses cache modes do not widen CallMcpTool nested MCP arguments schema", async () => {
+  it("non-Halo Responses cache modes do not widen CallMcpTool nested MCP arguments schema", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
-    const captured = mockFetchResponses({
-      id: "resp_mcp_schema_sub2api",
-      object: "response",
-      model: "gpt-5.5",
-      status: "completed",
-      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
-    });
     const callMcpParameters = {
       type: "object",
       properties: {
@@ -2312,29 +2352,40 @@ describe("openaicompat Responses wire mode — integration", () => {
       additionalProperties: false,
     };
 
-    const { logs } = await captureConsoleLogs(async () => {
-      const res = await handler(new Request(PROVIDER_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: "gpt-5.5",
-          messages: [{ role: "user", content: "search tavily docs" }],
-          tools: [{
-            type: "function",
-            function: {
-              name: "CallMcpTool",
-              description: "Call a Cursor MCP tool.",
-              parameters: JSON.parse(JSON.stringify(callMcpParameters)),
-            },
-          }],
-        }),
-      }));
-      assert.equal(res.status, 200);
-    });
+    for (const cacheMode of ["sub2api", "passion8"]) {
+      process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+      const captured = mockFetchResponses({
+        id: `resp_mcp_schema_${cacheMode}`,
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+      });
 
-    const callMcpTool = captured.body.tools.find((tool) => tool.name === "CallMcpTool");
-    assert.deepEqual(callMcpTool.parameters, callMcpParameters);
-    assert.doesNotMatch(logs, /OAI_CALL_MCP_TOOL_SCHEMA_FIXED/);
+      const { logs } = await captureConsoleLogs(async () => {
+        const res = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            messages: [{ role: "user", content: `search tavily docs in ${cacheMode}` }],
+            tools: [{
+              type: "function",
+              function: {
+                name: "CallMcpTool",
+                description: "Call a Cursor MCP tool.",
+                parameters: JSON.parse(JSON.stringify(callMcpParameters)),
+              },
+            }],
+          }),
+        }));
+        assert.equal(res.status, 200, cacheMode);
+      });
+
+      const callMcpTool = captured.body.tools.find((tool) => tool.name === "CallMcpTool");
+      assert.deepEqual(callMcpTool.parameters, callMcpParameters, cacheMode);
+      assert.doesNotMatch(logs, /OAI_CALL_MCP_TOOL_SCHEMA_FIXED/, cacheMode);
+    }
   });
 
   it("halo Responses cache mode leaves normal non-MCP tool call args unchanged", async () => {
@@ -2440,54 +2491,41 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.deepEqual(JSON.parse(argText), JSON.parse(args));
   });
 
-  it("halo Responses cache mode strips empty GetMcpTools filters before forwarding to Cursor", async () => {
+  it("Halo-compatible Responses cache modes strip empty GetMcpTools filters before forwarding to Cursor", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
     const args = JSON.stringify({ server: "", toolName: "", pattern: "" });
-    const stream = [
-      "event: response.created",
-      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp_tools\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
-      "",
-      "event: response.output_item.added",
-      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_mcp_tools\",\"type\":\"function_call\",\"call_id\":\"call_mcp_tools\",\"name\":\"GetMcpTools\"}}",
-      "",
-      "event: response.function_call_arguments.delta",
-      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_mcp_tools\",\"delta\":\"\"}",
-      "",
-      "event: response.function_call_arguments.done",
-      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_mcp_tools", arguments: args })}`,
-      "",
-      "event: response.completed",
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp_tools\",\"status\":\"completed\",\"error\":null}}",
-      "",
-    ].join("\n");
-    global.fetch = async () => new Response(stream, {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
 
-    let bodyText = "";
-    const { result: res, logs } = await captureConsoleLogs(async () => {
-      const response = await handler(new Request(PROVIDER_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "discover mcp" }], stream: true }),
-      }));
-      bodyText = await response.text();
-      return response;
-    });
+    for (const cacheMode of ["halo", "passion8"]) {
+      process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+      mockResponsesFunctionCallStream({
+        responseId: `resp_mcp_tools_${cacheMode}`,
+        toolName: "GetMcpTools",
+        argumentsText: args,
+      });
 
-    assert.equal(res.status, 200);
-    const chunks = bodyText
-      .split("\n")
-      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
-      .map((line) => JSON.parse(line.slice(6)));
-    const argText = chunks
-      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
-      .map((toolCall) => toolCall.function?.arguments || "")
-      .join("");
-    assert.deepEqual(JSON.parse(argText), {});
-    assert.match(logs, /OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools toolIndex: 0 removed: server,toolName,pattern argKeys: \(none\)/);
+      let bodyText = "";
+      const { result: res, logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            messages: [{ role: "user", content: `discover mcp in ${cacheMode}` }],
+            stream: true,
+          }),
+        }));
+        bodyText = await response.text();
+        return response;
+      });
+
+      assert.equal(res.status, 200, cacheMode);
+      assert.deepEqual(JSON.parse(streamedChatToolArguments(bodyText)), {}, cacheMode);
+      assert.match(
+        logs,
+        /OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools toolIndex: 0 removed: server,toolName,pattern argKeys: \(none\)/,
+        cacheMode
+      );
+    }
   });
 
   it("halo Responses cache mode preserves non-empty GetMcpTools filters", async () => {
@@ -3078,36 +3116,41 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OAI_INPUT_NORMALIZED provider: openaicompat textParts: 1 imageParts: 1 providerOptionParts: 1/);
   });
 
-  it("halo Responses cache mode injects prompt_cache_key and forwards Session_id", async () => {
+  it("Halo-compatible Responses cache modes inject halo prompt keys and forward Session_id", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
-    const captured = mockFetchResponses({
-      id: "resp_halo_prompt_key",
-      object: "response",
-      model: "gpt-5.5",
-      status: "completed",
-      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
-    });
-
-    await handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "session_id": "halo-session-1",
-      },
-      body: JSON.stringify({
+    for (const cacheMode of ["halo", "passion8"]) {
+      process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+      const captured = mockFetchResponses({
+        id: `resp_${cacheMode}_prompt_key`,
+        object: "response",
         model: "gpt-5.5",
-        messages: [
-          { role: "system", content: "be concise" },
-          { role: "user", content: "hi" },
-        ],
-      }),
-    }));
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+      });
 
-    assert.match(captured.body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
-    assert.equal(captured.headers.get("Session_id"), "halo-session-1");
-    assert.equal(captured.body.store, true);
-    assert.equal(captured.body.previous_response_id, undefined);
+      const sessionId = `${cacheMode}-session-1`;
+      const { logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "session_id": sessionId,
+        },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [
+            { role: "system", content: "be concise" },
+            { role: "user", content: "hi" },
+          ],
+        }),
+      })));
+
+      assert.match(captured.body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/, cacheMode);
+      assert.equal(captured.headers.get("Session_id"), sessionId, cacheMode);
+      assert.equal(captured.body.store, true, cacheMode);
+      assert.equal(captured.body.previous_response_id, undefined, cacheMode);
+      assert.match(logs, /OAI_RESP_HALO_KEY provider: openaicompat source: session_id key: halo_session_id_/, cacheMode);
+      assert.match(logs, /OAI_RESP_HALO_SESSION provider: openaicompat source: session_id hash: [0-9a-f]{16}/, cacheMode);
+    }
   });
 
   it("halo Responses cache mode normalizes Chat image_url parts to Responses input_image", async () => {
@@ -3153,30 +3196,99 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OAI_INPUT_NORMALIZED provider: openaicompat textParts: 1 imageParts: 1 providerOptionParts: 1/);
   });
 
-  it("halo Responses cache mode preserves explicit prompt_cache_key and derives Session_id from it", async () => {
+  it("Halo-compatible Responses cache modes preserve explicit prompt_cache_key and derive Session_id", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
-    const captured = mockFetchResponses({
-      id: "resp_halo_explicit_key",
-      object: "response",
-      model: "gpt-5.5",
-      status: "completed",
-      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
-    });
+    for (const cacheMode of ["halo", "passion8"]) {
+      process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+      const captured = mockFetchResponses({
+        id: `resp_${cacheMode}_explicit_key`,
+        object: "response",
+        model: "gpt-5.5",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] }],
+      });
+      const promptCacheKey = `client-${cacheMode}-key`;
+
+      const { logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          prompt_cache_key: promptCacheKey,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      })));
+
+      assert.equal(captured.body.prompt_cache_key, promptCacheKey, cacheMode);
+      assert.equal(captured.headers.get("Session_id"), promptCacheKey, cacheMode);
+      assert.equal(captured.body.store, true, cacheMode);
+      assert.match(logs, /OAI_RESP_HALO_KEY provider: openaicompat source: client key: client-/, cacheMode);
+      assert.match(logs, /OAI_RESP_HALO_SESSION provider: openaicompat source: client hash: [0-9a-f]{16}/, cacheMode);
+    }
+  });
+
+  it("passion8 and halo share the same response-chain KV namespace and scope", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "passion8";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    const sessionId = "halo-compatible-cross-mode-session";
+    const model = "gpt-5.5";
+    const turn1Messages = [{ role: "user", content: "hi" }];
+
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.previous_response_id, undefined);
+      assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
+      return new Response(JSON.stringify({
+        id: "resp_cross_mode",
+        object: "response",
+        model,
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
 
     await handler(new Request(PROVIDER_URL, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "session_id": sessionId },
+      body: JSON.stringify({ model, messages: turn1Messages }),
+    }));
+
+    const turn1ResponseKeys = [...kv.store.keys()].filter((key) => key.startsWith("oairesp:"));
+    assert.equal(turn1ResponseKeys.length, 1);
+    assert.equal(kv.store.get(turn1ResponseKeys[0]), "resp_cross_mode");
+
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
+    let followUpBody = null;
+    global.fetch = async (_url, init) => {
+      followUpBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "resp_cross_mode_follow_up",
+        object: "response",
+        model,
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "bye" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "session_id": sessionId },
       body: JSON.stringify({
-        model: "gpt-5.5",
-        prompt_cache_key: "client-halo-key",
-        messages: [{ role: "user", content: "hi" }],
+        model,
+        messages: [
+          ...turn1Messages,
+          { role: "assistant", content: "hello" },
+          { role: "user", content: "bye" },
+        ],
       }),
     }));
 
-    assert.equal(captured.body.prompt_cache_key, "client-halo-key");
-    assert.equal(captured.headers.get("Session_id"), "client-halo-key");
-    assert.equal(captured.body.store, true);
+    assert.equal(followUpBody.previous_response_id, "resp_cross_mode");
+    assert.equal(followUpBody.input.length, 1);
+    assert.equal(followUpBody.input[0].content, "bye");
+    assert.match(followUpBody.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
   });
 
   it("rejects remote as an invalid Responses cache-hit mode", async () => {
@@ -3204,8 +3316,8 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(res.status, 400);
     const body = await res.json();
     assert.equal(body.error.code, "openaicompat_cache_hit_mode_invalid");
-    assert.match(body.error.message, /Valid Responses values: default\|sub2api\|halo/);
-    assert.match(logs, /OPENAICOMPAT_CACHE_HIT_MODE_INVALID raw: remote valid: default\|sub2api\|halo/);
+    assert.match(body.error.message, /Valid Responses values: default\|sub2api\|halo\|passion8/);
+    assert.match(logs, /OPENAICOMPAT_CACHE_HIT_MODE_INVALID raw: remote valid: default\|sub2api\|halo\|passion8/);
   });
 
   it("sub2api mode refreshes a stale previous_response_id after previous_response_not_found", async () => {
@@ -3351,142 +3463,124 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
   });
 
-  it("halo Responses cache mode sends tool outputs stateless first", async () => {
+  it("Halo-compatible Responses cache modes send legacy and native tool outputs stateless first", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
-    const kv = makeInMemoryKv();
-    setKvDriver(kv);
-
-    global.fetch = async () => new Response(JSON.stringify({
-      id: "resp_tool_call",
-      object: "response",
-      model: "gpt-5.5",
-      status: "completed",
-      output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
-    }), { status: 200, headers: { "content-type": "application/json" } });
-
-    const turn1Messages = [{ role: "user", content: "lookup" }];
-    await handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "session_id": "halo-session-1" },
-      body: JSON.stringify({ model: "gpt-5.5", messages: turn1Messages }),
-    }));
-    assert.ok([...kv.store.values()].includes("resp_tool_call"), "turn 1 should cache the tool-call response id");
-
-    const calls = [];
-    const sessions = [];
-    global.fetch = async (_url, init) => {
-      const body = JSON.parse(init.body);
-      calls.push(body);
-      sessions.push(new Headers(init.headers).get("Session_id"));
-      assert.equal(body.previous_response_id, undefined, "halo mode should skip previous_response_id for tool-output turns");
-      assert.equal(body.input.length, 3, "halo mode should send the full tool-call exchange first");
-      assert.equal(body.input[1].type, "function_call");
-      assert.equal(body.input[2].type, "function_call_output");
-      assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
-      return new Response(JSON.stringify({
-        id: "resp_tool_done",
-        object: "response",
-        model: "gpt-5.5",
-        status: "completed",
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    };
-
-    const { result: res, logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "session_id": "halo-session-1" },
-      body: JSON.stringify({
-        model: "gpt-5.5",
-        messages: [
-          ...turn1Messages,
-          {
-            role: "assistant",
-            content: null,
-            tool_calls: [{
-              id: "call_1",
-              type: "function",
-              function: { name: "lookup", arguments: "{}" },
-            }],
-          },
-          { role: "tool", tool_call_id: "call_1", content: "42" },
-        ],
-      }),
-    })));
-
-    assert.equal(res.status, 200);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(sessions, ["halo-session-1"]);
-    assert.match(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS provider: openaicompat inputItems: 3 toolOutputs: 1/);
-    assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL/);
-    assert.doesNotMatch(logs, /OAI_TOOL_OUTPUT_RETRY/);
-    assert.equal([...kv.store.values()].includes("resp_tool_done"), true, "stateless retry response should refresh the chain");
-  });
-
-  it("halo Responses cache mode sends native input tool outputs stateless first", async () => {
-    process.env.OPENAICOMPAT_WIRE_API = "responses";
-    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
-    const kv = makeInMemoryKv();
-    setKvDriver(kv);
-
-    global.fetch = async () => new Response(JSON.stringify({
-      id: "resp_native_tool_call",
-      object: "response",
-      model: "gpt-5.5",
-      status: "completed",
-      output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
-    }), { status: 200, headers: { "content-type": "application/json" } });
-
-    await handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "session_id": "halo-session-1" },
-      body: JSON.stringify({
-        model: "gpt-5.5",
-        input: [{ role: "user", content: "lookup" }],
-      }),
-    }));
-    assert.ok([...kv.store.values()].includes("resp_native_tool_call"), "turn 1 should cache the native tool-call response id");
-
-    const calls = [];
-    const sessions = [];
-    global.fetch = async (_url, init) => {
-      const body = JSON.parse(init.body);
-      calls.push(body);
-      sessions.push(new Headers(init.headers).get("Session_id"));
-      assert.equal(body.previous_response_id, undefined, "halo mode should skip previous_response_id for native tool-output turns");
-      assert.equal(body.input.length, 3);
-      assert.equal(body.input[1].type, "function_call");
-      assert.equal(body.input[2].type, "function_call_output");
-      assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/);
-      return new Response(JSON.stringify({
-        id: "resp_native_tool_done",
-        object: "response",
-        model: "gpt-5.5",
-        status: "completed",
-        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    };
-
-    const { result: res, logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "session_id": "halo-session-1" },
-      body: JSON.stringify({
-        model: "gpt-5.5",
-        input: [
+    const inputCases = [
+      {
+        label: "messages",
+        turn1Body: {
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "lookup" }],
+        },
+        followUpBody: {
+          model: "gpt-5.5",
+          messages: [
+            { role: "user", content: "lookup" },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_1",
+                type: "function",
+                function: { name: "lookup", arguments: "{}" },
+              }],
+            },
+            { role: "tool", tool_call_id: "call_1", content: "42" },
+          ],
+        },
+      },
+      {
+        label: "input",
+        turn1Body: {
+          model: "gpt-5.5",
+          input: [{ role: "user", content: "lookup" }],
+        },
+        followUpBody: {
+          model: "gpt-5.5",
+          input: [
           { role: "user", content: "lookup" },
           { type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" },
           { type: "function_call_output", call_id: "call_1", output: "42" },
-        ],
-      }),
-    })));
+          ],
+        },
+      },
+    ];
 
-    assert.equal(res.status, 200);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(sessions, ["halo-session-1"]);
-    assert.match(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS provider: openaicompat inputItems: 3 toolOutputs: 1/);
-    assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL/);
-    assert.doesNotMatch(logs, /OAI_TOOL_OUTPUT_RETRY/);
-    assert.equal([...kv.store.values()].includes("resp_native_tool_done"), true, "native stateless response should refresh the chain");
+    for (const cacheMode of ["halo", "passion8"]) {
+      for (const inputCase of inputCases) {
+        process.env.OPENAICOMPAT_CACHE_HIT_MODE = cacheMode;
+        const kv = makeInMemoryKv();
+        setKvDriver(kv);
+        const caseLabel = `${cacheMode}_${inputCase.label}`;
+        const sessionId = `${caseLabel}-session`;
+        const turn1ResponseId = `resp_${caseLabel}_tool_call`;
+        const followUpResponseId = `resp_${caseLabel}_tool_done`;
+
+        global.fetch = async () => new Response(JSON.stringify({
+          id: turn1ResponseId,
+          object: "response",
+          model: "gpt-5.5",
+          status: "completed",
+          output: [{ type: "function_call", call_id: "call_1", name: "lookup", arguments: "{}" }],
+        }), { status: 200, headers: { "content-type": "application/json" } });
+
+        await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json", "session_id": sessionId },
+          body: JSON.stringify(inputCase.turn1Body),
+        }));
+        assert.ok(
+          [...kv.store.values()].includes(turn1ResponseId),
+          `${caseLabel} turn 1 should cache the tool-call response id`
+        );
+
+        const calls = [];
+        const sessions = [];
+        global.fetch = async (_url, init) => {
+          const body = JSON.parse(init.body);
+          calls.push(body);
+          sessions.push(new Headers(init.headers).get("Session_id"));
+          assert.equal(
+            body.previous_response_id,
+            undefined,
+            `${caseLabel} should skip previous_response_id for tool-output turns`
+          );
+          assert.equal(body.input.length, 3, `${caseLabel} should send the full tool-call exchange first`);
+          assert.equal(body.input[1].type, "function_call", caseLabel);
+          assert.equal(body.input[2].type, "function_call_output", caseLabel);
+          assert.match(body.prompt_cache_key, /^halo_session_id_[0-9a-f]{32}$/, caseLabel);
+          return new Response(JSON.stringify({
+            id: followUpResponseId,
+            object: "response",
+            model: "gpt-5.5",
+            status: "completed",
+            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }],
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        };
+
+        const { result: res, logs } = await captureConsoleLogs(async () => handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json", "session_id": sessionId },
+          body: JSON.stringify(inputCase.followUpBody),
+        })));
+
+        assert.equal(res.status, 200, caseLabel);
+        assert.equal(calls.length, 1, caseLabel);
+        assert.deepEqual(sessions, [sessionId], caseLabel);
+        assert.match(
+          logs,
+          /OAI_RESP_HALO_TOOL_OUTPUT_STATELESS provider: openaicompat inputItems: 3 toolOutputs: 1/,
+          caseLabel
+        );
+        assert.doesNotMatch(logs, /OAI_RESP_HALO_TOOL_OUTPUT_STATEFUL/, caseLabel);
+        assert.doesNotMatch(logs, /OAI_TOOL_OUTPUT_RETRY/, caseLabel);
+        assert.equal(
+          [...kv.store.values()].includes(followUpResponseId),
+          true,
+          `${caseLabel} stateless response should refresh the chain`
+        );
+      }
+    }
   });
 
   it("does not apply the default tool-output retry in sub2api mode", async () => {

@@ -61,6 +61,13 @@ For direct upstream provider pre-detection, keep the two API families separate:
 | Chat `remote` | `/openaicompat/v1/chat/completions` | `/v1/chat/completions` | Keeps `messages`; preserves or injects `prompt_cache_key` | Upstream owns cache/state mapping; no `previous_response_id`, no trimming, no `oairesp:` state | `OAI_CHAT_REMOTE_KEY`, optional Chat cache usage diagnostics |
 | Responses default | `/openaicompat/v1/chat/completions` | `/v1/responses` | Converts `messages` to `input`; maps output back to Chat | KV stores response IDs under `oairesp:`; second turns may use `previous_response_id`; explicit `store:false` opts out | `MESSAGES_TO_INPUT` or `INPUT_CHAIN`, `PREV_RESP_ID_MISS`/`FOUND`, `STREAM_OAI_RESP_ID`, `CACHE_OAI_RESP_ID`, `OAI_STREAM_SUMMARY` |
 | Responses `sub2api` | `/openaicompat/v1/chat/completions` | `/v1/responses` | Same as Responses default; may inject `compat_cc_*` `prompt_cache_key` | Adds session anchor to `oairesp:` scope and handles stale/unsupported `previous_response_id` fallback | `OAI_PROMPT_CACHE_KEY_INJECTED`, `OAI_SESSION_ANCHOR`, plus Responses diagnostics |
+| Responses `halo` | `/openaicompat/v1/chat/completions` | `/v1/responses` | Preserves or derives `halo_*` `prompt_cache_key`; forwards or derives `Session_id`; sends legacy/native tool output stateless first | Uses the literal `"halo"` `oairesp:` scope; cleans empty `GetMcpTools` filters; retains ordinary done-argument repair; widens `CallMcpTool.parameters.properties.arguments` | `OAI_RESP_HALO_*`, `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` when applicable, and `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` when the nested schema is widened |
+| Responses `passion8` | `/openaicompat/v1/chat/completions` | `/v1/responses` | Same Halo-compatible request, session, and stateless-first tool-output behavior as `halo` | Shares the `"halo"` `oairesp:` scope and ordinary repairs, but preserves the vendor's nested `CallMcpTool` schema | Same `OAI_RESP_HALO_*` and applicable argument diagnostics as `halo`, but never `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` |
+
+`passion8` is a preservation mode for an already-working vendor whose
+pre-commit-`2111555` Halo behavior must remain unchanged. It is not a general
+provider default. Keep `halo` for vendors whose direct probe plus deployed
+logs prove that nested `CallMcpTool` schema repair is required.
 
 ## ChatHub Probe Mismatches
 
@@ -148,6 +155,11 @@ STREAM_OAI_RESP_ID id: resp_<id>
 CACHE_OAI_RESP_ID key: conv:<sha> id: resp_<id>
 OAI_PROMPT_CACHE_KEY_INJECTED model: ... key: compat_cc_...
 OAI_SESSION_ANCHOR source: ...
+OAI_RESP_HALO_KEY provider: openaicompat source: ... key: halo_...
+OAI_RESP_HALO_SESSION provider: openaicompat source: ... hash: ...
+OAI_RESP_HALO_TOOL_OUTPUT_STATELESS provider: openaicompat inputItems: <n> toolOutputs: <n>
+OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools ...
+OAI_CALL_MCP_TOOL_SCHEMA_FIXED provider: openaicompat count: <n> # halo only
 OAI_PREV_RESP_UNSUPPORTED_RETRY status: 400 inputItems: <n>
 OAI_PREV_RESP_NOT_FOUND_RETRY status: 404 inputItems: <n>
 OAI_STREAM_SUMMARY reason: ...
@@ -221,6 +233,16 @@ Translate confirmed probe results into cursorProxy settings or code changes care
 
 - Default Responses chaining: use `OPENAICOMPAT_WIRE_API=responses`; no cache-hit mode is required when logs confirm `PREV_RESP_ID_FOUND` and `CACHE_OAI_RESP_ID`.
 - sub2api-like Responses prompt-cache routing: use `OPENAICOMPAT_WIRE_API=responses` with `OPENAICOMPAT_CACHE_HIT_MODE=sub2api` for GPT/Codex-like models.
+- Halo-compatible Responses routing with nested MCP schema repair: use
+  `OPENAICOMPAT_WIRE_API=responses` with
+  `OPENAICOMPAT_CACHE_HIT_MODE=halo` only when provider and Cursor evidence
+  show that `CallMcpTool.parameters.properties.arguments` must be widened.
+- Preserve an already-working vendor's pre-`2111555` Halo behavior: use
+  `OPENAICOMPAT_WIRE_API=responses` with
+  `OPENAICOMPAT_CACHE_HIT_MODE=passion8`. It keeps Halo prompt/session,
+  diagnostics, `"halo"` KV scope, stateless-first tool output,
+  `GetMcpTools` cleanup, and ordinary done-argument repair without nested MCP
+  schema widening.
 - Chat upstream-owned cache/session routing: use `OPENAICOMPAT_WIRE_API=chat` with `OPENAICOMPAT_CHAT_CACHE_MODE=remote`.
 - Chat usage/accounting normalization only: use `OPENAICOMPAT_WIRE_API=chat` with `OPENAICOMPAT_CHAT_CACHE_MODE=facade`.
 - If provider pre-detection requires both a top-level `prompt_cache_key` and an upstream `Session_id` header, current cursorProxy `remote` mode may be insufficient by itself because it derives/injects `prompt_cache_key` but does not necessarily forward the original session header. Treat that as an implementation gap to verify in `api/proxy.js`.
