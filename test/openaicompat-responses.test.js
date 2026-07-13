@@ -2213,6 +2213,233 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(argText, args);
   });
 
+  it("halo Responses cache mode widens only CallMcpTool nested MCP arguments schema", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
+    const captured = mockFetchResponses({
+      id: "resp_mcp_schema",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+    });
+    const callMcpParameters = {
+      type: "object",
+      properties: {
+        server: { type: "string" },
+        toolName: { type: "string" },
+        arguments: { type: "object", properties: {}, additionalProperties: false },
+        description: { type: "string" },
+      },
+      required: ["server", "toolName", "arguments"],
+      additionalProperties: false,
+    };
+    const normalParameters = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        filters: {
+          type: "object",
+          properties: { site: { type: "string" } },
+          additionalProperties: false,
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    };
+
+    const { logs } = await captureConsoleLogs(async () => {
+      const res = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "search tavily docs" }],
+          tools: [
+            {
+              type: "function",
+              function: {
+                name: "CallMcpTool",
+                description: "Call a Cursor MCP tool.",
+                parameters: JSON.parse(JSON.stringify(callMcpParameters)),
+              },
+            },
+            {
+              type: "function",
+              function: {
+                name: "LookupDocs",
+                description: "Lookup documentation.",
+                parameters: JSON.parse(JSON.stringify(normalParameters)),
+              },
+            },
+          ],
+        }),
+      }));
+      assert.equal(res.status, 200);
+    });
+
+    const callMcpTool = captured.body.tools.find((tool) => tool.name === "CallMcpTool");
+    const normalTool = captured.body.tools.find((tool) => tool.name === "LookupDocs");
+    assert.deepEqual(callMcpTool.parameters.properties.arguments, {
+      type: "object",
+      additionalProperties: true,
+    });
+    assert.deepEqual(callMcpTool.parameters.properties.server, callMcpParameters.properties.server);
+    assert.deepEqual(callMcpTool.parameters.properties.toolName, callMcpParameters.properties.toolName);
+    assert.deepEqual(callMcpTool.parameters.required, callMcpParameters.required);
+    assert.deepEqual(normalTool.parameters, normalParameters);
+    assert.match(logs, /OAI_CALL_MCP_TOOL_SCHEMA_FIXED provider: openaicompat count: 1/);
+  });
+
+  it("non-halo Responses cache modes do not widen CallMcpTool nested MCP arguments schema", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "sub2api";
+    const captured = mockFetchResponses({
+      id: "resp_mcp_schema_sub2api",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+    });
+    const callMcpParameters = {
+      type: "object",
+      properties: {
+        server: { type: "string" },
+        toolName: { type: "string" },
+        arguments: { type: "object", properties: {}, additionalProperties: false },
+      },
+      required: ["server", "toolName", "arguments"],
+      additionalProperties: false,
+    };
+
+    const { logs } = await captureConsoleLogs(async () => {
+      const res = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "search tavily docs" }],
+          tools: [{
+            type: "function",
+            function: {
+              name: "CallMcpTool",
+              description: "Call a Cursor MCP tool.",
+              parameters: JSON.parse(JSON.stringify(callMcpParameters)),
+            },
+          }],
+        }),
+      }));
+      assert.equal(res.status, 200);
+    });
+
+    const callMcpTool = captured.body.tools.find((tool) => tool.name === "CallMcpTool");
+    assert.deepEqual(callMcpTool.parameters, callMcpParameters);
+    assert.doesNotMatch(logs, /OAI_CALL_MCP_TOOL_SCHEMA_FIXED/);
+  });
+
+  it("halo Responses cache mode leaves normal non-MCP tool call args unchanged", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
+    const args = JSON.stringify({
+      query: "Tavily Search API official documentation 2026",
+      limit: 3,
+      filters: { site: "docs.tavily.com" },
+    });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_lookup\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_lookup\",\"type\":\"function_call\",\"call_id\":\"call_lookup\",\"name\":\"LookupDocs\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_lookup\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_lookup", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_lookup\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: res, logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "lookup docs" }], stream: true }),
+      }));
+      bodyText = await response.text();
+      return response;
+    });
+
+    assert.equal(res.status, 200);
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const toolCalls = chunks.flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || []);
+    const argText = toolCalls.map((toolCall) => toolCall.function?.arguments || "").join("");
+    assert.equal(toolCalls[0].function.name, "LookupDocs");
+    assert.equal(argText, args);
+    assert.doesNotMatch(logs, /OAI_CALL_MCP_TOOL_SCHEMA_FIXED/);
+  });
+
+  it("halo Responses cache mode preserves populated CallMcpTool nested MCP arguments", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
+    const args = JSON.stringify({
+      server: "user-tavily",
+      toolName: "tavily_search",
+      arguments: { query: "Tavily Search API official documentation 2026" },
+      description: "Run Tavily search",
+    });
+    const stream = [
+      "event: response.created",
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tavily\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_tavily\",\"type\":\"function_call\",\"call_id\":\"call_tavily\",\"name\":\"CallMcpTool\"}}",
+      "",
+      "event: response.function_call_arguments.delta",
+      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_tavily\",\"delta\":\"\"}",
+      "",
+      "event: response.function_call_arguments.done",
+      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_tavily", arguments: args })}`,
+      "",
+      "event: response.completed",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_tavily\",\"status\":\"completed\",\"error\":null}}",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const res = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "search tavily docs" }], stream: true }),
+    }));
+
+    assert.equal(res.status, 200);
+    const bodyText = await res.text();
+    const chunks = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const argText = chunks
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
+      .map((toolCall) => toolCall.function?.arguments || "")
+      .join("");
+    assert.deepEqual(JSON.parse(argText), JSON.parse(args));
+  });
+
   it("halo Responses cache mode strips empty GetMcpTools filters before forwarding to Cursor", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";

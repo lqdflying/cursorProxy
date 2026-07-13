@@ -465,7 +465,9 @@ export default async function handler(req) {
   {
     const runToolsNorm = providerKey === "azureopenai" || openaiCompatResponses;
     const toolsResult = runToolsNorm
-      ? normalizeAzureOpenAITools(providerKey, parsedBody)
+      ? normalizeAzureOpenAITools(providerKey, parsedBody, {
+        repairCallMcpToolSchema: openAICompatResponsesHaloCache,
+      })
       : { parsedBody, changed: false };
     parsedBody = toolsResult.parsedBody;
     if (toolsResult.changed) {

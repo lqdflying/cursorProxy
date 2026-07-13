@@ -276,6 +276,49 @@ Regression signs:
 - Production logs show `OAI_TOOL_CALL_DONE provider: openaicompat name: GetMcpTools ... argKeys: server,toolName,pattern` for empty filters without a matching `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` line.
 - Non-empty MCP discovery filters are stripped, causing a targeted catalog lookup to turn into an unfiltered lookup.
 
+### Test 11 — Halo MCP tool call nested arguments
+
+Set `OPENAICOMPAT_CACHE_HIT_MODE=halo` for this case. Use a deployment with the Tavily MCP server enabled and authenticated in Cursor.
+
+In Cursor agent mode with `compatible-gpt-5.5` selected, start a fresh conversation. Paste this prompt:
+
+```text
+First discover the Tavily MCP server/tool schema. Then call the Tavily search MCP tool exactly once with query "Tavily Search API official documentation 2026". Do not retry if the call fails. Report the server status, exact tool name, and whether search results were returned.
+```
+
+Expected behavior:
+
+- Cursor discovers `user-tavily / tavily_search`.
+- The subsequent `CallMcpTool` wrapper carries nested MCP arguments with `arguments.query` populated.
+- Tavily returns search results or a genuine Tavily upstream/auth error. It must not fail locally with `query: Missing required argument` caused by `arguments: {}`.
+
+Expected diagnostics:
+
+```text
+OAI_CALL_MCP_TOOL_SCHEMA_FIXED provider: openaicompat count: 1
+OAI_TOOL_CALL_START provider: openaicompat name: CallMcpTool ...
+OAI_TOOL_CALL_DONE provider: openaicompat name: CallMcpTool ... argKeys: arguments,description,requestSmartModeApproval,server,smartModeBlockReason,toolName
+RES 200 provider: openaicompat ms: <n>
+```
+
+With `DEBUG=true`, the argument-shape diagnostic should also show key names only:
+
+```text
+OAI_TOOL_ARG_SHAPE provider: openaicompat name: CallMcpTool ... mcpArguments: present mcpArgKeys: query
+```
+
+Preservation checks:
+
+- Existing `GetMcpTools` empty-filter behavior from Test 10 remains unchanged.
+- Normal non-MCP tool calls should not log `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` and should preserve their argument schema and streamed arguments unchanged.
+- With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`, `CallMcpTool` schema widening is not expected.
+
+Regression signs:
+
+- `OAI_TOOL_ARG_SHAPE ... name: CallMcpTool ... mcpArguments: present mcpArgKeys: (none)` immediately followed by Cursor/MCP validation reporting `query: Missing required argument`.
+- `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` appears for non-MCP tool definitions.
+- The log line includes raw query text or other nested MCP argument values; only key names and counts should appear.
+
 ## Negative signs
 
 ```text
@@ -286,6 +329,7 @@ previous_response_id is only supported on Responses WebSocket v2 # should be ret
 previous_response_not_found                            # stale or mismatched response ID replayed against wrong scope
 /v1/v1/responses                                       # URL normalization bug — trailing /v1 in UPSTREAM_OPENAICOMPAT not stripped
 GetMcpTools empty filters repeatedly reach Cursor without OAI_GET_MCP_TOOLS_ARGS_SANITIZED
+CallMcpTool reaches Cursor with mcpArgKeys: (none) when the MCP tool requires query
 ```
 
 ## KV key stability cross-check
