@@ -252,6 +252,9 @@ Expected behavior:
 
 - Cursor discovers MCP tools without a long visible retry loop.
 - If the model emits `GetMcpTools` with empty placeholder filters, Cursor still receives a broad catalog request and the MCP tool list eventually appears.
+- In exact `halo`, if the model emits non-empty `server`, `toolName`, and
+  `pattern` together, Cursor receives the exact `server + toolName` lookup
+  without the conflicting `pattern`.
 - The response should not need to explain that it is retrying because an empty-argument form is sensitive.
 
 Expected diagnostics when the empty-filter repair path is exercised:
@@ -264,21 +267,36 @@ OAI_STREAM_SUMMARY reason: response.completed ... functionArgDeltas: <n>
 RES 200 provider: openaicompat ms: <n>
 ```
 
+Expected exact-`halo` diagnostic when the populated conflict repair is
+exercised:
+
+```text
+OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools ... removed: pattern argKeys: server,toolName
+```
+
 Baseline preservation check:
 
-- If `GetMcpTools` carries non-empty `server`, `toolName`, or `pattern` filters, those fields must remain present downstream.
-- In that filtered case, `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` should not appear for the call.
-- Both `halo` and `passion8` remove only empty `GetMcpTools` filters.
+- Exact, server-pattern, global-pattern, server-only, and global
+  `GetMcpTools` calls must remain unchanged downstream.
+- Both `halo` and `passion8` remove empty `GetMcpTools` filters.
+- Exact `halo` removes `pattern` only when non-empty `server`, `toolName`, and
+  `pattern` are all present.
+- `passion8` preserves the same populated three-selector shape byte-for-byte
+  and should not emit `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` for it.
 - With `OPENAICOMPAT_CACHE_HIT_MODE` unset/default or set to `sub2api`, empty
-  `GetMcpTools` filters are not rewritten. Those modes keep their existing
-  behavior.
+  or populated `GetMcpTools` selectors are not rewritten. Those modes keep
+  their existing behavior.
 
 Regression signs:
 
 - Cursor repeatedly calls `GetMcpTools` with empty `server`, `toolName`, and `pattern` but never receives a usable catalog.
 - Cursor-visible text says it is retrying the catalog request without placeholder fields.
 - Production logs show `OAI_TOOL_CALL_DONE provider: openaicompat name: GetMcpTools ... argKeys: server,toolName,pattern` for empty filters without a matching `OAI_GET_MCP_TOOLS_ARGS_SANITIZED` line.
-- Non-empty MCP discovery filters are stripped, causing a targeted catalog lookup to turn into an unfiltered lookup.
+- Exact `halo` repeatedly forwards non-empty `server + toolName + pattern`
+  without a matching `removed: pattern` diagnostic.
+- Valid MCP discovery selectors are stripped or rewritten, causing a targeted
+  lookup to change meaning.
+- `passion8` rewrites populated MCP discovery selectors.
 
 ### Test 11 — Halo nested MCP repair and passion8 preservation
 
@@ -322,7 +340,8 @@ OAI_TOOL_ARG_SHAPE provider: openaicompat name: CallMcpTool ... mcpArguments: pr
 
 Preservation checks:
 
-- Existing `GetMcpTools` empty-filter behavior from Test 10 remains unchanged.
+- Existing shared `GetMcpTools` empty-filter behavior and exact-`halo`
+  populated-conflict repair from Test 10 remain unchanged.
 - Normal non-MCP tool calls should not log `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` and should preserve their argument schema and streamed arguments unchanged.
 - `passion8` must not widen
   `CallMcpTool.parameters.properties.arguments` and must not log
@@ -382,9 +401,11 @@ comm -23 \
 - `halo` and `passion8` share `halo_*` prompt-cache-key derivation,
   `Session_id` forwarding, `OAI_RESP_HALO_*` diagnostics, the `"halo"`
   `oairesp:` KV scope, stateless-first legacy/native tool-output handling,
-  `GetMcpTools` empty-filter cleanup, and ordinary done-argument repair.
-  Only `halo` widens `CallMcpTool.parameters.properties.arguments` and emits
-  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` preserves the pre-`2111555`
-  nested MCP schema.
+  `GetMcpTools` empty-filter cleanup, and ordinary done-argument repair. Exact
+  `halo` also canonicalizes non-empty `server + toolName + pattern` discovery
+  to `server + toolName`, widens
+  `CallMcpTool.parameters.properties.arguments`, and emits
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` when applicable. `passion8` preserves
+  populated discovery selectors and the pre-`2111555` nested MCP schema.
 - This is **state chaining** via `previous_response_id`, NOT `OPENAICOMPAT_REASONING_CACHE` (which is Chat-mode-only reasoning injection) and NOT prompt-cache hints.
 - Automated coverage lives in `test/openaicompat-wire-api.test.js` (pure helper unit tests) and `test/openaicompat-responses.test.js` (integration tests with mocked fetch + in-memory KV). This manual case verifies the full Cursor → proxy → upstream → Cursor loop end-to-end.

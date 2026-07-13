@@ -182,11 +182,14 @@ Halo-compatible paths. Both:
 - send legacy and native tool-output turns stateless first;
 - retain `GetMcpTools` empty-filter cleanup and ordinary done-argument repair.
 
-The only difference is the nested MCP schema repair. `halo` widens
-`CallMcpTool.parameters.properties.arguments` and may emit
-`OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` does neither. Use `passion8` only
+Exact `halo` adds two Cursor MCP compatibility repairs: when `GetMcpTools`
+contains non-empty `server`, `toolName`, and `pattern`, it keeps the exact
+`server + toolName` lookup and removes the conflicting `pattern`; it also
+widens `CallMcpTool.parameters.properties.arguments` and may emit
+`OAI_CALL_MCP_TOOL_SCHEMA_FIXED`. `passion8` does neither and preserves
+populated discovery selectors and the nested MCP schema. Use `passion8` only
 to preserve the pre-`2111555` Halo behavior of an already-working vendor. Keep
-`halo` for vendors that need the nested MCP schema repair.
+`halo` for vendors that need the extra Cursor MCP compatibility repairs.
 
 ### Reasoning (conv:) — configurable delays
 
@@ -285,7 +288,7 @@ cache version is incremented after a breaking schema change.
 | `KV_TTL_SECONDS` | 7 200 | TTL for conversation-scoped keys (`conv:`, `azresp:`, `oairesp:`, `claude_thinking:`) |
 | `OPENAICOMPAT_WIRE_API` | `chat` | `chat` activates Chat Completions passthrough/facade behavior; `responses` activates `/v1/responses` remap and `oairesp:` chaining |
 | `OPENAICOMPAT_CHAT_CACHE_MODE` | `passthrough` | Chat mode only. `facade` normalizes raw Chat cache-hit usage and forces upstream stream usage chunks; ignored when `OPENAICOMPAT_WIRE_API=responses` |
-| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only: `default`, `sub2api`, `halo`, or `passion8`. `sub2api` adds GPT-5/Codex cache hints and session-scoped fallback handling. `halo` and `passion8` share Halo-compatible prompt/session, `"halo"` KV scope, diagnostics, stateless-first tool output, and ordinary argument repairs; only `halo` widens the nested `CallMcpTool` schema. Invalid values return 400 in Responses mode; ignored in Chat mode. |
+| `OPENAICOMPAT_CACHE_HIT_MODE` | `default` | Responses mode only: `default`, `sub2api`, `halo`, or `passion8`. `sub2api` adds GPT-5/Codex cache hints and session-scoped fallback handling. `halo` and `passion8` share Halo-compatible prompt/session, `"halo"` KV scope, diagnostics, stateless-first tool output, and ordinary argument repairs. Exact `halo` also canonicalizes conflicting populated `GetMcpTools` selectors and widens the nested `CallMcpTool` schema; `passion8` preserves both shapes. Invalid values return 400 in Responses mode; ignored in Chat mode. |
 | `KV_IMAGE_TTL_SECONDS` | 604 800 (7 d) | TTL for `img:*` description cache |
 | `KV_FETCH_TIMEOUT_MS` | inherits `UPSTREAM_CONNECT_TIMEOUT_MS`, then 8 000 | Upstash REST request timeout; covers connect AND body read |
 | `KV_RETRY_DELAYS_MS` | `40,120,240,400` | Reasoning KV read retry delays (ms, comma-separated) |

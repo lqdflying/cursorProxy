@@ -1238,6 +1238,7 @@ export default async function handler(req) {
     openaiCompatResponses,
     openAICompatSub2ApiCache,
     openAICompatResponsesHaloCompatibleCache,
+    openAICompatResponsesHaloCache,
     openAICompatChatCacheUsageFacade,
     responsesStreamIncludeUsage,
     upstreamModelName,

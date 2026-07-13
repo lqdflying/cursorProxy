@@ -2528,54 +2528,139 @@ describe("openaicompat Responses wire mode — integration", () => {
     }
   });
 
-  it("halo Responses cache mode preserves non-empty GetMcpTools filters", async () => {
+  it("halo Responses cache mode canonicalizes only conflicting GetMcpTools selectors", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     process.env.OPENAICOMPAT_CACHE_HIT_MODE = "halo";
-    const args = JSON.stringify({ server: "user-axiom", toolName: "queryDataset", pattern: "logs" });
-    const stream = [
-      "event: response.created",
-      "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_mcp_tools_filtered\",\"status\":\"in_progress\",\"model\":\"gpt-5.5\"}}",
-      "",
-      "event: response.output_item.added",
-      "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc_mcp_tools_filtered\",\"type\":\"function_call\",\"call_id\":\"call_mcp_tools_filtered\",\"name\":\"GetMcpTools\"}}",
-      "",
-      "event: response.function_call_arguments.delta",
-      "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_mcp_tools_filtered\",\"delta\":\"\"}",
-      "",
-      "event: response.function_call_arguments.done",
-      `data: ${JSON.stringify({ type: "response.function_call_arguments.done", output_index: 1, item_id: "fc_mcp_tools_filtered", arguments: args })}`,
-      "",
-      "event: response.completed",
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_mcp_tools_filtered\",\"status\":\"completed\",\"error\":null}}",
-      "",
-    ].join("\n");
-    global.fetch = async () => new Response(stream, {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
+    const cases = [
+      {
+        label: "conflicting",
+        input: { server: "user-axiom", toolName: "queryDataset", pattern: "logs" },
+        expected: { server: "user-axiom", toolName: "queryDataset" },
+        removedPattern: true,
+      },
+      {
+        label: "exact",
+        input: { server: "user-axiom", toolName: "queryDataset" },
+        expected: { server: "user-axiom", toolName: "queryDataset" },
+      },
+      {
+        label: "server-pattern",
+        input: { server: "user-axiom", pattern: "query" },
+        expected: { server: "user-axiom", pattern: "query" },
+      },
+      {
+        label: "global-pattern",
+        input: { pattern: "query" },
+        expected: { pattern: "query" },
+      },
+      {
+        label: "server-only",
+        input: { server: "user-axiom" },
+        expected: { server: "user-axiom" },
+      },
+      {
+        label: "global",
+        input: {},
+        expected: {},
+      },
+    ];
 
-    let bodyText = "";
-    const { result: res, logs } = await captureConsoleLogs(async () => {
-      const response = await handler(new Request(PROVIDER_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "discover axiom mcp" }], stream: true }),
-      }));
-      bodyText = await response.text();
-      return response;
-    });
+    for (const testCase of cases) {
+      const argsText = JSON.stringify(testCase.input);
+      mockResponsesFunctionCallStream({
+        responseId: `resp_mcp_tools_halo_${testCase.label}`,
+        toolName: "GetMcpTools",
+        argumentsText: argsText,
+      });
 
-    assert.equal(res.status, 200);
-    const chunks = bodyText
-      .split("\n")
-      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
-      .map((line) => JSON.parse(line.slice(6)));
-    const argText = chunks
-      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || [])
-      .map((toolCall) => toolCall.function?.arguments || "")
-      .join("");
-    assert.deepEqual(JSON.parse(argText), JSON.parse(args));
-    assert.doesNotMatch(logs, /OAI_GET_MCP_TOOLS_ARGS_SANITIZED/);
+      let bodyText = "";
+      const { result: res, logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            messages: [{ role: "user", content: `discover mcp ${testCase.label}` }],
+            stream: true,
+          }),
+        }));
+        bodyText = await response.text();
+        return response;
+      });
+
+      assert.equal(res.status, 200, testCase.label);
+      assert.deepEqual(
+        JSON.parse(streamedChatToolArguments(bodyText)),
+        testCase.expected,
+        testCase.label,
+      );
+      if (testCase.removedPattern) {
+        assert.match(
+          logs,
+          /OAI_GET_MCP_TOOLS_ARGS_SANITIZED provider: openaicompat name: GetMcpTools toolIndex: 0 removed: pattern argKeys: server,toolName/,
+          testCase.label,
+        );
+      } else {
+        assert.doesNotMatch(
+          logs,
+          /OAI_GET_MCP_TOOLS_ARGS_SANITIZED/,
+          testCase.label,
+        );
+        assert.equal(streamedChatToolArguments(bodyText), argsText, testCase.label);
+      }
+    }
+  });
+
+  it("preserves conflicting GetMcpTools selectors outside exact halo", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const argsText = JSON.stringify({
+      server: "user-axiom",
+      toolName: "queryDataset",
+      pattern: "logs",
+    });
+    const cases = [
+      { label: "passion8", cacheMode: "passion8", toolName: "GetMcpTools", delta: "" },
+      { label: "default", cacheMode: "", toolName: "GetMcpTools", delta: argsText },
+      { label: "sub2api", cacheMode: "sub2api", toolName: "GetMcpTools", delta: argsText },
+      { label: "unrelated", cacheMode: "halo", toolName: "LookupDocs", delta: argsText },
+    ];
+
+    for (const testCase of cases) {
+      if (testCase.cacheMode) {
+        process.env.OPENAICOMPAT_CACHE_HIT_MODE = testCase.cacheMode;
+      } else {
+        delete process.env.OPENAICOMPAT_CACHE_HIT_MODE;
+      }
+      mockResponsesFunctionCallStream({
+        responseId: `resp_mcp_tools_preserve_${testCase.label}`,
+        toolName: testCase.toolName,
+        argumentsText: argsText,
+        delta: testCase.delta,
+      });
+
+      let bodyText = "";
+      const { result: res, logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            messages: [{ role: "user", content: `preserve mcp selectors ${testCase.label}` }],
+            stream: true,
+          }),
+        }));
+        bodyText = await response.text();
+        return response;
+      });
+
+      assert.equal(res.status, 200, testCase.label);
+      assert.equal(streamedChatToolArguments(bodyText), argsText, testCase.label);
+      assert.doesNotMatch(
+        logs,
+        /OAI_GET_MCP_TOOLS_ARGS_SANITIZED/,
+        testCase.label,
+      );
+    }
   });
 
   it("does not strip empty GetMcpTools filters outside halo Responses cache mode", async () => {

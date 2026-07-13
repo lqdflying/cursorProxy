@@ -208,10 +208,15 @@ that is remapped to upstream `/v1/responses`.
   `OAI_RESP_HALO_*` diagnostics, the literal `"halo"` `oairesp:` scope,
   stateless-first legacy/native tool-output handling, `GetMcpTools`
   empty-filter cleanup, and ordinary done-argument repair.
-- The only `halo`/`passion8` difference is nested MCP schema repair. Exact
-  `halo` widens `CallMcpTool.parameters.properties.arguments` and may emit
-  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`; `passion8` must not widen that schema or
-  emit that diagnostic.
+- Exact `halo` adds two Cursor MCP compatibility repairs. For `GetMcpTools`,
+  non-empty `server + toolName + pattern` is canonicalized to the exact
+  `server + toolName` lookup; all other valid selector shapes remain
+  unchanged. Exact `halo` also widens
+  `CallMcpTool.parameters.properties.arguments` and may emit
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`.
+- `passion8` must preserve populated `GetMcpTools` selector shapes, must not
+  widen the nested `CallMcpTool` schema, and must not emit
+  `OAI_CALL_MCP_TOOL_SCHEMA_FIXED`.
 - `passion8` exists to preserve pre-commit-`2111555` Halo behavior for an
   already-working vendor. Keep `halo` for vendors whose probes and production
   evidence show they need nested `CallMcpTool` schema repair. Do not generalize
