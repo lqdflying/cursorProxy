@@ -69,6 +69,9 @@ async function toWebRequest(targetUrl, request) {
     method,
     headers: new Headers(request.headers || {}),
   };
+  if (request.signal) {
+    init.signal = request.signal;
+  }
 
   if (method !== "GET" && method !== "HEAD") {
     init.body = await requestBody(request);

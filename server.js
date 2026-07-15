@@ -60,6 +60,19 @@ function rewriteUrl(rawUrl, host, protocol) {
 
 const server = http.createServer(async (req, res) => {
   const start = Date.now();
+  const requestController = new AbortController();
+  let responseCompleted = false;
+  let responseReader = null;
+  const abortRequest = () => {
+    if (!requestController.signal.aborted) {
+      requestController.abort(new Error("client disconnected"));
+    }
+    responseReader?.cancel("client disconnected").catch(() => {});
+  };
+  req.once("aborted", abortRequest);
+  res.once("close", () => {
+    if (!responseCompleted) abortRequest();
+  });
   try {
     if (req.url === "/health") {
       const status = kvBackendStatus();
@@ -115,6 +128,7 @@ const server = http.createServer(async (req, res) => {
       method: req.method,
       headers: headersInit,
       body: body.length > 0 ? body : null,
+      signal: requestController.signal,
     });
 
     const webResponse = await handler(webRequest);
@@ -126,18 +140,30 @@ const server = http.createServer(async (req, res) => {
     if (DEBUG) console.log(`[cursorProxy:server] ${req.method} ${req.url} -> ${webResponse.status} (${Date.now() - start}ms)${modelInfo}`);
 
     if (webResponse.body) {
-      const reader = webResponse.body.getReader();
+      responseReader = webResponse.body.getReader();
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await responseReader.read();
         if (done) break;
+        if (requestController.signal.aborted || res.destroyed) break;
         if (!res.write(value)) {
-          await new Promise((resolve) => res.once("drain", resolve));
+          await new Promise((resolve) => {
+            const finishWait = () => {
+              res.off("drain", finishWait);
+              res.off("close", finishWait);
+              resolve();
+            };
+            res.once("drain", finishWait);
+            res.once("close", finishWait);
+          });
         }
       }
     }
-    res.end();
+    responseCompleted = true;
+    if (!res.destroyed) res.end();
   } catch (err) {
-    console.error("[cursorProxy:server] server error:", err);
+    if (!requestController.signal.aborted) {
+      console.error("[cursorProxy:server] server error:", err);
+    }
     if (!res.headersSent) {
       res.writeHead(500, { "content-type": "application/json" });
       res.end(
@@ -146,6 +172,8 @@ const server = http.createServer(async (req, res) => {
         })
       );
     }
+  } finally {
+    req.off("aborted", abortRequest);
   }
 });
 

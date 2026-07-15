@@ -28,6 +28,7 @@ const ENV_KEYS = [
   "AZURE_OPENAI_ENDPOINT",
   "CURSORPROXY_API_KEY",
   "DEBUG",
+  "STREAM_TIMEOUT_SECONDS",
 ];
 
 // Minimal in-memory KV map with a Redis-like driver shape
@@ -1099,6 +1100,31 @@ describe("openaicompat Responses wire mode — integration", () => {
       "retry should drop apply_patch custom tool after the upstream rejects mixed tools");
   });
 
+  it("bounds non-stream error diagnostics without exposing the provider body", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const providerSecret = "provider-secret-error-body-" + "x".repeat(5000);
+    global.fetch = async () => new Response(JSON.stringify({
+      error: { message: providerSecret, type: "upstream_error" },
+    }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+
+    const { result: response, logs } = await captureConsoleLogs(() => handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: "error preview" }],
+      }),
+    })));
+
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /provider-secret-error-body/);
+    assert.match(logs, /UPSTREAM_ERROR_STATUS 400 provider: openaicompat bodyChars: \d+ bodyTruncated: true/);
+    assert.doesNotMatch(logs, /provider-secret-error-body/);
+  });
+
   // ─── Native input branch (INPUT_CHAIN) ───────────────────────────────────
 
   it("responses mode preserves native input array as-is on first turn", async () => {
@@ -1330,6 +1356,306 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(body, /bad_gateway/);
     assert.match(body, /data: \[DONE\]/);
     assert.equal(body.includes("STREAM_DONE_VIA_RESPONSE_COMPLETED"), false);
+  });
+
+  it("makes every Responses terminal outcome finite, cache-safe, and observable", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+
+    function responsesEvent(eventName, payload) {
+      return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    }
+
+    function responseCreated(responseId) {
+      return responsesEvent("response.created", {
+        type: "response.created",
+        response: {
+          id: responseId,
+          status: "in_progress",
+          model: "gpt-4o",
+        },
+      });
+    }
+
+    function doneCount(bodyText) {
+      return bodyText.split("data: [DONE]").length - 1;
+    }
+
+    function lifecycleFields(logs) {
+      const lifecycleLines = logs
+        .split("\n")
+        .filter((line) => line.includes("OAI_STREAM_LIFECYCLE"));
+      assert.equal(lifecycleLines.length, 1, "each stream must emit one lifecycle summary");
+      const fields = new Map();
+      const fieldPattern = /(\w+): ([^ ]+)/g;
+      for (const match of lifecycleLines[0].matchAll(fieldPattern)) {
+        fields.set(match[1], match[2]);
+      }
+      return fields;
+    }
+
+    function cachedResponseIds(kv) {
+      return [...kv.store.entries()]
+        .filter(([key]) => key.startsWith("oairesp:"))
+        .map(([, value]) => value);
+    }
+
+    async function runStreamCase({
+      responseId,
+      stream,
+      requestController,
+      afterResponse,
+      timeoutSeconds,
+    }) {
+      const kv = makeInMemoryKv();
+      setKvDriver(kv);
+      if (timeoutSeconds == null) {
+        delete process.env.STREAM_TIMEOUT_SECONDS;
+      } else {
+        process.env.STREAM_TIMEOUT_SECONDS = String(timeoutSeconds);
+      }
+      global.fetch = async () => new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+
+      let bodyText = "";
+      const { result: response, logs } = await captureConsoleLogs(async () => {
+        const handlerResponse = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-4o",
+            messages: [{ role: "user", content: `case ${responseId}` }],
+            stream: true,
+          }),
+          signal: requestController?.signal,
+        }));
+        await afterResponse?.(handlerResponse);
+        bodyText = await handlerResponse.text();
+        return handlerResponse;
+      });
+      return {
+        bodyText,
+        cachedResponseIds: cachedResponseIds(kv),
+        lifecycle: lifecycleFields(logs),
+        logs,
+        response,
+      };
+    }
+
+    const completedId = "resp_terminal_completed";
+    const completed = await runStreamCase({
+      responseId: completedId,
+      stream: responseCreated(completedId) + responsesEvent("response.completed", {
+        type: "response.completed",
+        response: {
+          id: completedId,
+          status: "completed",
+          error: null,
+          usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+        },
+      }),
+    });
+    assert.equal(completed.response.status, 200);
+    assert.equal(doneCount(completed.bodyText), 1);
+    assert.deepEqual(completed.cachedResponseIds, [completedId]);
+    assert.equal(completed.lifecycle.get("terminal"), "completed");
+    assert.equal(completed.lifecycle.get("doneSeen"), "true");
+    const completedHeadersMs = Number(completed.lifecycle.get("headersMs"));
+    const completedFirstEventMs = Number(completed.lifecycle.get("firstEventMs"));
+    const completedTerminalMs = Number(completed.lifecycle.get("terminalMs"));
+    const completedTotalMs = Number(completed.lifecycle.get("totalMs"));
+    assert.ok(completedHeadersMs <= completedFirstEventMs);
+    assert.ok(completedFirstEventMs <= completedTerminalMs);
+    assert.ok(completedTerminalMs <= completedTotalMs);
+
+    const failedSecret = "provider-secret-failure-message";
+    const failedId = "resp_terminal_failed";
+    const failed = await runStreamCase({
+      responseId: failedId,
+      stream: responseCreated(failedId) + responsesEvent("response.failed", {
+        type: "response.failed",
+        response: {
+          id: failedId,
+          status: "failed",
+          error: {
+            type: "server_error",
+            code: "generation_failed",
+            message: failedSecret,
+          },
+        },
+      }),
+    });
+    assert.equal(doneCount(failed.bodyText), 1);
+    assert.match(failed.bodyText, /generation_failed/);
+    assert.deepEqual(failed.cachedResponseIds, []);
+    assert.equal(failed.lifecycle.get("terminal"), "failed");
+    assert.doesNotMatch(failed.logs, new RegExp(failedSecret));
+
+    const incompleteId = "resp_terminal_incomplete";
+    const incomplete = await runStreamCase({
+      responseId: incompleteId,
+      stream: responseCreated(incompleteId) + responsesEvent("response.incomplete", {
+        type: "response.incomplete",
+        response: {
+          id: incompleteId,
+          status: "incomplete",
+          incomplete_details: { reason: "max_output_tokens" },
+        },
+      }),
+    });
+    assert.equal(doneCount(incomplete.bodyText), 1);
+    assert.match(incomplete.bodyText, /response_incomplete/);
+    assert.match(incomplete.bodyText, /max_output_tokens/);
+    assert.deepEqual(incomplete.cachedResponseIds, []);
+    assert.equal(incomplete.lifecycle.get("terminal"), "incomplete");
+
+    const explicitErrorSecret = "provider-secret-error-message";
+    const explicitErrorId = "resp_terminal_error";
+    const explicitError = await runStreamCase({
+      responseId: explicitErrorId,
+      stream: responseCreated(explicitErrorId) + responsesEvent("error", {
+        type: "error",
+        code: "bad_gateway",
+        message: explicitErrorSecret,
+      }),
+    });
+    assert.equal(doneCount(explicitError.bodyText), 1);
+    assert.match(explicitError.bodyText, /bad_gateway/);
+    assert.deepEqual(explicitError.cachedResponseIds, []);
+    assert.equal(explicitError.lifecycle.get("terminal"), "failed");
+    assert.doesNotMatch(explicitError.logs, new RegExp(explicitErrorSecret));
+
+    const eofId = "resp_terminal_eof";
+    const unexpectedEof = await runStreamCase({
+      responseId: eofId,
+      stream: responseCreated(eofId),
+    });
+    assert.equal(doneCount(unexpectedEof.bodyText), 1);
+    assert.match(unexpectedEof.bodyText, /unexpected_eof/);
+    assert.deepEqual(unexpectedEof.cachedResponseIds, []);
+    assert.equal(unexpectedEof.lifecycle.get("terminal"), "unexpected_eof");
+
+    const truncatedSecret = "malformed-secret-event-payload";
+    const truncatedId = "resp_terminal_truncated";
+    const truncated = await runStreamCase({
+      responseId: truncatedId,
+      stream: responseCreated(truncatedId)
+        + `event: response.completed\ndata: {"type":"response.completed","secret":"${truncatedSecret}"`,
+    });
+    assert.equal(doneCount(truncated.bodyText), 1);
+    assert.match(truncated.bodyText, /unexpected_eof/);
+    assert.deepEqual(truncated.cachedResponseIds, []);
+    assert.equal(truncated.lifecycle.get("terminal"), "unexpected_eof");
+    assert.doesNotMatch(truncated.logs, new RegExp(truncatedSecret));
+  });
+
+  it("terminates Responses reader failures, timeouts, and cancellations without caching", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+
+    function cachedResponseIds(kv) {
+      return [...kv.store.entries()]
+        .filter(([key]) => key.startsWith("oairesp:"))
+        .map(([, value]) => value);
+    }
+
+    function terminalFromLogs(logs) {
+      const lifecycleLine = logs
+        .split("\n")
+        .find((line) => line.includes("OAI_STREAM_LIFECYCLE"));
+      assert.ok(lifecycleLine, "expected lifecycle summary");
+      return lifecycleLine.match(/terminal: ([^ ]+)/)?.[1];
+    }
+
+    async function invokeWithKv({ requestController, stream, afterResponse }) {
+      const kv = makeInMemoryKv();
+      setKvDriver(kv);
+      global.fetch = async () => new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+      let bodyText = "";
+      const { logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-4o",
+            messages: [{ role: "user", content: "abnormal stream" }],
+            stream: true,
+          }),
+          signal: requestController?.signal,
+        }));
+        await afterResponse?.(response);
+        bodyText = await response.text();
+      });
+      return { bodyText, cachedIds: cachedResponseIds(kv), logs };
+    }
+
+    const createdFrame = new TextEncoder().encode(
+      "event: response.created\n"
+      + "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_read_failure\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let readerPullCount = 0;
+    const readFailureStream = new ReadableStream({
+      pull(controller) {
+        readerPullCount++;
+        if (readerPullCount === 1) {
+          controller.enqueue(createdFrame);
+          return;
+        }
+        controller.error(new Error("upstream-reader-secret"));
+      },
+    });
+    const readFailure = await invokeWithKv({ stream: readFailureStream });
+    assert.equal(readFailure.bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(readFailure.bodyText, /stream_read_error/);
+    assert.deepEqual(readFailure.cachedIds, []);
+    assert.equal(terminalFromLogs(readFailure.logs), "read_error");
+    assert.doesNotMatch(readFailure.logs, /upstream-reader-secret/);
+
+    process.env.STREAM_TIMEOUT_SECONDS = "1";
+    const timeoutStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          "event: response.created\n"
+          + "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_timeout\",\"status\":\"in_progress\"}}\n\n",
+        ));
+      },
+    });
+    const timeout = await invokeWithKv({ stream: timeoutStream });
+    assert.equal(timeout.bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(timeout.bodyText, /stream_timeout/);
+    assert.deepEqual(timeout.cachedIds, []);
+    assert.equal(terminalFromLogs(timeout.logs), "timeout");
+
+    delete process.env.STREAM_TIMEOUT_SECONDS;
+    const requestController = new AbortController();
+    let upstreamCancelled = false;
+    const cancellationStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          "event: response.created\n"
+          + "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_cancelled\",\"status\":\"in_progress\"}}\n\n",
+        ));
+      },
+      cancel() {
+        upstreamCancelled = true;
+      },
+    });
+    const cancelled = await invokeWithKv({
+      requestController,
+      stream: cancellationStream,
+      afterResponse: async () => {
+        requestController.abort();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    });
+    assert.equal(cancelled.bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(cancelled.bodyText, /request_cancelled/);
+    assert.deepEqual(cancelled.cachedIds, []);
+    assert.equal(terminalFromLogs(cancelled.logs), "cancelled");
+    assert.equal(upstreamCancelled, true);
   });
 
   it("streams Responses function calls with dense Chat tool indexes and tool_calls finish reason", async () => {

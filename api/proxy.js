@@ -89,6 +89,44 @@ function diag(...args) {
   console.log("[cursorProxy:proxy]", ...args);
 }
 
+async function readResponseTextPreview(response, maxChars, requestSignal) {
+  if (!response?.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let preview = "";
+  let requestAborted = requestSignal?.aborted === true;
+  const abortPreview = () => {
+    requestAborted = true;
+    reader.cancel(requestSignal?.reason).catch(() => {});
+  };
+  if (requestAborted) {
+    abortPreview();
+  } else {
+    requestSignal?.addEventListener("abort", abortPreview, { once: true });
+  }
+  const appendPreview = (text) => {
+    const remainingChars = maxChars + 1 - preview.length;
+    if (remainingChars > 0) preview += text.slice(0, remainingChars);
+  };
+  try {
+    while (preview.length <= maxChars && !requestAborted) {
+      const { done, value } = await reader.read();
+      if (done) {
+        appendPreview(decoder.decode());
+        break;
+      }
+      appendPreview(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    requestSignal?.removeEventListener("abort", abortPreview);
+    if (preview.length > maxChars || requestAborted) {
+      await reader.cancel(requestSignal?.reason).catch(() => {});
+    }
+  }
+  if (preview.length <= maxChars) return preview;
+  return preview.slice(0, maxChars) + `...(truncated at ${maxChars} chars)`;
+}
+
 // Confirm at cold start that the opt-in cache flag was honored.
 if (process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true") {
   diag("COMPATIBLE_CACHE", "env:", "ANTHROPICCOMPAT_THINKING_CACHE", "enabled:", true);
@@ -1017,23 +1055,40 @@ export default async function handler(req) {
     if (Number.isFinite(raw) && raw >= 0) return raw;
     return 15000;
   })();
+  let upstreamFetchStartedAt = null;
+  let upstreamHeadersAt = null;
 
   const fetchUpstream = async (requestBodyText) => {
-    const connectController = connectTimeoutMs > 0 ? new AbortController() : null;
-    const connectTimer = connectController
-      ? setTimeout(() => connectController.abort(), connectTimeoutMs)
+    upstreamFetchStartedAt = Date.now();
+    upstreamHeadersAt = null;
+    const fetchController = new AbortController();
+    const abortFromClient = () => {
+      if (!fetchController.signal.aborted) {
+        fetchController.abort(req.signal?.reason);
+      }
+    };
+    if (req.signal?.aborted) {
+      abortFromClient();
+    } else {
+      req.signal?.addEventListener("abort", abortFromClient, { once: true });
+    }
+    const connectTimer = connectTimeoutMs > 0
+      ? setTimeout(() => fetchController.abort(), connectTimeoutMs)
       : null;
     try {
       const res = await fetch(upstreamUrl, {
         method: req.method,
         headers,
         body: requestBodyText || null,
-        ...(connectController ? { signal: connectController.signal } : {}),
+        signal: fetchController.signal,
       });
       if (connectTimer) clearTimeout(connectTimer);
+      upstreamHeadersAt = Date.now();
+      req.signal?.removeEventListener("abort", abortFromClient);
       return res;
     } catch (err) {
       if (connectTimer) clearTimeout(connectTimer);
+      req.signal?.removeEventListener("abort", abortFromClient);
       throw err;
     }
   };
@@ -1042,20 +1097,27 @@ export default async function handler(req) {
   try {
     upstreamRes = await fetchUpstream(bodyText);
   } catch (err) {
+    const isClientAbort = req.signal?.aborted === true;
     const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
     log("UPSTREAM_ERROR", err?.name, err?.message);
     return new Response(
       JSON.stringify({
         error: {
-          message: isTimeout
+          message: isClientAbort
+            ? "Client disconnected before the upstream response started"
+            : isTimeout
             ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting)`
             : `Upstream fetch failed: ${err?.message}`,
           type: "upstream_error",
-          code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
+          code: isClientAbort
+            ? "request_cancelled"
+            : isTimeout
+              ? "upstream_timeout"
+              : "upstream_fetch_error",
         },
       }),
       {
-        status: 504,
+        status: isClientAbort ? 499 : 504,
         headers: { "content-type": "application/json" },
       }
     );
@@ -1085,20 +1147,27 @@ export default async function handler(req) {
         isStream = contentType.includes("text/event-stream");
         log("UPSTREAM_STATUS_RETRY", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
       } catch (err) {
+        const isClientAbort = req.signal?.aborted === true;
         const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
         log("UPSTREAM_RETRY_ERROR", err?.name, err?.message);
         return new Response(
           JSON.stringify({
             error: {
-              message: isTimeout
+              message: isClientAbort
+                ? "Client disconnected during the upstream compatibility retry"
+                : isTimeout
                 ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting) during compatibility retry`
                 : `Upstream compatibility retry failed: ${err?.message}`,
               type: "upstream_error",
-              code: isTimeout ? "upstream_timeout" : "upstream_fetch_error",
+              code: isClientAbort
+                ? "request_cancelled"
+                : isTimeout
+                  ? "upstream_timeout"
+                  : "upstream_fetch_error",
             },
           }),
           {
-            status: 504,
+            status: isClientAbort ? 499 : 504,
             headers: { "content-type": "application/json" },
           }
         );
@@ -1133,17 +1202,18 @@ export default async function handler(req) {
     }
   }
 
-  // Log upstream errors with response body for debugging (always-on).
-  // Cap the captured preview so a multi-MB Azure error payload doesn't
-  // double memory pressure on the failing path or flood log lines.
-  if (upstreamRes.status >= 400) {
+  // Preview bounded non-stream error bodies. Streaming errors are consumed by
+  // the timed stream pump so an endless SSE error body cannot block handoff.
+  if (upstreamRes.status >= 400 && !isStream) {
     const cloned = upstreamRes.clone();
-    const errText = await cloned.text().catch(() => "(unreadable)");
     const ERROR_BODY_MAX = 2000;
-    const preview = errText.length > ERROR_BODY_MAX
-      ? errText.slice(0, ERROR_BODY_MAX) + `…(truncated ${errText.length - ERROR_BODY_MAX} chars)`
-      : errText;
-    diag("UPSTREAM_ERROR_STATUS", upstreamRes.status, "provider:", providerKey, "body:", preview);
+    const preview = await readResponseTextPreview(cloned, ERROR_BODY_MAX, req.signal)
+      .catch(() => "(unreadable)");
+    diag("UPSTREAM_ERROR_STATUS",
+         upstreamRes.status,
+         "provider:", providerKey,
+         "bodyChars:", preview.length,
+         "bodyTruncated:", preview.includes("...(truncated at "));
   }
 
   if (!isStream) {
@@ -1251,5 +1321,8 @@ export default async function handler(req) {
     replyReasoningKey,
     azureReplyKey,
     respIdCachePrefix,
+    requestSignal: req.signal,
+    upstreamFetchStartedAt,
+    upstreamHeadersAt,
   });
 }

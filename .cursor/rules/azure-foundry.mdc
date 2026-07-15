@@ -183,11 +183,15 @@ event: response.created
 data: {"type":"response.created","response":{"id":"resp_abc..."}}
 ```
 
-Two write points guarantee durability:
-1. **`response.completed` event**: earliest safe point — the stream has ended, but `finally` hasn't run yet
-2. **`finally` block**: belt-and-suspenders — catches cases where the stream ends abnormally or via a different event
+The ID is cacheable only after the proxy receives `response.completed` with
+`response.status === "completed"` and successfully writes the downstream
+terminal frames. The `finally` block calls the same idempotent cache helper but
+does not relax this positive requirement.
 
-This is why `CACHE_AZ_RESP_ID` typically appears twice per request in logs.
+`response.failed`, `response.incomplete`, SSE `error`, timeout, read rejection,
+pipeline failure, unexpected EOF, and client cancellation must never cache the
+captured ID. Raw `data: [DONE]` without an official Responses terminal event is
+an unexpected EOF, not proof of completion.
 
 ### Response ID capture (non-streaming)
 
@@ -215,10 +219,13 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 | `MESSAGES_TO_INPUT` | Legacy Chat Completions path exercised (`messages` → `input` conversion) |
 | `PREV_RESP_ID_FOUND` | KV lookup succeeded — chaining is active for this turn |
 | `PREV_RESP_ID_MISS` | KV lookup returned null — stateless fallback |
-| `CACHE_AZ_RESP_ID` | Response ID saved to KV (emitted per write, typically 2× per streaming request) |
+| `CACHE_AZ_RESP_ID` | Response ID saved to KV after confirmed successful completion |
+| `SKIP_CACHE_AZ_RESP_ID` | Captured response ID deliberately left uncached because completion was not confirmed |
 | `STREAM_AZ_RESP_ID` | Response ID captured from `response.created` SSE event |
 | `INPUT_HAS_LEGACY_TOOLS` | Probe fired — legacy tool items detected in native input (see `feature-verification.mdc`) |
 | `OAI_TOOL_CALL_START` / `OAI_TOOL_CALL_DONE` | OpenAI-compatible Responses tool-call diagnostics: tool name, dense tool index, Responses output index, argument char count, and top-level argument keys only. Use these to debug Cursor tool/subagent startup without logging argument values. |
+| `OAI_STREAM_LIFECYCLE` | One per OpenAI-compatible Responses stream. `status` is the HTTP header status; `terminal` is the actual SSE outcome. Includes bounded timing/count/boolean fields only. |
+| `OAI_RESPONSE_FAILED` / `OAI_RESPONSE_INCOMPLETE` / `OAI_STREAM_UNEXPECTED_EOF` | Shape-only abnormal terminal diagnostics. Never add raw provider messages or payload values. |
 
 ### Pitfalls (lessons learned)
 

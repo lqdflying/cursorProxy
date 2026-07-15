@@ -89,6 +89,62 @@ Break down starts and completions by tool:
 | order by dones desc
 ```
 
+## Responses Stream Lifecycle Review
+
+`RES 200` proves only that HTTP headers were accepted. For OpenAI-compatible
+Responses streams, use `OAI_STREAM_LIFECYCLE` as the one-per-stream terminal
+record.
+
+Outcome distribution:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['message'] has_cs "OAI_STREAM_LIFECYCLE"
+| extend terminal = extract("terminal: ([^ ]+)", 1, ['message'])
+| summarize streams=count() by terminal
+| order by streams desc
+```
+
+Timing and failure-stage distribution:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['message'] has_cs "OAI_STREAM_LIFECYCLE"
+| extend terminal = extract("terminal: ([^ ]+)", 1, ['message']),
+         headersMs = tolong(extract("headersMs: ([0-9]+)", 1, ['message'])),
+         firstEventMs = tolong(extract("firstEventMs: ([0-9]+)", 1, ['message'])),
+         terminalMs = tolong(extract("terminalMs: ([0-9]+)", 1, ['message'])),
+         totalMs = tolong(extract("totalMs: ([0-9]+)", 1, ['message'])),
+         stage = extract("stage: ([^ ]+)", 1, ['message'])
+| summarize streams=count(),
+            p50HeadersMs=percentile(headersMs, 50),
+            p95HeadersMs=percentile(headersMs, 95),
+            p50FirstEventMs=percentile(firstEventMs, 50),
+            p95FirstEventMs=percentile(firstEventMs, 95),
+            p50TotalMs=percentile(totalMs, 50),
+            p95TotalMs=percentile(totalMs, 95)
+            by terminal, stage
+| order by streams desc
+```
+
+Abnormal lifecycle lines with matching safe diagnostics:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['message'] has_cs "OAI_STREAM_LIFECYCLE"
+   or ['message'] has_cs "OAI_RESPONSE_FAILED"
+   or ['message'] has_cs "OAI_RESPONSE_INCOMPLETE"
+   or ['message'] has_cs "OAI_STREAM_UNEXPECTED_EOF"
+   or ['message'] has_cs "OAI_STREAM_PIPELINE_FAILURE"
+| where ['message'] !has_cs "terminal: completed"
+| project ['_time'], ['container_name'], ['message']
+| order by ['_time'] desc
+| take 100
+```
+
 ## Interpretation Rules
 
 - `starts == dones == shapes` is the basic healthy tool-call signal.
@@ -96,7 +152,12 @@ Break down starts and completions by tool:
 - `OAI_SHELL_ARGS_SANITIZED` with `removed: notify_on_output reason: empty_pattern` is expected cleanup, not a failure.
 - A single `UPSTREAM_STATUS 400` followed by `OAI_PREV_RESP_UNSUPPORTED_RETRY` and `UPSTREAM_STATUS_PREV_RETRY 200` is recovered previous-response fallback, not a user-visible failure.
 - Repeated `OAI_PREV_RESP_UNSUPPORTED_SKIP provider: openaicompat mode: stateless` after such a retry means the proxy suppressed the unsupported path and continued stateless.
-- `AZURE_RESPONSE_COMPLETED status: completed` is a clean stream completion. Optional `error:` and `incomplete:` fields appear only when the upstream response contains them.
+- `OAI_STREAM_LIFECYCLE terminal: completed doneSeen: true` is a clean OpenAI-compatible Responses stream completion.
+- `RES 200` records HTTP header success and can coexist with `terminal: failed`, `incomplete`, `timeout`, `read_error`, `pipeline_error`, `unexpected_eof`, or `cancelled`.
+- Exactly one `OAI_STREAM_LIFECYCLE` should appear per OpenAI-compatible Responses stream.
+- A captured response ID is cacheable only after `terminal: completed`; abnormal lifecycle outcomes must not have a matching `CACHE_OAI_RESP_ID`.
+- `headersMs` isolates connect/header delay, `firstEventMs - headersMs` approximates time to first parsed SSE event after headers, and `totalMs - terminalMs` shows terminal-output/finalization cost.
+- New lifecycle/failure diagnostics are shape-only. Raw provider messages, response IDs, prompts, SSE payloads, and tool argument values must not appear.
 - Treat long successful `RES 200 ... ms:` values as performance signals, not correctness failures.
 
 ## Post-Release Check

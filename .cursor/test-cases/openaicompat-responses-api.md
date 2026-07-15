@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Validate that the `openaicompat` provider, when `OPENAICOMPAT_WIRE_API=responses` is set, routes to the upstream OpenAI Responses API (`/v1/responses`), performs `previous_response_id` chaining via KV under the `oairesp:` namespace, maps Responses output/SSE back to Chat Completions, and honors `store:false` opt-out. Also validates that default mode (`chat` / unset) is an unchanged Chat Completions passthrough.
+Validate that the `openaicompat` provider, when `OPENAICOMPAT_WIRE_API=responses` is set, routes to the upstream OpenAI Responses API (`/v1/responses`), performs `previous_response_id` chaining via KV under the `oairesp:` namespace, maps Responses output/SSE back to Chat Completions, and honors `store:false` opt-out. It also verifies explicit abnormal stream outcomes, response-ID cache safety, and shape-only lifecycle diagnostics. The default mode (`chat` / unset) remains an unchanged Chat Completions passthrough.
 
 ## Provider And Model
 
@@ -359,6 +359,30 @@ Regression signs:
 - `OAI_CALL_MCP_TOOL_SCHEMA_FIXED` appears in the `passion8` run.
 - The `passion8` outbound `CallMcpTool` schema differs from the incoming schema.
 - The log line includes raw query text or other nested MCP argument values; only key names and counts should appear.
+
+## Test 12 — Abnormal stream outcomes and lifecycle diagnostics
+
+Use the deterministic public-boundary cases in `test/openaicompat-responses.test.js` as the primary regression check. For a deployed check, use an upstream test endpoint or controlled gateway that can produce each case without exposing real prompts or tool arguments.
+
+| Scenario | Expected client result | Expected lifecycle | Response-ID cache |
+|---|---|---|---|
+| `response.completed` | Normal mapped output, usage/tool finish where applicable, one `data: [DONE]` | `terminal: completed` | `CACHE_OAI_RESP_ID` allowed |
+| `response.failed` | Partial output preserved, normalized error, one `data: [DONE]` | `terminal: failed` | No cache write |
+| `response.incomplete` | Partial output preserved, normalized `response_incomplete` error with the reason, one `data: [DONE]` | `terminal: incomplete` | No cache write |
+| SSE `error` | Normalized error and one `data: [DONE]` | `terminal: failed` | No cache write |
+| Reader rejection | Finite `stream_read_error` result and one `data: [DONE]` when writable | `terminal: read_error` | No cache write |
+| Total timeout | Finite `stream_timeout` result and one `data: [DONE]` when writable | `terminal: timeout` | No cache write |
+| Unexpected EOF or unterminated final frame | Finite `unexpected_eof` result and one `data: [DONE]` | `terminal: unexpected_eof` | No cache write |
+| Client cancellation | Upstream reader/fetch is cancelled; no drain wait or cache write | `terminal: cancelled` | No cache write |
+
+For every streamed case, verify exactly one `OAI_STREAM_LIFECYCLE` line. `headersMs <= firstEventMs <= terminalMs <= totalMs` when all timings are present. Treat `RES 200` as header acceptance only, not proof of completion.
+
+Negative checks:
+
+- Provider response messages, response IDs, prompts, SSE payloads, and tool argument values do not appear in the new lifecycle/failure diagnostics.
+- `CACHE_OAI_RESP_ID` never accompanies `terminal: failed`, `incomplete`, `timeout`, `read_error`, `pipeline_error`, `unexpected_eof`, or `cancelled`.
+- A raw `data: [DONE]` without `response.completed` is not considered successful.
+- A cancelled Docker socket does not leave a pending `drain` listener or an active upstream reader.
 
 ## Negative signs
 
