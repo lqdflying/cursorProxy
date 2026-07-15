@@ -3342,6 +3342,75 @@ describe("openaicompat Responses wire mode — integration", () => {
       "unsupported scope should stay stateless");
   });
 
+  it("returns 499 when the client disconnects during the stateless retry", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.UPSTREAM_OPENAICOMPAT = "https://api.openai.com/prev-retry-client-abort";
+    process.env.DEBUG = "true";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    const model = "gpt-prev-retry-client-abort-test";
+
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.previous_response_id, undefined, "turn 1 should be stateless");
+      return new Response(JSON.stringify({
+        id: "resp_abort_abc",
+        object: "response",
+        model,
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+
+    await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }),
+    }));
+
+    const oairespKeys = [...kv.store.keys()].filter((key) => key.startsWith("oairesp:"));
+    assert.equal(oairespKeys.length, 1, "turn 1 should cache the completed response ID");
+    assert.equal(kv.store.get(oairespKeys[0]), "resp_abort_abc");
+
+    const requestController = new AbortController();
+    const turn2Calls = [];
+    global.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      turn2Calls.push(body);
+      if (turn2Calls.length === 1) {
+        return new Response(JSON.stringify({
+          error: {
+            message: "previous_response_id is only supported on Responses WebSocket v2",
+            type: "invalid_request_error",
+          },
+        }), { status: 400, headers: { "content-type": "application/json" } });
+      }
+      requestController.abort();
+      throw new Error("synthetic-client-disconnect-secret");
+    };
+
+    const turn2Messages = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      { role: "user", content: "bye" },
+    ];
+    const { result: res, logs } = await captureConsoleLogs(() => handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: turn2Messages }),
+      signal: requestController.signal,
+    })));
+
+    assert.equal(res.status, 499);
+    const body = await res.json();
+    assert.equal(body.error.code, "request_cancelled");
+    assert.equal(turn2Calls.length, 2, "turn 2 should make one chained attempt and one stateless retry");
+    assert.equal(turn2Calls[1].previous_response_id, undefined,
+      "stateless retry must drop previous_response_id");
+    assert.match(logs, /UPSTREAM_PREV_RETRY_ERROR.*cancelled: true/);
+    assert.doesNotMatch(logs, /synthetic-client-disconnect-secret/);
+  });
+
   it("two-turn flow: turn 1 caches response id, turn 2 sends previous_response_id with trimmed input", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const kv = makeInMemoryKv();

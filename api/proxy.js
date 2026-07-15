@@ -1190,6 +1190,7 @@ export default async function handler(req) {
       previousKvKey: respIdPreviousKvKey,
       fetchUpstream,
       connectTimeoutMs,
+      requestSignal: req.signal,
     });
     if (retry.errorResponse) return retry.errorResponse;
     if (retry.handled) {
