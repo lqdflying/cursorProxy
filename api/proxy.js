@@ -73,6 +73,11 @@ import {
 } from "../lib/providers.js";
 import { prepareResponsesChain, retryPreviousResponseFailure } from "../lib/responses-chain.js";
 import { startStreamPump } from "../lib/stream-pump.js";
+import {
+  upstreamRateLimitRetryDelay,
+  upstreamRateLimitResponseHeaders,
+  waitForRateLimitRetry,
+} from "../lib/upstream-rate-limit.js";
 
 // Re-export for direct unit testing (test/proxy-strict-probe.test.js).
 export { strictToolStats };
@@ -120,7 +125,9 @@ async function readResponseTextPreview(response, maxChars, requestSignal) {
   } finally {
     requestSignal?.removeEventListener("abort", abortPreview);
     if (preview.length > maxChars || requestAborted) {
-      await reader.cancel(requestSignal?.reason).catch(() => {});
+      // A cloned response is a tee; cancellation can wait for the original
+      // branch, which the caller cannot consume until this preview returns.
+      reader.cancel(requestSignal?.reason).catch(() => {});
     }
   }
   if (preview.length <= maxChars) return preview;
@@ -1094,6 +1101,7 @@ export default async function handler(req) {
   };
 
   let upstreamRes;
+  let upstreamRateLimitRetried = false;
   try {
     upstreamRes = await fetchUpstream(bodyText);
   } catch (err) {
@@ -1123,6 +1131,54 @@ export default async function handler(req) {
     );
   }
 
+  if (providerKey === "openaicompat" && upstreamRes.status === 429) {
+    const retry = upstreamRateLimitRetryDelay(upstreamRes.headers.get("retry-after"));
+    diag("UPSTREAM_RATE_LIMIT_RETRY",
+         "provider:", providerKey,
+         "model:", safeLogToken(upstreamModelName),
+         "attempt:", 1,
+         "delayMs:", retry.delayMs,
+         "retrySource:", retry.source);
+    if (upstreamRes.body) {
+      await upstreamRes.body.cancel().catch(() => {});
+    }
+
+    const completedWait = await waitForRateLimitRetry(retry.delayMs, req.signal);
+    if (!completedWait) {
+      return jsonErrorResponse(
+        499,
+        "Client disconnected during upstream rate-limit backoff",
+        "request_cancelled",
+        "upstream_error",
+      );
+    }
+
+    try {
+      upstreamRateLimitRetried = true;
+      upstreamRes = await fetchUpstream(bodyText);
+    } catch (err) {
+      const isClientAbort = req.signal?.aborted === true;
+      const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+      log("UPSTREAM_RATE_LIMIT_RETRY_ERROR",
+          "type:", err?.name,
+          "messageChars:", String(err?.message || "").length);
+      return jsonErrorResponse(
+        isClientAbort ? 499 : 504,
+        isClientAbort
+          ? "Client disconnected during upstream rate-limit retry"
+          : isTimeout
+            ? `Upstream provider timed out (>${connectTimeoutMs}ms connecting) during rate-limit retry`
+            : `Upstream rate-limit retry failed: ${err?.message}`,
+        isClientAbort
+          ? "request_cancelled"
+          : isTimeout
+            ? "upstream_timeout"
+            : "upstream_fetch_error",
+        "upstream_error",
+      );
+    }
+  }
+
   let contentType = upstreamRes.headers.get("content-type") || "";
   let isStream = contentType.includes("text/event-stream");
   log("UPSTREAM_STATUS", upstreamRes.status, "provider:", providerKey, "stream:", isStream);
@@ -1131,7 +1187,7 @@ export default async function handler(req) {
   // function tools separately, but 5xx when both appear in the same request.
   // Retry once with the native custom/apply_patch tools omitted, preserving
   // the function tools that Cursor also supplied.
-  if (openaiCompatResponses && upstreamRes.status >= 500) {
+  if (openaiCompatResponses && !upstreamRateLimitRetried && upstreamRes.status >= 500) {
     const fallback = openAICompatResponsesToolFallback(providerKey, parsedBody);
     if (fallback.changed) {
       const fallbackBodyText = JSON.stringify(fallback.parsedBody);
@@ -1178,7 +1234,7 @@ export default async function handler(req) {
   // Stateless retry for gateways that reject or lose previous_response_id
   // state (see lib/responses-chain.js). Assemble downstream stream state from
   // the retried response when it ran.
-  {
+  if (!upstreamRateLimitRetried) {
     const retry = await retryPreviousResponseFailure({
       upstreamRes,
       parsedBody,
@@ -1201,6 +1257,20 @@ export default async function handler(req) {
       isStream = retry.isStream;
       if (retry.clearReplyKey) azureReplyKey = null;
     }
+  }
+
+  if (upstreamRes.status === 429) {
+    diag("UPSTREAM_RATE_LIMIT_EXHAUSTED",
+         "provider:", providerKey,
+         "model:", safeLogToken(upstreamModelName),
+         "attempts:", upstreamRateLimitRetried ? 2 : 1,
+         "retryAfter:", upstreamRes.headers.has("retry-after"),
+         "bodyPresent:", Boolean(upstreamRes.body));
+    diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
+    return new Response(upstreamRes.body, {
+      status: upstreamRes.status,
+      headers: upstreamRateLimitResponseHeaders(upstreamRes.headers),
+    });
   }
 
   // Preview bounded non-stream error bodies. Streaming errors are consumed by

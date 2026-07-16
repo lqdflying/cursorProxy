@@ -1125,6 +1125,170 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.doesNotMatch(logs, /provider-secret-error-body/);
   });
 
+  it("retries one pre-stream 429 with bounded timing and preserves exhausted failures", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+
+    async function invoke(requestController) {
+      return handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "rate-limit recovery" }],
+        }),
+        signal: requestController?.signal,
+      }));
+    }
+
+    for (const retryAfter of ["0", new Date(Date.now() - 1_000).toUTCString(), undefined, "invalid"]) {
+      const requestBodies = [];
+      global.fetch = async (_url, init) => {
+        requestBodies.push(init.body);
+        if (requestBodies.length === 1) {
+          const headers = { "content-type": "application/json" };
+          if (retryAfter !== undefined) headers["retry-after"] = retryAfter;
+          return new Response(JSON.stringify({
+            error: { code: "rate_limit_exceeded", message: "retry this request" },
+          }), {
+            status: 429,
+            headers,
+          });
+        }
+        return new Response(JSON.stringify({
+          id: "resp_rate_limit_recovered",
+          object: "response",
+          model: "gpt-5.5",
+          status: "completed",
+          output: [{
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "recovered" }],
+          }],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      };
+
+      const { result: response, logs } = await captureConsoleLogs(() => invoke());
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).choices[0].message.content, "recovered");
+      assert.equal(requestBodies.length, 2);
+      assert.equal(requestBodies[0], requestBodies[1], "rate-limit retry must reuse the exact body");
+      const expectedSource = retryAfter === "0"
+        ? "retry-after-seconds"
+        : retryAfter?.includes("GMT")
+          ? "retry-after-date"
+          : "fallback";
+      assert.match(logs, new RegExp(`UPSTREAM_RATE_LIMIT_RETRY .*retrySource: ${expectedSource}`));
+    }
+
+    let cappedCalls = 0;
+    global.fetch = async () => {
+      cappedCalls++;
+      return new Response(JSON.stringify({
+        error: {
+          code: "rate_limit_exceeded",
+          message: cappedCalls === 1 ? "first failure" : "final failure",
+        },
+      }), {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": cappedCalls === 1 ? "30" : "4",
+          "x-request-id": "req_final_rate_limit",
+          "x-ratelimit-remaining-requests": "0",
+          authorization: "must-not-forward",
+        },
+      });
+    };
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    const { result: exhaustedResponse, logs: exhaustedLogs } =
+      await captureConsoleLogs(() => invoke());
+    assert.equal(cappedCalls, 2, "persistent 429 must stop after one retry");
+    assert.equal(exhaustedResponse.status, 429);
+    assert.match(await exhaustedResponse.text(), /final failure/);
+    assert.equal(exhaustedResponse.headers.get("retry-after"), "4");
+    assert.equal(exhaustedResponse.headers.get("x-request-id"), "req_final_rate_limit");
+    assert.equal(exhaustedResponse.headers.get("x-ratelimit-remaining-requests"), "0");
+    assert.equal(exhaustedResponse.headers.get("authorization"), null);
+    assert.match(exhaustedLogs, /UPSTREAM_RATE_LIMIT_RETRY .*delayMs: 2000/);
+    assert.match(exhaustedLogs, /UPSTREAM_RATE_LIMIT_EXHAUSTED .*attempts: 2/);
+    assert.doesNotMatch(exhaustedLogs, /final failure|NONSTREAM_DONE|CACHE_OAI_RESP_ID/);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+      "persistent rate limits must not write response IDs",
+    );
+
+    const requestController = new AbortController();
+    let abortedCalls = 0;
+    global.fetch = async () => {
+      abortedCalls++;
+      return new Response("{}", {
+        status: 429,
+        headers: { "content-type": "application/json", "retry-after": "30" },
+      });
+    };
+    const abortedPromise = invoke(requestController);
+    setTimeout(() => requestController.abort(), 10);
+    const abortedResponse = await abortedPromise;
+    assert.equal(abortedResponse.status, 499);
+    assert.equal(abortedCalls, 1, "client abort must stop the retry during backoff");
+    assert.equal((await abortedResponse.json()).error.code, "request_cancelled");
+  });
+
+  it("does not retry rate limits after an HTTP 200 stream handoff", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    let fetchCalls = 0;
+    let upstreamCancelled = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode([
+          "event: response.created",
+          "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream_rate_limit\",\"status\":\"in_progress\"}}",
+          "",
+          "event: error",
+          "data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"rate_limit_exceeded\",\"message\":\"provider limited the stream\"}}",
+          "",
+        ].join("\n")));
+      },
+      cancel() {
+        upstreamCancelled = true;
+      },
+    });
+    global.fetch = async () => {
+      fetchCalls++;
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    };
+
+    let bodyText = "";
+    const { logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "stream rate limit" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await response.text();
+    });
+
+    assert.equal(fetchCalls, 1);
+    assert.equal(upstreamCancelled, true);
+    assert.match(bodyText, /rate_limit_exceeded/);
+    assert.doesNotMatch(bodyText, /"finish_reason":"tool_calls"/);
+    assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(logs, /OAI_STREAM_LIFECYCLE .*terminal: rate_limited/);
+    assert.doesNotMatch(logs, /UPSTREAM_RATE_LIMIT_RETRY/);
+  });
+
   // ─── Native input branch (INPUT_CHAIN) ───────────────────────────────────
 
   it("responses mode preserves native input array as-is on first turn", async () => {
@@ -1658,6 +1822,103 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(upstreamCancelled, true);
   });
 
+  it("classifies malformed Responses events as pipeline failures and cancels upstream", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    let upstreamCancelled = false;
+    const malformedEventSecret = "pipeline-secret-value";
+    const malformedStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          "event: response.completed\n"
+          + `data: {"type":"response.completed","secret":"${malformedEventSecret}"\n\n`,
+        ));
+      },
+      cancel() {
+        upstreamCancelled = true;
+      },
+    });
+    global.fetch = async () => new Response(malformedStream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "malformed event" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await response.text();
+    });
+
+    assert.equal(upstreamCancelled, true);
+    assert.match(bodyText, /stream_parse_error/);
+    assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
+    assert.match(logs, /OAI_STREAM_PIPELINE_FAILURE .*stage: parse/);
+    assert.match(logs, /OAI_STREAM_LIFECYCLE .*terminal: pipeline_error .*stage: parse/);
+    assert.equal((logs.match(/OAI_STREAM_LIFECYCLE/g) || []).length, 1);
+    assert.doesNotMatch(logs, new RegExp(malformedEventSecret));
+  });
+
+  it("classifies downstream body cancellation as a write failure and cancels upstream", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    let upstreamCancelled = false;
+    const cancellationSecret = "downstream-write-secret";
+    const upstreamStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          "event: response.created\n"
+          + "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_write_failure\",\"status\":\"in_progress\"}}\n\n",
+        ));
+      },
+      cancel() {
+        upstreamCancelled = true;
+      },
+    });
+    global.fetch = async () => new Response(upstreamStream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const { logs } = await captureConsoleLogs(async () => {
+      const response = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: "cancel downstream body" }],
+          stream: true,
+        }),
+      }));
+      await response.body.cancel(new Error(cancellationSecret));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    assert.equal(upstreamCancelled, true);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
+    assert.match(logs, /STREAM_WRITE_ERROR .*stage: readable_cancel .*cancelled: false/);
+    assert.match(logs, /OAI_STREAM_LIFECYCLE .*terminal: write_error .*stage: write/);
+    assert.equal((logs.match(/STREAM_WRITE_ERROR/g) || []).length, 1);
+    assert.equal((logs.match(/OAI_STREAM_LIFECYCLE/g) || []).length, 1);
+    assert.doesNotMatch(logs, new RegExp(cancellationSecret));
+  });
+
   it("streams Responses function calls with dense Chat tool indexes and tool_calls finish reason", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const stream = [
@@ -1716,6 +1977,96 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OAI_TOOL_CALL_START .*name: start_subagent .*toolIndex: 0 .*responsesIndex: 2/);
     assert.match(logs, /OAI_TOOL_CALL_DONE .*name: start_subagent .*toolIndex: 0 .*argChars: 18 .*argKeys: task/);
     assert.doesNotMatch(logs, /inspect/, "tool-call diagnostics must not log argument values");
+  });
+
+  it("rejects Responses completion when a started tool is missing or has invalid final arguments", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+
+    function responsesEvent(eventName, payload) {
+      return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    }
+
+    async function runToolCase({ responseId, doneArguments }) {
+      const itemId = `fc_${responseId}`;
+      const stream = responsesEvent("response.created", {
+        type: "response.created",
+        response: { id: responseId, status: "in_progress", model: "gpt-5.5" },
+      }) + responsesEvent("response.output_item.added", {
+        type: "response.output_item.added",
+        output_index: 3,
+        item: {
+          id: itemId,
+          type: "function_call",
+          call_id: `call_${responseId}`,
+          name: "Read",
+        },
+      }) + responsesEvent("response.function_call_arguments.delta", {
+        type: "response.function_call_arguments.delta",
+        output_index: 3,
+        item_id: itemId,
+        delta: doneArguments ?? "{\"path\":\"/tmp/example\"}",
+      }) + (doneArguments === undefined ? "" : responsesEvent(
+        "response.function_call_arguments.done",
+        {
+          type: "response.function_call_arguments.done",
+          output_index: 3,
+          item_id: itemId,
+          arguments: doneArguments,
+        },
+      )) + responsesEvent("response.completed", {
+        type: "response.completed",
+        response: { id: responseId, status: "completed", error: null },
+      });
+
+      const kv = makeInMemoryKv();
+      setKvDriver(kv);
+      global.fetch = async () => new Response(stream, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+
+      let bodyText = "";
+      const { logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            messages: [{ role: "user", content: "read a file" }],
+            stream: true,
+          }),
+        }));
+        bodyText = await response.text();
+      });
+      return { bodyText, kv, logs };
+    }
+
+    const missingFinal = await runToolCase({
+      responseId: "resp_tool_missing_final",
+    });
+    assert.match(missingFinal.bodyText, /incomplete_tool_call/);
+    assert.doesNotMatch(missingFinal.bodyText, /"finish_reason":"tool_calls"/);
+    assert.equal(missingFinal.bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(missingFinal.logs, /OAI_TOOL_CALL_INCOMPLETE .*missingFinal: 1 .*invalidFinal: 0/);
+    assert.match(missingFinal.logs, /OAI_STREAM_LIFECYCLE .*terminal: incomplete_tool_call/);
+    assert.equal(
+      [...missingFinal.kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
+
+    const malformedFinal = await runToolCase({
+      responseId: "resp_tool_malformed_final",
+      doneArguments: "{\"path\":",
+    });
+    assert.match(malformedFinal.bodyText, /incomplete_tool_call/);
+    assert.doesNotMatch(malformedFinal.bodyText, /"finish_reason":"tool_calls"/);
+    assert.equal(malformedFinal.bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(malformedFinal.logs, /OAI_TOOL_CALL_INCOMPLETE .*missingFinal: 0 .*invalidFinal: 1/);
+    assert.match(malformedFinal.logs, /OAI_STREAM_LIFECYCLE .*terminal: incomplete_tool_call/);
+    assert.equal(
+      [...malformedFinal.kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
   });
 
   it("preserves interleaved Shell and Task calls across GPT-5.6 and GPT-5.5 streams", async () => {
@@ -1959,7 +2310,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     });
   });
 
-  it("releases deferred GPT-5.6 tool chunks when Shell never completes", async () => {
+  it("discards deferred GPT-5.6 tool chunks when any parallel tool is incomplete", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const taskArgs = JSON.stringify({
       description: "Inspect workspace",
@@ -2003,16 +2354,22 @@ describe("openaicompat Responses wire mode — integration", () => {
       headers: { "content-type": "text/event-stream" },
     });
 
-    const response = await handler(new Request(PROVIDER_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: "cursorproxy/compatible-gpt-5.6",
-        messages: [{ role: "user", content: "Inspect the workspace" }],
-        stream: true,
-      }),
-    }));
-    const bodyText = await response.text();
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    let bodyText = "";
+    const { result: response, logs } = await captureConsoleLogs(async () => {
+      const handlerResponse = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "cursorproxy/compatible-gpt-5.6",
+          messages: [{ role: "user", content: "Inspect the workspace" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await handlerResponse.text();
+      return handlerResponse;
+    });
     const dataLines = bodyText
       .split("\n")
       .filter((line) => line.startsWith("data: "));
@@ -2023,19 +2380,24 @@ describe("openaicompat Responses wire mode — integration", () => {
       chunk.choices?.[0]?.delta?.tool_calls || []);
 
     assert.equal(response.status, 200);
-    assert.deepEqual(emittedToolCalls.map((toolCall) => toolCall.index), [0, 1, 1]);
-    const taskArgumentText = emittedToolCalls
-      .filter((toolCall) => toolCall.index === 1)
-      .map((toolCall) => toolCall.function?.arguments || "")
-      .join("");
-    assert.deepEqual(JSON.parse(taskArgumentText), JSON.parse(taskArgs));
-    const finishIndex = chunks.findIndex((chunk) =>
-      chunk.choices?.[0]?.finish_reason === "tool_calls");
-    const taskDoneIndex = chunks.findIndex((chunk) =>
-      chunk.choices?.[0]?.delta?.tool_calls?.[0]?.index === 1
-      && Boolean(chunk.choices[0].delta.tool_calls[0].function?.arguments));
-    assert.ok(taskDoneIndex >= 0 && taskDoneIndex < finishIndex,
-      "deferred Task arguments must be released before finish_reason=tool_calls");
+    assert.deepEqual(
+      emittedToolCalls.map((toolCall) => toolCall.index),
+      [0],
+      "deferred Task chunks must not be released behind an unfinished Shell call",
+    );
+    assert.match(bodyText, /incomplete_tool_call/);
+    assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+    assert.equal(
+      chunks.some((chunk) => chunk.choices?.[0]?.finish_reason === "tool_calls"),
+      false,
+    );
+    assert.match(logs, /OAI_TOOL_CALL_INCOMPLETE .*started: 2 .*incomplete: 1 .*missingFinal: 1/);
+    assert.match(logs, /OAI_GPT56_TOOL_CHUNKS_DISCARDED .*discarded: 2 .*reason: incomplete_tool_call/);
+    assert.match(logs, /OAI_STREAM_LIFECYCLE .*terminal: incomplete_tool_call/);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
   });
 
   it("sanitizes invalid optional GPT-5.6 Task arguments for local execution", async () => {

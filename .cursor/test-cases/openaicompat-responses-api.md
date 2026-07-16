@@ -213,6 +213,8 @@ OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: 0 deferred: <n> reason: shell_done
 > GPT-5.6 may populate every optional Task field with empty local defaults. For local execution, the proxy removes `cloud_base_branch` when `environment` is not `cloud` and removes blank `model` / `resume`; it preserves valid local fields such as `environment:"local"` and `file_attachments:[]`. Valid cloud Task arguments remain unchanged.
 >
 > `OAI_TOOL_CALL_DONE` argument-shape logs establish that the proxy parsed the upstream/model arguments for each tool. They do not by themselves prove that Cursor correctly assembled the transformed downstream stream; confirm the visible Shell command, both tool starts, and both completions in Cursor.
+>
+> A successful parent `Task` or `Subagent` tool call proves only that the launch invocation had complete arguments and received a normal model-turn terminal. The child process can make later model requests and can still stop on a rate limit, abnormal stream, or missing final synthesis. cursorProxy can classify those child requests, but Cursor owns the child process and its UI status.
 
 Expected logs for the known local Subagent compatibility path:
 
@@ -370,7 +372,11 @@ Use the deterministic public-boundary cases in `test/openaicompat-responses.test
 | `response.failed` | Partial output preserved, normalized error, one `data: [DONE]` | `terminal: failed` | No cache write |
 | `response.incomplete` | Partial output preserved, normalized `response_incomplete` error with the reason, one `data: [DONE]` | `terminal: incomplete` | No cache write |
 | SSE `error` | Normalized error and one `data: [DONE]` | `terminal: failed` | No cache write |
+| SSE rate-limit error after HTTP 200 | Normalized rate-limit error and one `data: [DONE]`; no retry after stream handoff | `terminal: rate_limited` | No cache write |
+| Started tool missing its arguments-done event or containing malformed final JSON | Normalized `incomplete_tool_call` error and one `data: [DONE]`; no `finish_reason:"tool_calls"` | `terminal: incomplete_tool_call` | No cache write |
+| Malformed or unmappable complete SSE event | Finite stage-specific stream error and one `data: [DONE]` when writable; upstream reader cancelled | `terminal: pipeline_error` | No cache write |
 | Reader rejection | Finite `stream_read_error` result and one `data: [DONE]` when writable | `terminal: read_error` | No cache write |
+| Downstream body/write cancellation without request abort | Upstream reader cancelled immediately; no further downstream or cache writes | `terminal: write_error` | No cache write |
 | Total timeout | Finite `stream_timeout` result and one `data: [DONE]` when writable | `terminal: timeout` | No cache write |
 | Unexpected EOF or unterminated final frame | Finite `unexpected_eof` result and one `data: [DONE]` | `terminal: unexpected_eof` | No cache write |
 | Client cancellation | Upstream reader/fetch is cancelled; no drain wait or cache write | `terminal: cancelled` | No cache write |
@@ -380,9 +386,44 @@ For every streamed case, verify exactly one `OAI_STREAM_LIFECYCLE` line. `header
 Negative checks:
 
 - Provider response messages, response IDs, prompts, SSE payloads, and tool argument values do not appear in the new lifecycle/failure diagnostics.
-- `CACHE_OAI_RESP_ID` never accompanies `terminal: failed`, `incomplete`, `timeout`, `read_error`, `pipeline_error`, `unexpected_eof`, or `cancelled`.
+- `CACHE_OAI_RESP_ID` never accompanies `terminal: failed`, `rate_limited`, `incomplete`, `incomplete_tool_call`, `timeout`, `read_error`, `write_error`, `pipeline_error`, `unexpected_eof`, or `cancelled`.
 - A raw `data: [DONE]` without `response.completed` is not considered successful.
 - A cancelled Docker socket does not leave a pending `drain` listener or an active upstream reader.
+
+## Test 13 — Rate-limit recovery and child-turn completion
+
+Use the deterministic public-handler cases in `test/openaicompat-responses.test.js` for numeric and HTTP-date `Retry-After`, delay capping, missing or invalid retry metadata, retry success, exhausted retries, client abort during backoff, preserved final headers/body, and the no-retry boundary after HTTP 200 stream handoff.
+
+Expected pre-stream behavior:
+
+- The proxy retries the exact request once when the first upstream response is HTTP `429`.
+- Numeric and HTTP-date `Retry-After` values are honored with bounded jitter and a maximum two-second delay. Missing or invalid metadata uses the bounded fallback.
+- Client cancellation stops the backoff and prevents a second upstream request.
+- A successful retry continues through normal Responses mapping.
+- A second `429` is returned unchanged in status and body with safe rate-limit metadata such as `Retry-After`, `x-request-id`, and `x-ratelimit-*`.
+- Compatibility retries for mixed tool shape or `previous_response_id` do not run after the rate-limit retry.
+
+Expected diagnostics:
+
+```text
+UPSTREAM_RATE_LIMIT_RETRY provider: openaicompat model: <model> attempt: 1 delayMs: <bounded_ms> retrySource: <source>
+UPSTREAM_RATE_LIMIT_EXHAUSTED provider: openaicompat model: <model> attempts: 2 retryAfter: <true|false> bodyPresent: <true|false>
+```
+
+After deployment, rerun the four audit themes that previously stopped before synthesis. Use read-only child agents and require a final written report from each:
+
+1. Request serialization and incomplete-request handling.
+2. Streaming lifecycle and terminal handling.
+3. Regression coverage and diagnostic redaction.
+4. Commit-history chronology.
+
+Run each audit independently first. A controlled parallel rerun can follow if provider capacity permits. Record these outcomes separately:
+
+- The parent `Task` launch has matching `OAI_TOOL_CALL_START` and `OAI_TOOL_CALL_DONE` diagnostics.
+- Every later child model request reaches `OAI_STREAM_LIFECYCLE ... terminal: completed`.
+- The child produces its requested final synthesis in Cursor.
+
+Do not treat the first item as proof of the other two. If a transient pre-stream limit occurs, expect one `UPSTREAM_RATE_LIMIT_RETRY` before normal completion. If recovery is exhausted, expect the preserved `429` and `UPSTREAM_RATE_LIMIT_EXHAUSTED`, not a normal tool-call terminal. If any started child tool lacks valid final arguments, expect `OAI_TOOL_CALL_INCOMPLETE`, `terminal: incomplete_tool_call`, no `finish_reason:"tool_calls"`, and no response-ID cache write.
 
 ## Negative signs
 
