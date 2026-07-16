@@ -1145,6 +1145,12 @@ export default async function handler(req) {
 
     const completedWait = await waitForRateLimitRetry(retry.delayMs, req.signal);
     if (!completedWait) {
+      diag("UPSTREAM_RATE_LIMIT_ABORTED",
+           "provider:", providerKey,
+           "model:", safeLogToken(upstreamModelName),
+           "phase:", "backoff",
+           "attempts:", 1,
+           "delayMs:", retry.delayMs);
       return jsonErrorResponse(
         499,
         "Client disconnected during upstream rate-limit backoff",
@@ -1156,6 +1162,15 @@ export default async function handler(req) {
     try {
       upstreamRateLimitRetried = true;
       upstreamRes = await fetchUpstream(bodyText);
+      if (upstreamRes.status !== 429) {
+        diag("UPSTREAM_RATE_LIMIT_RECOVERED",
+             "provider:", providerKey,
+             "model:", safeLogToken(upstreamModelName),
+             "attempts:", 2,
+             "status:", upstreamRes.status,
+             "delayMs:", retry.delayMs,
+             "retrySource:", retry.source);
+      }
     } catch (err) {
       const isClientAbort = req.signal?.aborted === true;
       const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";

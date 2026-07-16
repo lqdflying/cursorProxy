@@ -1181,6 +1181,13 @@ describe("openaicompat Responses wire mode — integration", () => {
           ? "retry-after-date"
           : "fallback";
       assert.match(logs, new RegExp(`UPSTREAM_RATE_LIMIT_RETRY .*retrySource: ${expectedSource}`));
+      assert.match(
+        logs,
+        new RegExp(
+          `UPSTREAM_RATE_LIMIT_RECOVERED .*attempts: 2 .*status: 200 .*retrySource: ${expectedSource}`,
+        ),
+      );
+      assert.doesNotMatch(logs, /UPSTREAM_RATE_LIMIT_ABORTED|UPSTREAM_RATE_LIMIT_EXHAUSTED/);
     }
 
     let cappedCalls = 0;
@@ -1215,6 +1222,10 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(exhaustedResponse.headers.get("authorization"), null);
     assert.match(exhaustedLogs, /UPSTREAM_RATE_LIMIT_RETRY .*delayMs: 2000/);
     assert.match(exhaustedLogs, /UPSTREAM_RATE_LIMIT_EXHAUSTED .*attempts: 2/);
+    assert.doesNotMatch(
+      exhaustedLogs,
+      /UPSTREAM_RATE_LIMIT_RECOVERED|UPSTREAM_RATE_LIMIT_ABORTED/,
+    );
     assert.doesNotMatch(exhaustedLogs, /final failure|NONSTREAM_DONE|CACHE_OAI_RESP_ID/);
     assert.equal(
       [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
@@ -1231,12 +1242,23 @@ describe("openaicompat Responses wire mode — integration", () => {
         headers: { "content-type": "application/json", "retry-after": "30" },
       });
     };
-    const abortedPromise = invoke(requestController);
-    setTimeout(() => requestController.abort(), 10);
-    const abortedResponse = await abortedPromise;
+    let abortedResponse;
+    const { logs: abortedLogs } = await captureConsoleLogs(async () => {
+      const abortedPromise = invoke(requestController);
+      setTimeout(() => requestController.abort(), 10);
+      abortedResponse = await abortedPromise;
+    });
     assert.equal(abortedResponse.status, 499);
     assert.equal(abortedCalls, 1, "client abort must stop the retry during backoff");
     assert.equal((await abortedResponse.json()).error.code, "request_cancelled");
+    assert.match(
+      abortedLogs,
+      /UPSTREAM_RATE_LIMIT_ABORTED .*phase: backoff .*attempts: 1 .*delayMs: 2000/,
+    );
+    assert.doesNotMatch(
+      abortedLogs,
+      /UPSTREAM_RATE_LIMIT_RECOVERED|UPSTREAM_RATE_LIMIT_EXHAUSTED/,
+    );
   });
 
   it("does not retry rate limits after an HTTP 200 stream handoff", async () => {

@@ -407,6 +407,8 @@ Expected diagnostics:
 
 ```text
 UPSTREAM_RATE_LIMIT_RETRY provider: openaicompat model: <model> attempt: 1 delayMs: <bounded_ms> retrySource: <source>
+UPSTREAM_RATE_LIMIT_RECOVERED provider: openaicompat model: <model> attempts: 2 status: <non-429> delayMs: <bounded_ms> retrySource: <source>
+UPSTREAM_RATE_LIMIT_ABORTED provider: openaicompat model: <model> phase: backoff attempts: 1 delayMs: <bounded_ms>
 UPSTREAM_RATE_LIMIT_EXHAUSTED provider: openaicompat model: <model> attempts: 2 retryAfter: <true|false> bodyPresent: <true|false>
 ```
 
@@ -423,7 +425,7 @@ Run each audit independently first. A controlled parallel rerun can follow if pr
 - Every later child model request reaches `OAI_STREAM_LIFECYCLE ... terminal: completed`.
 - The child produces its requested final synthesis in Cursor.
 
-Do not treat the first item as proof of the other two. If a transient pre-stream limit occurs, expect one `UPSTREAM_RATE_LIMIT_RETRY` before normal completion. If recovery is exhausted, expect the preserved `429` and `UPSTREAM_RATE_LIMIT_EXHAUSTED`, not a normal tool-call terminal. If any started child tool lacks valid final arguments, expect `OAI_TOOL_CALL_INCOMPLETE`, `terminal: incomplete_tool_call`, no `finish_reason:"tool_calls"`, and no response-ID cache write.
+Do not treat the first item as proof of the other two. If a transient pre-stream limit occurs, expect `UPSTREAM_RATE_LIMIT_RETRY` followed by `UPSTREAM_RATE_LIMIT_RECOVERED` before normal response handling. If Cursor cancels during backoff, expect `UPSTREAM_RATE_LIMIT_ABORTED` and no second upstream request. If recovery is exhausted, expect the preserved `429` and `UPSTREAM_RATE_LIMIT_EXHAUSTED`, not a normal tool-call terminal. If any started child tool lacks valid final arguments, expect `OAI_TOOL_CALL_INCOMPLETE`, `terminal: incomplete_tool_call`, no `finish_reason:"tool_calls"`, and no response-ID cache write.
 
 ## Negative signs
 
