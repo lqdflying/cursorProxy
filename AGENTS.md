@@ -18,6 +18,7 @@ Any coding agent working on this repo should read those files before making chan
 | `feature-verification.mdc` | Post-deploy verification, probe-first pattern, KV key stability |
 | `github-markdown.mdc` | GitHub Flavored Markdown conventions |
 | `review-gating.mdc` | Pre-commit review: full-path trace for every input shape |
+| `responses-stream-reliability.mdc` | Responses retry, tool completion, cancellation, and terminal lifecycle invariants |
 | `vercel-log-investigation.mdc` | Vercel production log investigation workflow |
 
 ## Quick start for agents
@@ -26,4 +27,5 @@ Any coding agent working on this repo should read those files before making chan
 2. Read `.cursor/rules/code-conventions.mdc` for logging, module, and security conventions.
 3. If adding a provider, follow `.cursor/rules/adding-provider.mdc`.
 4. If touching Azure code, read `.cursor/rules/azure-foundry.mdc`.
-5. Wiki docs live in `wiki/` (separate git clone) and are for end users/operators only. Put developer-only implementation guidance in `.cursor/rules/`, not the public wiki.
+5. If changing Responses streaming or retries, read `.cursor/rules/responses-stream-reliability.mdc`.
+6. Wiki docs live in `wiki/` (separate git clone) and are for end users/operators only. Put developer-only implementation guidance in `.cursor/rules/`, not the public wiki.

@@ -1,0 +1,54 @@
+---
+description: OpenAI-compatible Responses retry, tool-finalization, cancellation, and terminal lifecycle invariants
+globs: api/proxy.js,lib/stream-pump.js,lib/azure-openai.js,lib/log-shapes.js,lib/upstream-rate-limit.js,test/openaicompat-responses.test.js
+alwaysApply: false
+---
+
+# Responses Stream Reliability
+
+Protect Cursor Task/Subagent turns from appearing successful after rate limits,
+unfinished tools, or broken streams.
+
+## Pre-stream 429 recovery
+
+- Retry only `openaicompat` HTTP `429` responses received before response-body
+  handoff. Make at most one retry with the exact serialized request body.
+- Honor numeric and HTTP-date `Retry-After`, use the bounded fallback/jitter in
+  `lib/upstream-rate-limit.js`, and keep the total delay at or below 2 seconds.
+- Abort backoff when the client signal aborts. Cancel the first `429` body before
+  waiting, and never replay after an HTTP `200` SSE stream has begun.
+- A rate-limit retry consumes the request's retry budget: do not also run the
+  mixed-tool or stale-`previous_response_id` compatibility retry.
+- Forward an exhausted `429` body with only `content-type`, `retry-after`,
+  `x-request-id`, and `x-ratelimit-*` headers.
+
+## Tool completion gate
+
+- A started Responses tool is complete only after its matching `*.done` event.
+  Function-call final arguments must parse as JSON; custom/apply-patch final
+  input must be a string.
+- Do not emit `finish_reason:"tool_calls"`, `[DONE]`, or cache a response ID when
+  any unique tool lacks valid final arguments. Emit terminal
+  `incomplete_tool_call` instead.
+- On every abnormal terminal, discard deferred GPT-5.6 tool chunks. Never flush
+  a later Task/Subagent call after an earlier parallel tool remained incomplete.
+
+## Terminal and cancellation contract
+
+- Classify SSE rate-limit errors as `rate_limited`, malformed events as
+  `pipeline_error`, and downstream write/cancel failures as `write_error`
+  unless the request signal proves client cancellation. Preserve all other
+  terminal distinctions.
+- Downstream body cancellation must cancel the upstream reader and abort the
+  internal writer. Abnormal terminals must not write response-ID or thinking
+  cache state.
+- Emit exactly one `OAI_STREAM_LIFECYCLE` per Responses stream. `RES 200` means
+  headers were accepted, not that the model turn completed.
+
+## Required diagnostics and tests
+
+- Keep `UPSTREAM_RATE_LIMIT_RETRY`, `RECOVERED`, `ABORTED`, and `EXHAUSTED`
+  mutually truthful; log shapes only, never provider bodies or tool values.
+- Cover retry outcomes, post-handoff rate limiting, tool-finalization failures,
+  malformed SSE, downstream cancellation, deferred-chunk discard, no cache
+  write, and one lifecycle record.

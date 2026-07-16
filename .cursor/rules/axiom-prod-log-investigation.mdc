@@ -153,8 +153,16 @@ Abnormal lifecycle lines with matching safe diagnostics:
 - A single `UPSTREAM_STATUS 400` followed by `OAI_PREV_RESP_UNSUPPORTED_RETRY` and `UPSTREAM_STATUS_PREV_RETRY 200` is recovered previous-response fallback, not a user-visible failure.
 - Repeated `OAI_PREV_RESP_UNSUPPORTED_SKIP provider: openaicompat mode: stateless` after such a retry means the proxy suppressed the unsupported path and continued stateless.
 - `OAI_STREAM_LIFECYCLE terminal: completed doneSeen: true` is a clean OpenAI-compatible Responses stream completion.
-- `RES 200` records HTTP header success and can coexist with `terminal: failed`, `incomplete`, `timeout`, `read_error`, `pipeline_error`, `unexpected_eof`, or `cancelled`.
+- `RES 200` records HTTP header success and can coexist with `terminal: failed`, `incomplete`, `incomplete_tool_call`, `rate_limited`, `timeout`, `read_error`, `pipeline_error`, `write_error`, `unexpected_eof`, or `cancelled`.
 - Exactly one `OAI_STREAM_LIFECYCLE` should appear per OpenAI-compatible Responses stream.
+- `UPSTREAM_RATE_LIMIT_RETRY` followed by `UPSTREAM_RATE_LIMIT_RECOVERED` means
+  one pre-stream retry succeeded. `UPSTREAM_RATE_LIMIT_ABORTED` means the client
+  disconnected during backoff. `UPSTREAM_RATE_LIMIT_EXHAUSTED` means the final
+  HTTP `429` was forwarded. These outcomes should not overlap for one request.
+- A streaming `terminal: rate_limited` occurs after an HTTP `200` handoff and
+  must not trigger a replay. `terminal: incomplete_tool_call` means at least one
+  started tool never delivered valid final arguments; it is not successful
+  Task/Subagent completion.
 - A captured response ID is cacheable only after `terminal: completed`; abnormal lifecycle outcomes must not have a matching `CACHE_OAI_RESP_ID`.
 - `headersMs` isolates connect/header delay, `firstEventMs - headersMs` approximates time to first parsed SSE event after headers, and `totalMs - terminalMs` shows terminal-output/finalization cost.
 - New lifecycle/failure diagnostics are shape-only. Raw provider messages, response IDs, prompts, SSE payloads, and tool argument values must not appear.

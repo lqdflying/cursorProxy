@@ -13,6 +13,7 @@ alwaysApply: true
   - `lib/strict-tools.js` — strict-tool stats probe (`strictToolStats` is re-exported from `api/proxy.js` for tests).
   - `lib/cursor-tools.js` — Cursor Subagent/Task/Shell tool-arg sanitizers and Responses tool-arg remappers.
   - `lib/log-shapes.js` — log-formatting helpers (no logging side effects).
+  - `lib/upstream-rate-limit.js` — bounded `Retry-After` parsing/backoff and safe exhausted-`429` response headers for OpenAI-compatible requests.
 - `lib/models.js` handles model parsing, public/private model IDs, and provider routing.
 - Azure adapters live in `lib/azure-openai.js` and `lib/azure-anthropic.js`.
 - Kimi K2.x request sanitization lives in `lib/kimi.js` (`sanitizeKimiBody`); default Kimi model is `kimi-k2.7-code`.
