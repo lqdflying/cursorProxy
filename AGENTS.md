@@ -12,6 +12,7 @@ Any coding agent working on this repo should read those files before making chan
 | `adding-provider.mdc` | Checklist for adding a new upstream provider (must update 5+ locations) |
 | `api-changes.mdc` | Pre-change documentation verification for provider behavior and API parameters |
 | `api-edge-safety.mdc` | Edge Runtime constraints: no `node:*` imports, no `ioredis` in shared modules |
+| `axiom-prod-log-investigation.mdc` | Primary production topology and hop-by-hop Axiom/1Panel incident workflow |
 | `azure-foundry.mdc` | Azure OpenAI + Azure Anthropic integration details |
 | `cursor-test-cases.mdc` | Manual Cursor test case maintenance |
 | `edgeone-deployment.mdc` | EdgeOne Pages Cloud Functions deployment patterns |

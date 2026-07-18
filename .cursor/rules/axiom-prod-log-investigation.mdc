@@ -7,6 +7,29 @@ alwaysApply: false
 
 Use the `user-axiom` MCP server for real Docker production logs. The production log dataset is `cursorproxy` and its kind is `axiom:events:v1`, so use `queryDataset` with APL. Do not use metrics tools on this dataset; they should report that it is not a metrics dataset.
 
+## Primary Production Topology
+
+The major production path is:
+
+```text
+Cursor
+  -> public HTTPS
+  -> 1Panel OpenResty/Nginx reverse proxy
+  -> cursorProxy Docker server.js:3000
+  -> upstream API provider
+```
+
+1Panel terminates public TLS and owns client-facing buffering, connection
+lifetime, and reverse-proxy timeouts. `server.js` begins only after 1Panel
+forwards the request. Vercel and EdgeOne remain supported secondary deployment
+paths, but do not use their logs for the major production path unless the
+incident explicitly identifies one of them.
+
+Vector sends cursorProxy Docker logs to Axiom. Unless separately configured,
+Axiom does **not** contain 1Panel/OpenResty access or error logs. A Docker
+`client disconnected` record proves the downstream connection closed; it does
+not distinguish Cursor from 1Panel without matching 1Panel logs.
+
 ## Required Workflow
 
 1. Read the Axiom MCP rule and the target tool schema before calling tools:
@@ -16,6 +39,56 @@ Use the `user-axiom` MCP server for real Docker production logs. The production 
 3. Keep `startTime` and `endTime` narrow. For normal incidents, start with `now-30m` to `now`.
 4. Summarize findings. Do not dump request bodies, prompts, tool arguments, or payload content unless the user explicitly needs a specific line.
 5. Report all absolute timestamps and incident windows in Singapore Time (`SGT`, `UTC+8`). Convert Axiom's UTC `_time` values with date rollover accounted for. Do not expose raw UTC or `Z` timestamps unless the user explicitly requests UTC; if requested, show UTC after the primary SGT value.
+
+## Hop-by-Hop Troubleshooting
+
+Use the same narrow SGT incident window at every layer:
+
+1. **Cursor:** record the visible error, model, whether any tokens arrived, and
+   elapsed time. A repeatable exact boundary such as 60 seconds usually points
+   to a client or intermediary deadline.
+2. **1Panel/OpenResty:** inspect the website access log, error log, and effective
+   site configuration. Correlate status, request time, upstream response time,
+   and messages such as client-closed request, upstream timeout, or prematurely
+   closed connection. In 1Panel, the target website's **Configuration** page
+   exposes the OpenResty configuration.
+3. **cursorProxy/Axiom:** reconcile `REQ`, `[cursorProxy:server] ... -> status`,
+   `RES`, and `OAI_STREAM_LIFECYCLE`. `RES 200` is only header acceptance;
+   `terminal: completed` proves stream completion.
+4. **Upstream provider:** inspect provider request IDs, status, quota/rate-limit
+   events, first-byte latency, and terminal SSE status only after the first
+   three hops have localized the failure.
+
+Do not blame a layer merely because it logged the failure. The component nearest
+the closed socket often reports the symptom caused by its downstream peer.
+
+### Signature Matrix
+
+| Evidence | Likely boundary | Next check |
+|---|---|---|
+| Cursor fails and Axiom has no matching `REQ` | Cursor -> 1Panel, DNS, TLS, auth, or route | 1Panel access/error logs and Cursor endpoint |
+| 1Panel logs request but Axiom has no `REQ` | 1Panel -> Docker | Upstream address, `1panel-network`, port `3000`, container health |
+| `UPSTREAM_ERROR ... client disconnected`, server `499`, no stream lifecycle | Downstream closed before provider headers | Match 1Panel status/timing; inspect Cursor/intermediary deadline |
+| `terminal: cancelled` with `stage: write` | Request signal aborted after stream handoff | Match 1Panel client-close record and exact duration |
+| `terminal: write_error` with `stage: write` | Downstream response body became unwritable | Check 1Panel error log, buffering, reload/restart, and client connection |
+| `terminal: timeout` | cursorProxy `STREAM_TIMEOUT_SECONDS` | Check Docker env and configured stream budget |
+| `terminal: rate_limited`, `failed`, `incomplete`, `read_error`, `pipeline_error`, or `unexpected_eof` | Upstream/provider or proxy stream processing | Inspect matching safe diagnostics and provider logs |
+| Many outcomes terminate at the same exact duration | Configured deadline in Cursor or an intermediary | Compare Cursor duration, 1Panel `$request_time`, and Axiom `totalMs` |
+
+### 1Panel/OpenResty Streaming Checks
+
+- Confirm the active route forwards to `http://cursorproxy:3000` on
+  `1panel-network` or `http://127.0.0.1:3000`.
+- Use `proxy_http_version 1.1`, `proxy_buffering off`, and `proxy_cache off` for
+  SSE. Verify the effective generated configuration, not only the 1Panel form.
+- Set `proxy_read_timeout` and `proxy_send_timeout` above the longest expected
+  stream, commonly `300s`. Per Nginx documentation these are idle intervals
+  between successive upstream reads/writes, not whole-response deadlines.
+- Check for another timeout layer outside this site block: CDN, WAF, tunnel,
+  load balancer, global OpenResty config, or Cursor itself.
+- After a config change, validate/reload OpenResty through 1Panel and run a
+  stream deliberately longer than 60 seconds. Confirm continuous chunks and
+  `OAI_STREAM_LIFECYCLE terminal: completed`.
 
 ## Baseline Queries
 
@@ -167,6 +240,8 @@ Abnormal lifecycle lines with matching safe diagnostics:
 - `headersMs` isolates connect/header delay, `firstEventMs - headersMs` approximates time to first parsed SSE event after headers, and `totalMs - terminalMs` shows terminal-output/finalization cost.
 - New lifecycle/failure diagnostics are shape-only. Raw provider messages, response IDs, prompts, SSE payloads, and tool argument values must not appear.
 - Treat long successful `RES 200 ... ms:` values as performance signals, not correctness failures.
+- `UPSTREAM_ERROR Error client disconnected`, server `499`, `terminal: cancelled`, and `terminal: write_error` can all be downstream symptoms. Correlate with 1Panel logs before classifying them as cursorProxy or provider defects.
+- An exact-duration cluster is stronger timeout evidence than a single long request. Nginx `proxy_read_timeout` and `proxy_send_timeout` are idle-between-I/O timers, so do not describe them as total request caps without 1Panel error-log evidence.
 
 ## Post-Release Check
 
