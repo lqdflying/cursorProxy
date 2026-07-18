@@ -38,7 +38,7 @@ Expected logs (group by `requestId`):
 
 ```text
 REQ POST /v1/chat/completions provider: kimi
-KIMI_BODY_SANITIZED model: kimi-k2.7-code thinkingType: (omitted) toolChoice: auto maxTokens: (unset)
+KIMI_BODY_SANITIZED model: kimi-k2.7-code thinkingType: (omitted) reasoningEffort: (unset) toolChoice: auto maxTokens: (unset) maxCompletionTokens: (unset)
 RES 200 provider: kimi ms: ...
 ```
 

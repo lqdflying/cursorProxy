@@ -58,7 +58,7 @@ import {
 } from "../lib/reasoning.js";
 import { sanitizeGlmBody } from "../lib/glm.js";
 import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
-import { sanitizeKimiBody } from "../lib/kimi.js";
+import { isKimiK3, sanitizeKimiBody } from "../lib/kimi.js";
 import { convertImagesToText, requiresVisionBridge } from "../lib/vision-bridge.js";
 import {
   safeLogToken,
@@ -653,7 +653,7 @@ export default async function handler(req) {
   // Azure OpenAI and Fireworks are excluded: Azure resolves deployment
   // names server-side; Fireworks hosts 200+ models with no single default.
   if (parsedBody && !parsedBody.model && providerKey !== "azureopenai" && providerKey !== "fireworks") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k2.7-code", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
+    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k3", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-chat";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "model:", parsedBody.model);
@@ -767,9 +767,14 @@ export default async function handler(req) {
   // For Fireworks the scope must include the upstream model name so reasoning
   // caches are isolated per model.  Without this, a Qwen reasoning trace could
   // be re-injected into a DeepSeek request (same provider + user scope).
+  // Kimi K3 also gets a model-qualified scope so its required preserved
+  // reasoning cannot be mixed with legacy K2 traces. K2 keeps its existing
+  // scope so already-cached conversations remain usable across the rollout.
   const scope = providerKey === "fireworks"
     ? providerKey + ":" + upstreamModelName + ":" + scopeUser
-    : providerKey + ":" + scopeUser;
+    : providerKey === "kimi" && isKimiK3(upstreamModelName)
+      ? providerKey + ":kimi-k3:" + scopeUser
+      : providerKey + ":" + scopeUser;
   // openaicompat uses Cursor-shaped Chat Completions requests that may be
   // normalized differently between turns (string vs array content, tool call
   // shape, etc.). Use a canonicalized hash so cache keys stay stable across

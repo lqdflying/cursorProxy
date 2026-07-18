@@ -40,7 +40,7 @@ Provider routing is replicated in multiple places. Adding a provider requires up
 Reasoning helpers live in **`lib/reasoning.js`**, not `api/proxy.js`.
 
 - DeepSeek, Kimi & MiMo: `reasoning_content` (string). MiMo gets `thinking: { type: "enabled" }` injected in `api/proxy.js`.
-- Kimi K2.x (`kimi-k2.7-code`, `kimi-k2.6*`, `kimi-k2.5*`) request sanitization lives in **`lib/kimi.js`** (`sanitizeKimiBody`), called from `api/proxy.js` before `injectStoredReasoning()`. K2.7 omits `thinking`; K2.6 injects `{ type: "enabled", keep: "all" }` unless disabled; all K2.x tiers strip fixed sampling params and normalize `tool_choice`. Default Kimi model when omitted: `kimi-k2.7-code`.
+- Kimi request sanitization lives in **`lib/kimi.js`** (`sanitizeKimiBody`), called from `api/proxy.js` before `injectStoredReasoning()`. `kimi-k3` omits `thinking`, strips fixed sampling fields, forces `reasoning_effort: "max"`, preserves forced `tool_choice` and `max_completion_tokens`, and uses a model-qualified reasoning scope. K2.7 omits `thinking`; K2.6 injects `{ type: "enabled", keep: "all" }` unless disabled; K2.x strips fixed sampling params, normalizes forced `tool_choice`, and keeps the legacy provider/user scope. Default Kimi model when omitted: `kimi-k3`.
 - MiniMax: `reasoning_details` (object, array, or structured — sent with `reasoning_split: true`)
 - If new provider has a different reasoning field, update these functions in `lib/reasoning.js`: `reasoningField()`, `readReasoning()`, `serializeReasoning()`, `deserializeReasoning()` (private), `hasReasoningField()` (private), `updateStreamReasoning()`
 - Add the provider key to the `reasoningProviders` set inside `injectStoredReasoning()` if its assistant turns must carry reasoning back upstream
