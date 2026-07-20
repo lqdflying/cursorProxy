@@ -6,6 +6,7 @@ import {
   normalizeAzureOpenAIInputContent,
   normalizeOpenAICompatResponsesInputContent,
 } from "../lib/azure-openai.js";
+import { validateCursorShellArgs } from "../lib/cursor-tools.js";
 import { setKvDriver } from "../lib/kv.js";
 
 // These tests invoke the shared handler directly with the internal rewrite
@@ -26,6 +27,7 @@ const ENV_KEYS = [
   "AZURE_FOUNDRY_API_KEY",
   "AZURE_FOUNDRY_RESOURCE",
   "AZURE_OPENAI_ENDPOINT",
+  "DEEPSEEK_API_KEY",
   "CURSORPROXY_API_KEY",
   "DEBUG",
   "STREAM_TIMEOUT_SECONDS",
@@ -161,6 +163,233 @@ describe("openaicompat Responses wire mode — integration", () => {
       .map((toolCall) => toolCall.function?.arguments || "")
       .join("");
   }
+
+  it("classifies semantically invalid Shell command arguments without exposing values", () => {
+    assert.deepEqual(validateCursorShellArgs("{}"), {
+      valid: false,
+      reason: "missing_command",
+    });
+    assert.deepEqual(validateCursorShellArgs(JSON.stringify({ command: "   " })), {
+      valid: false,
+      reason: "empty_command",
+    });
+    assert.deepEqual(validateCursorShellArgs(JSON.stringify({ command: 42 })), {
+      valid: false,
+      reason: "invalid_command_type",
+    });
+    assert.deepEqual(validateCursorShellArgs(JSON.stringify({ command: "pwd" })), {
+      valid: true,
+      reason: null,
+    });
+  });
+
+  it("rejects invalid non-streaming Shell calls before mapping or response-ID caching", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+    mockFetchResponses({
+      id: "resp_nonstream_blank_shell",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{
+        type: "function_call",
+        call_id: "call_nonstream_blank_shell",
+        name: "Shell",
+        arguments: {},
+      }],
+    });
+
+    const { result: response, logs } = await captureConsoleLogs(() => handler(new Request(
+      PROVIDER_URL,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "run a shell command" }],
+        }),
+      },
+    )));
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      error: {
+        message: "Upstream response completed with an invalid Shell tool call",
+        type: "upstream_error",
+        code: "incomplete_tool_call",
+      },
+    });
+    assert.match(logs, /OAI_SHELL_ARGS_INVALID .*reason: missing_command .*argKeys: \(none\)/);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
+  });
+
+  it("preserves valid and unrelated non-streaming Responses tool calls", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    mockFetchResponses({
+      id: "resp_nonstream_valid_tools",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [
+        {
+          type: "function_call",
+          call_id: "call_valid_shell",
+          name: "Shell",
+          arguments: JSON.stringify({ command: "pwd" }),
+        },
+        {
+          type: "function_call",
+          call_id: "call_task",
+          name: "Task",
+          arguments: JSON.stringify({ description: "Inspect workspace" }),
+        },
+        {
+          type: "custom_tool_call",
+          call_id: "call_custom",
+          name: "custom_tool",
+          input: "custom input",
+        },
+        {
+          type: "apply_patch_call",
+          call_id: "call_apply_patch",
+          input: "*** Begin Patch\n*** End Patch",
+        },
+      ],
+    });
+
+    const response = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "run tools" }],
+      }),
+    }));
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      body.choices[0].message.tool_calls.map((toolCall) => toolCall.function.name),
+      ["Shell", "Task", "custom_tool", "apply_patch"],
+    );
+    assert.equal(
+      body.choices[0].message.tool_calls[0].function.arguments,
+      JSON.stringify({ command: "pwd" }),
+    );
+  });
+
+  it("does not apply the Shell semantic guard outside openaicompat Responses", async () => {
+    const blankShellToolCall = {
+      id: "call_blank_shell",
+      type: "function",
+      function: {
+        name: "Shell",
+        arguments: "{}",
+      },
+    };
+
+    process.env.OPENAICOMPAT_WIRE_API = "chat";
+    mockFetchResponses({
+      id: "chat_blank_shell",
+      object: "chat.completion",
+      model: "gpt-5.5",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [blankShellToolCall],
+        },
+        finish_reason: "tool_calls",
+      }],
+    });
+    const chatResponse = await handler(new Request(PROVIDER_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "run shell" }],
+      }),
+    }));
+    assert.equal(chatResponse.status, 200);
+    assert.equal(
+      (await chatResponse.json()).choices[0].message.tool_calls[0].function.arguments,
+      "{}",
+    );
+
+    process.env.AZURE_FOUNDRY_API_KEY = "azure-test-key";
+    process.env.AZURE_OPENAI_ENDPOINT = "https://azure.example.com";
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "resp_azure_blank_shell",
+      object: "response",
+      model: "gpt-5.5",
+      status: "completed",
+      output: [{
+        type: "function_call",
+        call_id: "call_azure_blank_shell",
+        name: "Shell",
+        arguments: "{}",
+      }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const azureResponse = await handler(new Request(
+      "http://localhost/api/proxy?provider=azureopenai&path=chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.5",
+          messages: [{ role: "user", content: "run shell" }],
+        }),
+      },
+    ));
+    assert.equal(azureResponse.status, 200);
+    assert.equal(
+      (await azureResponse.json()).choices[0].message.tool_calls[0].function.arguments,
+      "{}",
+    );
+
+    process.env.DEEPSEEK_API_KEY = "deepseek-test-key";
+    global.fetch = async () => new Response(JSON.stringify({
+      id: "chat_deepseek_blank_shell",
+      object: "chat.completion",
+      model: "deepseek-chat",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [blankShellToolCall],
+        },
+        finish_reason: "tool_calls",
+      }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const deepSeekResponse = await handler(new Request(
+      "http://localhost/api/proxy?provider=deepseek&path=chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "deepseek-chat",
+          messages: [{ role: "user", content: "run shell" }],
+        }),
+      },
+    ));
+    assert.equal(deepSeekResponse.status, 200);
+    assert.equal(
+      (await deepSeekResponse.json()).choices[0].message.tool_calls[0].function.arguments,
+      "{}",
+    );
+  });
 
   // ─── Default (chat mode): no Responses remap ────────────────────────────
 
@@ -2091,6 +2320,429 @@ describe("openaicompat Responses wire mode — integration", () => {
     );
   });
 
+  it("rejects semantically invalid Shell arguments in openaicompat Responses streams", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const invalidCases = [
+      {
+        argumentsText: "{}",
+        reason: "missing_command",
+        responseId: "resp_shell_missing_command",
+      },
+      {
+        argumentsText: JSON.stringify({ command: "   " }),
+        reason: "empty_command",
+        responseId: "resp_shell_empty_command",
+      },
+      {
+        argumentsText: JSON.stringify({ command: false }),
+        reason: "invalid_command_type",
+        responseId: "resp_shell_invalid_command_type",
+      },
+    ];
+
+    for (const invalidCase of invalidCases) {
+      const kv = makeInMemoryKv();
+      setKvDriver(kv);
+      mockResponsesFunctionCallStream({
+        responseId: invalidCase.responseId,
+        toolName: "Shell",
+        argumentsText: invalidCase.argumentsText,
+      });
+
+      let bodyText = "";
+      const { logs } = await captureConsoleLogs(async () => {
+        const response = await handler(new Request(PROVIDER_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "gpt-5.5",
+            messages: [{ role: "user", content: "run a shell command" }],
+            stream: true,
+          }),
+        }));
+        bodyText = await response.text();
+      });
+
+      assert.match(bodyText, /incomplete_tool_call/);
+      assert.doesNotMatch(bodyText, /"finish_reason":"tool_calls"/);
+      assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+      assert.match(
+        logs,
+        new RegExp(`OAI_SHELL_ARGS_INVALID .*reason: ${invalidCase.reason}`),
+      );
+      assert.match(
+        logs,
+        /OAI_TOOL_CALL_INCOMPLETE .*missingFinal: 0 .*invalidFinal: 1/,
+      );
+      assert.equal(
+        [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+        false,
+      );
+    }
+  });
+
+  it("discards all buffered GPT-5.6 tool chunks when a parallel Shell call is blank", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const validShellArgs = JSON.stringify({
+      command: "pwd",
+      description: "Inspect workspace",
+      working_directory: "/tmp",
+      block_until_ms: 30000,
+    });
+
+    function responsesEvent(eventName, payload) {
+      return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    }
+
+    const stream = responsesEvent("response.created", {
+      type: "response.created",
+      response: {
+        id: "resp_parallel_blank_shell",
+        status: "in_progress",
+        model: "gpt-5.6-sol",
+      },
+    }) + responsesEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 2,
+      item: {
+        id: "fc_blank_shell",
+        type: "function_call",
+        call_id: "call_blank_shell",
+        name: "Shell",
+      },
+    }) + responsesEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 5,
+      item: {
+        id: "fc_valid_shell",
+        type: "function_call",
+        call_id: "call_valid_shell",
+        name: "Shell",
+      },
+    }) + responsesEvent("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      output_index: 2,
+      item_id: "fc_blank_shell",
+      arguments: "{}",
+    }) + responsesEvent("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      output_index: 5,
+      item_id: "fc_valid_shell",
+      arguments: validShellArgs,
+    }) + responsesEvent("response.completed", {
+      type: "response.completed",
+      response: {
+        id: "resp_parallel_blank_shell",
+        status: "completed",
+        error: null,
+      },
+    });
+
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    let bodyText = "";
+    const { result: response, logs } = await captureConsoleLogs(async () => {
+      const handlerResponse = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "cursorproxy/compatible-gpt-5.6",
+          messages: [{ role: "user", content: "Inspect the workspace" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await handlerResponse.text();
+      return handlerResponse;
+    });
+
+    const emittedToolCalls = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)))
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || []);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(emittedToolCalls, [], "no blank or parallel Shell call may reach Cursor");
+    assert.match(bodyText, /incomplete_tool_call/);
+    assert.doesNotMatch(bodyText, /"finish_reason":"tool_calls"/);
+    assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(logs, /OAI_SHELL_ARGS_INVALID .*reason: missing_command .*argKeys: \(none\)/);
+    assert.match(logs, /OAI_TOOL_CALL_INCOMPLETE .*started: 2 .*incomplete: 1 .*invalidFinal: 1/);
+    assert.match(logs, /OAI_GPT56_TOOL_CHUNKS_DISCARDED .*discarded: 4 .*reason: incomplete_tool_call/);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
+  });
+
+  it("discards an earlier GPT-5.6 Task when a later parallel Shell call is blank", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const taskArgs = JSON.stringify({
+      description: "Inspect workspace",
+      prompt: "Inspect the workspace without edits.",
+      readonly: true,
+      run_in_background: false,
+      subagent_type: "explore",
+    });
+
+    function responsesEvent(eventName, payload) {
+      return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    }
+
+    const stream = responsesEvent("response.created", {
+      type: "response.created",
+      response: {
+        id: "resp_task_before_blank_shell",
+        status: "in_progress",
+        model: "gpt-5.6-sol",
+      },
+    }) + responsesEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 2,
+      item: {
+        id: "fc_task_first",
+        type: "function_call",
+        call_id: "call_task_first",
+        name: "Task",
+      },
+    }) + responsesEvent("response.function_call_arguments.delta", {
+      type: "response.function_call_arguments.delta",
+      output_index: 2,
+      item_id: "fc_task_first",
+      delta: taskArgs,
+    }) + responsesEvent("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      output_index: 2,
+      item_id: "fc_task_first",
+      arguments: taskArgs,
+    }) + responsesEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 5,
+      item: {
+        id: "fc_blank_shell_second",
+        type: "function_call",
+        call_id: "call_blank_shell_second",
+        name: "Shell",
+      },
+    }) + responsesEvent("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      output_index: 5,
+      item_id: "fc_blank_shell_second",
+      arguments: "{}",
+    }) + responsesEvent("response.completed", {
+      type: "response.completed",
+      response: {
+        id: "resp_task_before_blank_shell",
+        status: "completed",
+        error: null,
+      },
+    });
+
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+    const kv = makeInMemoryKv();
+    setKvDriver(kv);
+
+    let bodyText = "";
+    const { result: response, logs } = await captureConsoleLogs(async () => {
+      const handlerResponse = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "cursorproxy/compatible-gpt-5.6",
+          messages: [{ role: "user", content: "Inspect the workspace" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await handlerResponse.text();
+      return handlerResponse;
+    });
+
+    const emittedToolCalls = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)))
+      .flatMap((chunk) => chunk.choices?.[0]?.delta?.tool_calls || []);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      emittedToolCalls,
+      [],
+      "Task identity and arguments emitted before the invalid Shell must not reach Cursor",
+    );
+    assert.match(bodyText, /incomplete_tool_call/);
+    assert.doesNotMatch(bodyText, /"finish_reason":"tool_calls"/);
+    assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+    assert.match(logs, /OAI_SHELL_ARGS_INVALID .*toolIndex: 1 .*reason: missing_command/);
+    assert.match(logs, /OAI_TOOL_CALL_INCOMPLETE .*started: 2 .*incomplete: 1 .*invalidFinal: 1/);
+    assert.match(logs, /OAI_GPT56_TOOL_CHUNKS_DISCARDED .*discarded: 4 .*reason: incomplete_tool_call/);
+    assert.equal(
+      [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
+      false,
+    );
+  });
+
+  it("flushes a valid GPT-5.6 Task before a later parallel Shell by first appearance", async () => {
+    process.env.OPENAICOMPAT_WIRE_API = "responses";
+    const taskPayload = {
+      description: "Inspect workspace",
+      prompt: "Inspect the workspace without edits.",
+      readonly: true,
+      run_in_background: false,
+      subagent_type: "explore",
+    };
+    const shellPayload = {
+      command: "pwd",
+      description: "Inspect workspace",
+      working_directory: "/tmp",
+      block_until_ms: 30000,
+    };
+    const taskArgs = JSON.stringify(taskPayload);
+    const shellArgs = JSON.stringify(shellPayload);
+
+    function responsesEvent(eventName, payload) {
+      return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    }
+
+    const stream = responsesEvent("response.created", {
+      type: "response.created",
+      response: {
+        id: "resp_valid_task_before_shell",
+        status: "in_progress",
+        model: "gpt-5.6-sol",
+      },
+    }) + responsesEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 8,
+      item: {
+        id: "fc_valid_task_first",
+        type: "function_call",
+        call_id: "call_valid_task_first",
+        name: "Task",
+      },
+    }) + responsesEvent("response.output_item.added", {
+      type: "response.output_item.added",
+      output_index: 2,
+      item: {
+        id: "fc_valid_shell_second",
+        type: "function_call",
+        call_id: "call_valid_shell_second",
+        name: "Shell",
+      },
+    }) + responsesEvent("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      output_index: 2,
+      item_id: "fc_valid_shell_second",
+      arguments: shellArgs,
+    }) + responsesEvent("response.function_call_arguments.done", {
+      type: "response.function_call_arguments.done",
+      output_index: 8,
+      item_id: "fc_valid_task_first",
+      arguments: taskArgs,
+    }) + responsesEvent("response.completed", {
+      type: "response.completed",
+      response: {
+        id: "resp_valid_task_before_shell",
+        status: "completed",
+        error: null,
+      },
+    });
+
+    global.fetch = async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    let bodyText = "";
+    const { result: response, logs } = await captureConsoleLogs(async () => {
+      const handlerResponse = await handler(new Request(PROVIDER_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "cursorproxy/compatible-gpt-5.6",
+          messages: [{ role: "user", content: "Inspect the workspace" }],
+          stream: true,
+        }),
+      }));
+      bodyText = await handlerResponse.text();
+      return handlerResponse;
+    });
+
+    const orderedDataLines = bodyText
+      .split("\n")
+      .filter((line) => line.startsWith("data: "));
+    const parsedDataLines = orderedDataLines
+      .filter((line) => line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+    const emittedToolCalls = parsedDataLines.flatMap((chunk) =>
+      chunk.choices?.[0]?.delta?.tool_calls || []);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(
+      emittedToolCalls.map((toolCall) => toolCall.index),
+      [0, 0, 1, 1],
+      "successful GPT-5.6 flushing should group tools by first-appearance index",
+    );
+    assert.deepEqual(
+      emittedToolCalls.filter((toolCall) => toolCall.function?.arguments === ""),
+      [
+        {
+          index: 0,
+          id: "call_valid_task_first",
+          type: "function",
+          function: { name: "Task", arguments: "" },
+        },
+        {
+          index: 1,
+          id: "call_valid_shell_second",
+          type: "function",
+          function: { name: "Shell", arguments: "" },
+        },
+      ],
+    );
+
+    const argumentsByToolIndex = new Map();
+    for (const toolCall of emittedToolCalls) {
+      const argumentDelta = toolCall.function?.arguments;
+      if (typeof argumentDelta !== "string") continue;
+      const existingArguments = argumentsByToolIndex.get(toolCall.index) || "";
+      argumentsByToolIndex.set(toolCall.index, existingArguments + argumentDelta);
+    }
+    assert.deepEqual(
+      JSON.parse(argumentsByToolIndex.get(0)),
+      taskPayload,
+      "Task arguments should remain on its first-appearance index",
+    );
+    assert.deepEqual(
+      JSON.parse(argumentsByToolIndex.get(1)),
+      shellPayload,
+      "Shell arguments should remain on its first-appearance index",
+    );
+
+    const finishReasonDataLineIndex = orderedDataLines.findIndex((line) => {
+      if (line === "data: [DONE]") return false;
+      const chunk = JSON.parse(line.slice(6));
+      return chunk.choices?.[0]?.finish_reason === "tool_calls";
+    });
+    const doneDataLineIndex = orderedDataLines.indexOf("data: [DONE]");
+    assert.ok(finishReasonDataLineIndex >= 0);
+    assert.ok(doneDataLineIndex > finishReasonDataLineIndex);
+    assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
+    assert.doesNotMatch(bodyText, /incomplete_tool_call/);
+    assert.doesNotMatch(logs, /OAI_SHELL_ARGS_INVALID|OAI_GPT56_TOOL_CHUNKS_DISCARDED/);
+    assert.match(
+      logs,
+      /OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: 1 deferred: 4 reason: terminal/,
+    );
+  });
+
   it("preserves interleaved Shell and Task calls across GPT-5.6 and GPT-5.5 streams", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
     const shellPayload = {
@@ -2404,8 +3056,8 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.equal(response.status, 200);
     assert.deepEqual(
       emittedToolCalls.map((toolCall) => toolCall.index),
-      [0],
-      "deferred Task chunks must not be released behind an unfinished Shell call",
+      [],
+      "unfinished Shell identity and deferred Task chunks must not reach Cursor",
     );
     assert.match(bodyText, /incomplete_tool_call/);
     assert.equal(bodyText.split("data: [DONE]").length - 1, 1);
@@ -2414,7 +3066,7 @@ describe("openaicompat Responses wire mode — integration", () => {
       false,
     );
     assert.match(logs, /OAI_TOOL_CALL_INCOMPLETE .*started: 2 .*incomplete: 1 .*missingFinal: 1/);
-    assert.match(logs, /OAI_GPT56_TOOL_CHUNKS_DISCARDED .*discarded: 2 .*reason: incomplete_tool_call/);
+    assert.match(logs, /OAI_GPT56_TOOL_CHUNKS_DISCARDED .*discarded: 3 .*reason: incomplete_tool_call/);
     assert.match(logs, /OAI_STREAM_LIFECYCLE .*terminal: incomplete_tool_call/);
     assert.equal(
       [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),

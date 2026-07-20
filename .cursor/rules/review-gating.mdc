@@ -1,6 +1,6 @@
 ---
 description: Request transformation review checklist — full-path trace and count reconciliation
-globs: api/proxy.js,lib/azure-openai.js,lib/azure-anthropic.js,lib/reasoning.js
+globs: api/proxy.js,lib/azure-openai.js,lib/azure-anthropic.js,lib/cursor-tools.js,lib/stream-pump.js,lib/reasoning.js,test/openaicompat-responses.test.js
 alwaysApply: false
 ---
 # Review Gating
@@ -38,7 +38,24 @@ Before committing a fix, enumerate the distinct input shapes the code can receiv
   `GetMcpTools` `keyCount: 3` is not enough by itself to widen a repair; require
   a visible failure, retry loop, or mode-specific log sequence.
 - Cursor wrapper tools can fail before the real MCP/server tool is called. For `CallMcpTool`, `mcpArguments: present mcpArgKeys: (none)` plus a local required-field validation error means the nested `arguments` map was empty at the Cursor wrapper boundary, not that the target MCP server rejected the request. Fix restrictive wrapper schemas at tool-definition normalization time (for example, widening only `CallMcpTool.parameters.properties.arguments`), not by guessing or reconstructing runtime values from prompts. Gate the repair by the proven provider/cache mode, and add tests proving non-MCP tools, populated wrapper args, and neighboring cache modes are unchanged. In the accepted Responses matrix, this widening belongs to exact `halo`, not `passion8`.
-- Production `OAI_TOOL_CALL_DONE` and argument-shape logs prove upstream/model arguments reached and were parsed by the proxy. They do not prove Cursor assembled the transformed downstream SSE correctly; review must reconstruct downstream chunks and validate visible execution.
+- Required Cursor wrapper fields need semantic validation tests, not JSON parsing
+  tests alone. For OpenAI-compatible Responses `Shell`, cover missing, blank,
+  non-string, and valid `command`, plus existing optional-field sanitization.
+  Assert the failure terminal, absence of a successful tool finish, absence of
+  response-ID cache writes, and—when buffering applies—absence of any blank
+  identity-bearing Shell chunk.
+- Scope every semantic tool guard to the provider, wire API, cache mode, and
+  resolved model proven by production evidence. Add explicit
+  negative-preservation tests for neighboring providers and modes; the
+  OpenAI-compatible Responses Shell guard must not change Azure OpenAI
+  Responses, OpenAI-compatible Chat wire mode, or unrelated providers.
+- Production `OAI_TOOL_CALL_DONE` and argument-shape logs prove upstream/model
+  arguments reached the proxy and that finalization ran; they do not prove
+  executable validity. A Shell `OAI_TOOL_CALL_DONE` with `keyCount: 0` or
+  `commandLen: 0` is the blank-command signature even though `{}` parses as
+  JSON. These logs also do not prove Cursor assembled the transformed
+  downstream SSE correctly; review must reconstruct downstream chunks and
+  validate visible execution without logging command contents or user payloads.
 
 To verify: run `node --input-type=module -e "import { fn } from './api/file.js'; ..."` with each input shape before committing.
 

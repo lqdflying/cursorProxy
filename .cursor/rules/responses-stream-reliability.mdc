@@ -1,6 +1,6 @@
 ---
 description: OpenAI-compatible Responses retry, tool-finalization, cancellation, and terminal lifecycle invariants
-globs: api/proxy.js,lib/stream-pump.js,lib/azure-openai.js,lib/log-shapes.js,lib/upstream-rate-limit.js,test/openaicompat-responses.test.js
+globs: api/proxy.js,lib/stream-pump.js,lib/azure-openai.js,lib/cursor-tools.js,lib/log-shapes.js,lib/upstream-rate-limit.js,test/openaicompat-responses.test.js
 alwaysApply: false
 ---
 
@@ -27,11 +27,28 @@ unfinished tools, or broken streams.
 - A started Responses tool is complete only after its matching `*.done` event.
   Function-call final arguments must parse as JSON; custom/apply-patch final
   input must be a string.
-- Do not emit `finish_reason:"tool_calls"`, `[DONE]`, or cache a response ID when
-  any unique tool lacks valid final arguments. Emit terminal
-  `incomplete_tool_call` instead.
-- On every abnormal terminal, discard deferred GPT-5.6 tool chunks. Never flush
-  a later Task/Subagent call after an earlier parallel tool remained incomplete.
+- The semantic Shell guard is intentionally limited to
+  `providerKey === "openaicompat"` with `OPENAICOMPAT_WIRE_API=responses`.
+  Azure OpenAI Responses, OpenAI-compatible Chat wire mode, and unrelated
+  providers retain their existing parse-only or passthrough behavior until
+  separate production evidence justifies a change.
+- In that guarded path, a Cursor `Shell` final argument is executable only when
+  it is a plain object with a non-empty string `command`. `{}` and the other
+  parse-valid but semantically invalid shapes (`command` missing, blank, or
+  non-string) are failed as `incomplete_tool_call`. Diagnostics may report
+  `argKeys`, lengths, and a safe reason, but never command content.
+- Do not emit `finish_reason:"tool_calls"` or cache a response ID when any
+  unique tool lacks valid final arguments. Emit an `incomplete_tool_call` error
+  event and exactly one `[DONE]` terminal marker instead. The error-plus-`[DONE]`
+  sequence is required for abnormal Responses streams so Cursor does not wait
+  indefinitely for a terminal event.
+- For resolved upstream model `gpt-5.6-sol`, buffer every transformed tool
+  chunk from the first tool event, including Task/Subagent chunks that arrive
+  before Shell. Flush them in dense tool-index order only after
+  `response.completed` confirms every tool; on failure discard the entire
+  buffer. This prevents the Cursor blank-prompt signature (`$` with no
+  command) and never flushes a later Task/Subagent call after any parallel tool
+  remained incomplete.
 
 ## Terminal and cancellation contract
 
@@ -51,4 +68,8 @@ unfinished tools, or broken streams.
   mutually truthful; log shapes only, never provider bodies or tool values.
 - Cover retry outcomes, post-handoff rate limiting, tool-finalization failures,
   malformed SSE, downstream cancellation, deferred-chunk discard, no cache
-  write, and one lifecycle record.
+  write, one lifecycle record, and the Shell semantic matrix (missing, empty,
+  non-string, and valid `command`). Verify `OAI_SHELL_ARGS_INVALID` remains
+  shape-only and that invalid tools produce an error plus exactly one `[DONE]`.
+  Include negative-preservation coverage for Azure Responses,
+  OpenAI-compatible Chat wire mode, and unrelated providers.

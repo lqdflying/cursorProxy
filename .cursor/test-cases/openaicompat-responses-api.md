@@ -200,15 +200,31 @@ Expected behavior:
 Expected per-tool diagnostics:
 
 ```text
-OAI_TOOL_CALL_START provider: openaicompat name: Shell ... toolIndex: 0 ...
-OAI_TOOL_CALL_DONE provider: openaicompat name: Shell ... toolIndex: 0 ... argKeys: command,...
-OAI_TOOL_CALL_START provider: openaicompat name: Task ... toolIndex: 1 ...
-OAI_TOOL_CALL_DONE provider: openaicompat name: Task ... toolIndex: 1 ... argKeys: description,prompt,readonly,subagent_type,...
+OAI_TOOL_CALL_START provider: openaicompat name: Shell ... toolIndex: <shell-index> ...
+OAI_TOOL_CALL_DONE provider: openaicompat name: Shell ... toolIndex: <shell-index> ... argKeys: command,...
+OAI_TOOL_CALL_START provider: openaicompat name: Task ... toolIndex: <task-index> ...
+OAI_TOOL_CALL_DONE provider: openaicompat name: Task ... toolIndex: <task-index> ... argKeys: description,prompt,readonly,subagent_type,...
 OAI_TASK_ARGS_SANITIZED provider: openaicompat name: Task ... removed: cloud_base_branch,model,resume ...
-OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: 0 deferred: <n> reason: shell_done
+OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: <shell-index> deferred: <n> reason: terminal
 ```
 
-> Exact upstream Responses `output_index` values may vary. The transformed tool calls must still use dense Chat indexes beginning at `0`, and argument ownership must remain separate: Shell arguments belong only to dense `toolIndex: 0`, while Subagent/Task arguments belong only to dense `toolIndex: 1`. For GPT-5.6, the downstream Shell start and complete arguments must be contiguous before Task index `1` chunks; returning from index `1` to a late Shell index `0` continuation is not Cursor-compatible even when each payload reconstructs independently.
+For a GPT-5.6 parallel tool turn, the proxy buffers every transformed tool
+chunk from the first tool event and flushes the chunks in dense tool-index order
+only after `response.completed`. If any Shell call finishes with parse-valid but
+semantically invalid arguments, the proxy discards every buffered tool chunk
+and returns one `incomplete_tool_call` error followed by `data: [DONE]`.
+
+Expected diagnostic for an invalid Shell final argument:
+
+```text
+OAI_SHELL_ARGS_INVALID provider: openaicompat name: Shell toolIndex: <n> reason: missing_command argKeys: <keys-or-(none)>
+```
+
+The `Shell` final argument must be a plain object with a non-empty string
+`command`. The diagnostic reports only argument shape and the safe validation
+reason; it must never contain command text.
+
+> Exact upstream Responses `output_index` values may vary. The transformed tool calls must use dense Chat indexes beginning at `0`, assigned in the order each tool first appears. The first tool may therefore be either Shell or Task/Subagent. Each tool's identity and arguments must remain on its assigned dense index. For GPT-5.6, all chunks for dense index `0` must be contiguous before index `1`; returning to a lower dense index after a higher one has started is not Cursor-compatible even when each payload reconstructs independently.
 >
 > GPT-5.6 may populate every optional Task field with empty local defaults. For local execution, the proxy removes `cloud_base_branch` when `environment` is not `cloud` and removes blank `model` / `resume`; it preserves valid local fields such as `environment:"local"` and `file_attachments:[]`. Valid cloud Task arguments remain unchanged.
 >
@@ -234,7 +250,7 @@ Regression signs:
 - A blank Shell card showing only `$`.
 - A second Shell identity chunk.
 - Missing per-index arguments or Shell and subagent arguments cross-contaminated between indexes.
-- Downstream tool chunks returning from Task index `1` to a late Shell index `0` continuation.
+- Downstream tool chunks returning to a lower dense index after a higher index has started.
 - Failure to start either tool.
 - `OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0` combined with Cursor reporting that a tool or subagent failed to start.
 - A transformed stream without a terminal Chat chunk containing `finish_reason:"tool_calls"` before `data: [DONE]`.

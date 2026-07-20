@@ -8,6 +8,7 @@ import {
   sanitizeAzureAnthropicBody,
 } from "../lib/azure-anthropic.js";
 import {
+  invalidOpenAICompatResponsesShellCall,
   mapResponsesToOpenAI,
   normalizeAzureOpenAIInputContent,
   normalizeOpenAICompatResponsesInputContent,
@@ -62,6 +63,7 @@ import { isKimiK3, sanitizeKimiBody } from "../lib/kimi.js";
 import { convertImagesToText, requiresVisionBridge } from "../lib/vision-bridge.js";
 import {
   safeLogToken,
+  summarizeJsonArgKeysForLog,
   summarizeToolChoiceForLog,
 } from "../lib/log-shapes.js";
 import { probeStrictTools, strictToolStats } from "../lib/strict-tools.js";
@@ -1354,6 +1356,24 @@ export default async function handler(req) {
       const azureRespStatus = json.status || "completed";
       const cacheRespIdTag = openaiCompatResponses ? "CACHE_OAI_RESP_ID" : "CACHE_AZ_RESP_ID";
       const skipCacheRespIdTag = openaiCompatResponses ? "SKIP_CACHE_OAI_RESP_ID" : "SKIP_CACHE_AZ_RESP_ID";
+      const invalidShellCall = openaiCompatResponses
+        ? invalidOpenAICompatResponsesShellCall(json)
+        : null;
+      if (invalidShellCall) {
+        diag("OAI_SHELL_ARGS_INVALID",
+             "provider:", providerKey,
+             "name:", "Shell",
+             "responsesIndex:", invalidShellCall.outputIndex,
+             "reason:", safeLogToken(invalidShellCall.reason),
+             "argKeys:", summarizeJsonArgKeysForLog(invalidShellCall.argsText));
+        diag("RES", 502, "provider:", providerKey, "ms:", Date.now() - t0);
+        return jsonErrorResponse(
+          502,
+          "Upstream response completed with an invalid Shell tool call",
+          "incomplete_tool_call",
+          "upstream_error",
+        );
+      }
       json = mapResponsesToOpenAI(json);
       if (azureRespId && azureReplyKey) {
         if (azureRespStatus === "completed") {
