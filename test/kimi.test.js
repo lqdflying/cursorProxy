@@ -582,6 +582,93 @@ describe("Kimi K3 handler integration", () => {
     assert.doesNotMatch(debugOffResult.logs, /TOOL_CALL_NAME|TodoWrite|private todo/);
   });
 
+  it("reads hybrid Chat containers without duplicating a tool identity", async () => {
+    process.env.DEBUG = "true";
+    const messageToolCall = {
+      id: "call_hybrid",
+      type: "function",
+      function: {
+        name: "TodoWrite",
+        arguments: JSON.stringify({ todos: ["hybrid secret"] }),
+      },
+    };
+    const hybridResponses = [
+      {
+        id: "chatcmpl_empty_delta",
+        object: "chat.completion",
+        model: "kimi-k3",
+        choices: [{
+          index: 0,
+          delta: {},
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [messageToolCall],
+          },
+          finish_reason: "tool_calls",
+        }],
+      },
+      {
+        id: "chatcmpl_modern_legacy",
+        object: "chat.completion",
+        model: "kimi-k3",
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [messageToolCall],
+            function_call: {
+              name: "LegacyDuplicate",
+              arguments: JSON.stringify({ query: "legacy secret" }),
+            },
+          },
+          finish_reason: "tool_calls",
+        }],
+      },
+    ];
+    mockKimiJsonFetch((_capturedCall, callIndex) => hybridResponses[callIndex]);
+
+    const emptyDeltaResult = await captureConsoleLogs(async () => {
+      const response = await invokeKimi({
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "Use the message tool call." }],
+      });
+      return response.json();
+    });
+    assert.deepEqual(
+      emptyDeltaResult.result.choices[0].message.tool_calls,
+      [messageToolCall],
+    );
+    assert.equal((emptyDeltaResult.logs.match(/TOOL_CALL_NAME/g) || []).length, 1);
+    assert.match(
+      emptyDeltaResult.logs,
+      /TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: false choiceIndex: 0 toolIndex: 0 name: TodoWrite/,
+    );
+    assert.doesNotMatch(emptyDeltaResult.logs, /hybrid secret/);
+
+    const duplicateIdentityResult = await captureConsoleLogs(async () => {
+      const response = await invokeKimi({
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "Use the hybrid tool call." }],
+      });
+      return response.json();
+    });
+    assert.deepEqual(
+      duplicateIdentityResult.result.choices[0].message.tool_calls,
+      [messageToolCall],
+    );
+    assert.equal(
+      (duplicateIdentityResult.logs.match(/TOOL_CALL_NAME/g) || []).length,
+      1,
+    );
+    assert.match(duplicateIdentityResult.logs, /name: TodoWrite/);
+    assert.doesNotMatch(
+      duplicateIdentityResult.logs,
+      /LegacyDuplicate|hybrid secret|legacy secret/,
+    );
+  });
+
   it("logs a streamed tool name once after forwarding its identity chunk", async () => {
     process.env.DEBUG = "true";
     const secretArguments = JSON.stringify({ todos: ["stream secret"] });
