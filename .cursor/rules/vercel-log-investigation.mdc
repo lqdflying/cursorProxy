@@ -99,7 +99,13 @@ jq -r '.[] | select((.message | contains("AZURE_INPUT_SHAPE")) and (.message | c
 
 - A stable event title such as `AZURE_STREAM_SUMMARY` is only the starting point. Inspect fields inside the message: `functionArgDeltas`, `events`, `inputItems`, `itemTypes`, `content`, `refusal`, `status`, and exact error text.
 - Always group related lines by `requestId` before concluding causality. A tool-call stream and its later tool-output request usually have different request IDs, so compare timestamps and `PREV_RESP_ID_FOUND` / `CACHE_AZ_RESP_ID` chain keys too.
-- For apply-patch style Cursor flows, logs intentionally do not print tool names or patch content. The safe evidence is shape-level: `knownType: 1`, `response.custom_tool_call_input.delta`, `response.custom_tool_call_input.done`, then `itemTypes: custom_tool_call_output:1`.
+- With `DEBUG=true`, `TOOL_CALL_NAME` may safely identify an emitted
+  apply-patch tool by sanitized name. It must not contain patch content,
+  arguments, call IDs, prompts, or response content. Without DEBUG, use the
+  always-on shape evidence: `knownType: 1`,
+  `response.custom_tool_call_input.delta`,
+  `response.custom_tool_call_input.done`, then
+  `itemTypes: custom_tool_call_output:1`.
 - Distinguish custom tools from normal function tools. `custom_tool_call_output` is the Cursor custom apply-patch path; `function_call_output` is a normal function tool result.
 - To prove batching, require counts greater than one in the full message, such as `custom_tool_call_output:2`, `function_call_output:2`, `response.function_call_arguments.done:7`, or multiple `output_item.added` entries. Do not infer batching from multiple separate requests.
 - If no local export exists, say the MCP table is truncated and ask for/export a Vercel log JSON before making detailed claims about message internals.
