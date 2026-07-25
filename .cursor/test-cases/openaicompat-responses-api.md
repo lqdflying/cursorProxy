@@ -204,9 +204,16 @@ OAI_TOOL_CALL_START provider: openaicompat name: Shell ... toolIndex: <shell-ind
 OAI_TOOL_CALL_DONE provider: openaicompat name: Shell ... toolIndex: <shell-index> ... argKeys: command,...
 OAI_TOOL_CALL_START provider: openaicompat name: Task ... toolIndex: <task-index> ...
 OAI_TOOL_CALL_DONE provider: openaicompat name: Task ... toolIndex: <task-index> ... argKeys: description,prompt,readonly,subagent_type,...
+TOOL_CALL_NAME provider: openaicompat model: gpt-5.6-sol stream: true choiceIndex: 0 toolIndex: <task-index> name: Task
+TOOL_CALL_NAME provider: openaicompat model: gpt-5.6-sol stream: true choiceIndex: 0 toolIndex: <shell-index> name: Shell
 OAI_TASK_ARGS_SANITIZED provider: openaicompat name: Task ... removed: cloud_base_branch,model,resume ...
 OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: <shell-index> deferred: <n> reason: terminal
 ```
+
+`TOOL_CALL_NAME` requires `DEBUG=true`. It is emitted only after the
+Chat-shaped identity chunk is exposed to Cursor, so a discarded GPT-5.6
+buffer must not emit it. It reports sanitized names and indexes only; tool
+arguments, commands, paths, prompts, and call IDs must never appear.
 
 For a GPT-5.6 parallel tool turn, the proxy buffers every transformed tool
 chunk from the first tool event and flushes the chunks in dense tool-index order
@@ -229,6 +236,8 @@ reason; it must never contain command text.
 > GPT-5.6 may populate every optional Task field with empty local defaults. For local execution, the proxy removes `cloud_base_branch` when `environment` is not `cloud` and removes blank `model` / `resume`; it preserves valid local fields such as `environment:"local"` and `file_attachments:[]`. Valid cloud Task arguments remain unchanged.
 >
 > `OAI_TOOL_CALL_DONE` argument-shape logs establish that the proxy parsed the upstream/model arguments for each tool. They do not by themselves prove that Cursor correctly assembled the transformed downstream stream; confirm the visible Shell command, both tool starts, and both completions in Cursor.
+>
+> `TOOL_CALL_NAME` narrows that gap by proving cursorProxy exposed the named identity to Cursor. It still does not prove Cursor assembled subsequent argument deltas, executed the tool, or updated its UI.
 >
 > A successful parent `Task` or `Subagent` tool call proves only that the launch invocation had complete arguments and received a normal model-turn terminal. The child process can make later model requests and can still stop on a rate limit, abnormal stream, or missing final synthesis. cursorProxy can classify those child requests, but Cursor owns the child process and its UI status.
 
@@ -254,6 +263,9 @@ Regression signs:
 - Failure to start either tool.
 - `OAI_STREAM_SUMMARY ... functionArgDeltas: <n> ... content: 0` combined with Cursor reporting that a tool or subagent failed to start.
 - A transformed stream without a terminal Chat chunk containing `finish_reason:"tool_calls"` before `data: [DONE]`.
+- `TOOL_CALL_NAME` appears for GPT-5.6 tool chunks that were later discarded,
+  appears more than once for the same choice/tool index, or exposes argument
+  values.
 
 ### Test 10 — Halo-compatible MCP discovery with empty filters
 

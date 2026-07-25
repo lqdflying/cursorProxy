@@ -2172,6 +2172,7 @@ describe("openaicompat Responses wire mode — integration", () => {
 
   it("streams Responses function calls with dense Chat tool indexes and tool_calls finish reason", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.DEBUG = "true";
     const stream = [
       "event: response.created",
       "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool\",\"status\":\"in_progress\",\"model\":\"gpt-4o\"}}",
@@ -2227,6 +2228,11 @@ describe("openaicompat Responses wire mode — integration", () => {
       "stream must finish with finish_reason=tool_calls so Cursor runs the tool");
     assert.match(logs, /OAI_TOOL_CALL_START .*name: start_subagent .*toolIndex: 0 .*responsesIndex: 2/);
     assert.match(logs, /OAI_TOOL_CALL_DONE .*name: start_subagent .*toolIndex: 0 .*argChars: 18 .*argKeys: task/);
+    assert.equal((logs.match(/TOOL_CALL_NAME/g) || []).length, 1);
+    assert.match(
+      logs,
+      /TOOL_CALL_NAME provider: openaicompat model: gpt-4o stream: true choiceIndex: 0 toolIndex: 0 name: start_subagent/,
+    );
     assert.doesNotMatch(logs, /inspect/, "tool-call diagnostics must not log argument values");
   });
 
@@ -2482,6 +2488,7 @@ describe("openaicompat Responses wire mode — integration", () => {
 
   it("discards an earlier GPT-5.6 Task when a later parallel Shell call is blank", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.DEBUG = "true";
     const taskArgs = JSON.stringify({
       description: "Inspect workspace",
       prompt: "Inspect the workspace without edits.",
@@ -2583,6 +2590,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(logs, /OAI_SHELL_ARGS_INVALID .*toolIndex: 1 .*reason: missing_command/);
     assert.match(logs, /OAI_TOOL_CALL_INCOMPLETE .*started: 2 .*incomplete: 1 .*invalidFinal: 1/);
     assert.match(logs, /OAI_GPT56_TOOL_CHUNKS_DISCARDED .*discarded: 4 .*reason: incomplete_tool_call/);
+    assert.doesNotMatch(logs, /TOOL_CALL_NAME/);
     assert.equal(
       [...kv.store.keys()].some((key) => key.startsWith("oairesp:")),
       false,
@@ -2591,6 +2599,7 @@ describe("openaicompat Responses wire mode — integration", () => {
 
   it("flushes a valid GPT-5.6 Task before a later parallel Shell by first appearance", async () => {
     process.env.OPENAICOMPAT_WIRE_API = "responses";
+    process.env.DEBUG = "true";
     const taskPayload = {
       description: "Inspect workspace",
       prompt: "Inspect the workspace without edits.",
@@ -2740,6 +2749,23 @@ describe("openaicompat Responses wire mode — integration", () => {
     assert.match(
       logs,
       /OAI_GPT56_TOOL_CHUNKS_REORDERED shellIndex: 1 deferred: 4 reason: terminal/,
+    );
+    assert.equal((logs.match(/TOOL_CALL_NAME/g) || []).length, 2);
+    assert.match(
+      logs,
+      /TOOL_CALL_NAME provider: openaicompat model: gpt-5.6-sol stream: true choiceIndex: 0 toolIndex: 0 name: Task/,
+    );
+    assert.match(
+      logs,
+      /TOOL_CALL_NAME provider: openaicompat model: gpt-5.6-sol stream: true choiceIndex: 0 toolIndex: 1 name: Shell/,
+    );
+    const toolNameLogs = logs
+      .split("\n")
+      .filter((line) => line.includes("TOOL_CALL_NAME"))
+      .join("\n");
+    assert.doesNotMatch(
+      toolNameLogs,
+      /Inspect workspace|Inspect the workspace without edits|working_directory/,
     );
   });
 

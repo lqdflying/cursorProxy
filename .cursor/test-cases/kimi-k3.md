@@ -18,6 +18,7 @@ preserved reasoning across turns, forced tool choice, and native image input.
 - KV configured (`REDIS_URL`, `KV_URL` + `KV_TOKEN`, or EdgeOne KV binding)
 - `CURSORPROXY_MODELS` includes `kimi-k3` (or is unset)
 - Deployed proxy includes Kimi K3 support
+- `DEBUG=true` while collecting `TOOL_CALL_NAME` troubleshooting evidence
 
 ## Test Steps
 
@@ -89,10 +90,15 @@ Expected logs:
 
 ```text
 KIMI_BODY_SANITIZED model: kimi-k3 ... toolChoice: required ...
+TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: true choiceIndex: 0 toolIndex: <n> name: <tool-name>
 ```
 
 For a named function choice, `toolChoice: function:function` is expected.
 `KIMI_TOOL_CHOICE_FIXED` must not appear for K3.
+`TOOL_CALL_NAME` proves the Kimi tool identity was exposed by cursorProxy to
+Cursor. It does not prove Cursor executed the tool or updated the Plan-mode
+panel. The line must not include tool arguments, file paths, todo text, prompts,
+or response content, and it is absent when `DEBUG` is not `true`.
 
 ### Test 4: Native image input
 
@@ -129,6 +135,8 @@ URLs are outside the supported K3 media contract.
 - K2 reasoning is restored into a K3 conversation
 - `reasoning_content` leaks into the client-visible JSON or SSE response
 - `CONVERTED_IMAGES` appears for native K3 media
+- A visible Cursor tool card has no matching `TOOL_CALL_NAME` while
+  `DEBUG=true`, or the event exposes tool argument values
 
 ## Cleanup
 

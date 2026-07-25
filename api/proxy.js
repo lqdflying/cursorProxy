@@ -62,6 +62,7 @@ import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
 import { isKimiK3, sanitizeKimiBody } from "../lib/kimi.js";
 import { convertImagesToText, requiresVisionBridge } from "../lib/vision-bridge.js";
 import {
+  chatToolCallsForLog,
   safeLogToken,
   summarizeJsonArgKeysForLog,
   summarizeToolChoiceForLog,
@@ -1404,8 +1405,18 @@ export default async function handler(req) {
       await kvSet(replyReasoningKey, serializeReasoning(providerKey, reasoning));
     }
     log("NONSTREAM_DONE", "choices:", json.choices?.length, "reasoning_chars:", reasoningSize(reasoning));
+    const responseBody = JSON.stringify(stripResponseChunk(json));
+    for (const toolCall of chatToolCallsForLog(json)) {
+      log("TOOL_CALL_NAME",
+          "provider:", providerKey,
+          "model:", safeLogToken(upstreamModelName),
+          "stream:", false,
+          "choiceIndex:", toolCall.choiceIndex,
+          "toolIndex:", toolCall.toolIndex,
+          "name:", safeLogToken(toolCall.name));
+    }
     diag("RES", upstreamRes.status, "provider:", providerKey, "ms:", Date.now() - t0);
-    return new Response(JSON.stringify(stripResponseChunk(json)), {
+    return new Response(responseBody, {
       status: upstreamRes.status,
       headers: { "content-type": "application/json" },
     });

@@ -56,6 +56,15 @@ Before committing a fix, enumerate the distinct input shapes the code can receiv
   JSON. These logs also do not prove Cursor assembled the transformed
   downstream SSE correctly; review must reconstruct downstream chunks and
   validate visible execution without logging command contents or user payloads.
+- Provider-neutral tool-name logging must cover native Chat passthrough, mapped
+  Responses, and mapped Anthropic output at the final Chat-shaped boundary.
+  Cover streaming and non-streaming forms where supported, modern `tool_calls`,
+  legacy `function_call`, multiple tools, and no-tool responses. Assert
+  DEBUG-off silence, sanitized names, no argument/content leakage, and no
+  response mutation. For buffered streams, test successful flush and abnormal
+  discard separately: `TOOL_CALL_NAME` may describe only identities actually
+  exposed to Cursor. The event proves proxy-to-Cursor emission, not Cursor-side
+  tool execution.
 
 To verify: run `node --input-type=module -e "import { fn } from './api/file.js'; ..."` with each input shape before committing.
 

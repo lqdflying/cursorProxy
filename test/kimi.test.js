@@ -289,6 +289,7 @@ const UNIFIED_PROXY_URL = "http://localhost/api/proxy?path=chat/completions";
 const KIMI_ENV_KEYS = [
   "KIMI_API_KEY",
   "CURSORPROXY_API_KEY",
+  "DEBUG",
   "KV_RETRY_DELAYS_MS",
   "STREAM_TIMEOUT_SECONDS",
 ];
@@ -355,6 +356,20 @@ async function invokeKimi(body, url = KIMI_PROVIDER_URL) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   }));
+}
+
+async function captureConsoleLogs(action) {
+  const originalConsoleLog = console.log;
+  const logLines = [];
+  console.log = (...args) => {
+    logLines.push(args.map((argument) => String(argument)).join(" "));
+  };
+  try {
+    const result = await action();
+    return { result, logs: logLines.join("\n") };
+  } finally {
+    console.log = originalConsoleLog;
+  }
 }
 
 describe("Kimi K3 handler integration", () => {
@@ -490,6 +505,157 @@ describe("Kimi K3 handler integration", () => {
     assert.deepEqual(calls[0].body.tool_choice, namedToolChoice);
     assert.deepEqual(calls[0].body.messages[0].content, imageContent);
     assert.equal(calls[0].body.max_completion_tokens, 131_072);
+  });
+
+  it("logs modern and legacy non-streaming tool names only when DEBUG is enabled", async () => {
+    const secretArguments = JSON.stringify({ todos: ["private todo"] });
+    const modernToolCall = {
+      id: "call_todo",
+      type: "function",
+      function: {
+        name: "TodoWrite",
+        arguments: secretArguments,
+      },
+    };
+    const legacyFunctionCall = {
+      name: "LegacyLookup",
+      arguments: JSON.stringify({ query: "private query" }),
+    };
+    mockKimiJsonFetch((_capturedCall, callIndex) => ({
+      id: `chatcmpl_tool_${callIndex}`,
+      object: "chat.completion",
+      model: "kimi-k3",
+      choices: [{
+        message: callIndex !== 1
+          ? {
+              role: "assistant",
+              content: null,
+              tool_calls: [modernToolCall],
+            }
+          : {
+              role: "assistant",
+              content: null,
+              function_call: legacyFunctionCall,
+            },
+        finish_reason: callIndex === 1 ? "function_call" : "tool_calls",
+      }],
+    }));
+
+    process.env.DEBUG = "true";
+    const modernResult = await captureConsoleLogs(async () => {
+      const response = await invokeKimi({
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "Update the plan." }],
+      });
+      return response.json();
+    });
+    assert.deepEqual(modernResult.result.choices[0].message.tool_calls, [modernToolCall]);
+    assert.match(
+      modernResult.logs,
+      /TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: false choiceIndex: 0 toolIndex: 0 name: TodoWrite/,
+    );
+    assert.doesNotMatch(modernResult.logs, /private todo/);
+
+    const legacyResult = await captureConsoleLogs(async () => {
+      const response = await invokeKimi({
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "Look this up." }],
+      });
+      return response.json();
+    });
+    assert.deepEqual(legacyResult.result.choices[0].message.function_call, legacyFunctionCall);
+    assert.match(
+      legacyResult.logs,
+      /TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: false choiceIndex: 0 toolIndex: 0 name: LegacyLookup/,
+    );
+    assert.doesNotMatch(legacyResult.logs, /private query/);
+
+    delete process.env.DEBUG;
+    const debugOffResult = await captureConsoleLogs(async () => {
+      const response = await invokeKimi({
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "Keep DEBUG disabled." }],
+      });
+      return response.json();
+    });
+    assert.deepEqual(debugOffResult.result.choices[0].message.tool_calls, [modernToolCall]);
+    assert.doesNotMatch(debugOffResult.logs, /TOOL_CALL_NAME|TodoWrite|private todo/);
+  });
+
+  it("logs a streamed tool name once after forwarding its identity chunk", async () => {
+    process.env.DEBUG = "true";
+    const secretArguments = JSON.stringify({ todos: ["stream secret"] });
+    const streamBody = [
+      `data: ${JSON.stringify({
+        id: "chatcmpl_k3_tool_stream",
+        object: "chat.completion.chunk",
+        model: "kimi-k3",
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: "call_todo",
+              type: "function",
+              function: { name: "TodoWrite", arguments: "" },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        id: "chatcmpl_k3_tool_stream",
+        object: "chat.completion.chunk",
+        model: "kimi-k3",
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              function: { name: "TodoWrite", arguments: secretArguments },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })}`,
+      "",
+      `data: ${JSON.stringify({
+        id: "chatcmpl_k3_tool_stream",
+        object: "chat.completion.chunk",
+        model: "kimi-k3",
+        choices: [{
+          index: 0,
+          delta: {},
+          finish_reason: "tool_calls",
+        }],
+      })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n");
+    global.fetch = async () => new Response(streamBody, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    const { result: clientStream, logs } = await captureConsoleLogs(async () => {
+      const response = await invokeKimi({
+        model: "kimi-k3",
+        messages: [{ role: "user", content: "Update the plan." }],
+        stream: true,
+      });
+      return response.text();
+    });
+
+    assert.match(clientStream, /TodoWrite/);
+    assert.match(clientStream, /stream secret/);
+    assert.equal((logs.match(/TOOL_CALL_NAME/g) || []).length, 1);
+    assert.match(
+      logs,
+      /TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: true choiceIndex: 0 toolIndex: 0 name: TodoWrite/,
+    );
+    assert.doesNotMatch(logs, /stream secret/);
   });
 
   it("restores complete K3 reasoning on the next turn", async () => {

@@ -17,7 +17,7 @@ Every log line uses `[cursorProxy:<module>]` prefix (e.g. `[cursorProxy:proxy]`,
 
 | Tag | Source file(s) | Purpose |
 |-----|----------------|---------|
-| `[cursorProxy:proxy]` | `api/proxy.js`, `lib/stream-pump.js`, `lib/responses-chain.js`, `lib/strict-tools.js` (all via `createLogger("proxy")`), `lib/reasoning.js` (via `createLogger("proxy").diag` as `proxyDiag`), `lib/kimi.js` (via `createLogger("proxy").diag`), `lib/glm.js` (via `createLogger("proxy").diag`) | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, UPSTREAM_*, STREAM_*, etc. Always-on OpenAI-compatible reliability diagnostics: `UPSTREAM_RATE_LIMIT_RETRY`, `UPSTREAM_RATE_LIMIT_RECOVERED`, `UPSTREAM_RATE_LIMIT_ABORTED`, `UPSTREAM_RATE_LIMIT_EXHAUSTED`, `OAI_STREAM_LIFECYCLE`, and shape-only `OAI_*` terminal failures. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. Kimi K3/K2.x sanitization: `KIMI_BODY_SANITIZED`, `KIMI_TOOL_CHOICE_FIXED` (K2.x only). GLM sanitization: `GLM_BODY_SANITIZED`, `GLM_TOOL_CHOICE_FIXED`, `GLM_INVALID_EFFORT`. **Always-on aggregate reasoning lines on this tag:** `INJECT_SUMMARY`, `INJECT_RECOVERED` (count), `INJECT_MISS` (count) — use `proxyDiag` / `createLogger("proxy").diag`, never `createLogger("proxy").log`. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
+| `[cursorProxy:proxy]` | `api/proxy.js`, `lib/stream-pump.js`, `lib/responses-chain.js`, `lib/strict-tools.js` (all via `createLogger("proxy")`), `lib/reasoning.js` (via `createLogger("proxy").diag` as `proxyDiag`), `lib/kimi.js` (via `createLogger("proxy").diag`), `lib/glm.js` (via `createLogger("proxy").diag`) | Request orchestration: REQ, RES, START, RESOLVED, MODEL_*, UPSTREAM_*, STREAM_*, etc. DEBUG-only provider-neutral tool emission: `TOOL_CALL_NAME`. Always-on OpenAI-compatible reliability diagnostics: `UPSTREAM_RATE_LIMIT_RETRY`, `UPSTREAM_RATE_LIMIT_RECOVERED`, `UPSTREAM_RATE_LIMIT_ABORTED`, `UPSTREAM_RATE_LIMIT_EXHAUSTED`, `OAI_STREAM_LIFECYCLE`, and shape-only `OAI_*` terminal failures. Also Azure chaining tags: PREV_RESP_ID_FOUND, PREV_RESP_ID_MISS, CACHE_AZ_RESP_ID, INPUT_CHAIN, MESSAGES_TO_INPUT, STREAM_AZ_RESP_ID, INPUT_HAS_LEGACY_TOOLS. Kimi K3/K2.x sanitization: `KIMI_BODY_SANITIZED`, `KIMI_TOOL_CHOICE_FIXED` (K2.x only). GLM sanitization: `GLM_BODY_SANITIZED`, `GLM_TOOL_CHOICE_FIXED`, `GLM_INVALID_EFFORT`. **Always-on aggregate reasoning lines on this tag:** `INJECT_SUMMARY`, `INJECT_RECOVERED` (count), `INJECT_MISS` (count) — use `proxyDiag` / `createLogger("proxy").diag`, never `createLogger("proxy").log`. **Production observability dashboards filter on this tag — do not change REQ/RES format.** |
 | `[cursorProxy:reasoning]` | `lib/reasoning.js` | Reasoning bridge internals (DEBUG `log()`): duplicate `INJECT_SUMMARY`, per-index `INJECT_RECOVERED`. Claude thinking KV caching: CLAUDE_THINKING_LOOKUP, CLAUDE_THINKING_LOOKUP_SOURCE, CLAUDE_THINKING_MISS, CLAUDE_THINKING_INJECTED. |
 | `[cursorProxy:azure-openai]` | `lib/azure-openai.js` | Azure OpenAI Responses API sanitization: AZURE_BODY_SANITIZED, REASONING_EFFORT, OPENAICOMPAT_REASONING_EFFORT_INVALID, TOOLS_FIXED. |
 | `[cursorProxy:azure-anthropic]` | `lib/azure-anthropic.js` | Azure Claude sanitization: AZURE_BODY_SANITIZED, INPUT_REMAPPED, ANTHROPIC_CONTENT_FIXED, ANTHROPIC_THINKING, ANTHROPIC_EFFORT. |
@@ -59,9 +59,20 @@ Both `diag()` and `log()` emit to all platforms from `api/proxy.js` and shared `
 ```
 [cursorProxy:proxy] START POST https://one.example.com/v1/chat/completions?... pathname: /v1/chat/completions provider(query): (infer)
 [cursorProxy:proxy] RESOLVED model: deepseek-chat provider: deepseek stream: true
+[cursorProxy:proxy] TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: true choiceIndex: 0 toolIndex: 0 name: TodoWrite
 [cursorProxy:proxy] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0
 [cursorProxy:reasoning] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0
 ```
+
+`TOOL_CALL_NAME` is emitted once per distinct Chat choice/tool index only after
+that tool identity is exposed to Cursor. It covers native Chat, mapped
+Responses, and mapped Anthropic responses in streaming and non-streaming mode,
+including legacy `function_call`. It may contain only `provider`, resolved
+upstream `model`, `stream`, `choiceIndex`, `toolIndex`, and a sanitized `name`.
+Never add tool arguments, argument values, call IDs, prompts, response content,
+or provider payloads to this event. Existing `OAI_TOOL_CALL_START` /
+`OAI_TOOL_CALL_DONE` reliability diagnostics remain always-on and are not
+replaced by this DEBUG-only cross-provider event.
 
 #### Argument format rules
 

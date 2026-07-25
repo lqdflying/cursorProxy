@@ -129,7 +129,24 @@ Concrete failure indicators:
 
 ## Tool-Call Debug Review
 
-For Cursor tool-call issues, count lifecycle logs and compare starts to completions:
+When `DEBUG=true` was enabled during the incident window, use the
+provider-neutral downstream-emission event across Chat, Responses, and
+Anthropic providers:
+
+```text
+['cursorproxy']
+| where ['_time'] > ago(30m)
+| where ['message'] has_cs "TOOL_CALL_NAME"
+| extend provider = extract("provider: ([^ ]+)", 1, ['message']),
+         model = extract("model: ([^ ]+)", 1, ['message']),
+         stream = extract("stream: ([^ ]+)", 1, ['message']),
+         tool = extract("name: ([^ ]+)", 1, ['message'])
+| summarize calls=count() by provider, model, stream, tool
+| order by calls desc
+```
+
+For OpenAI-compatible Responses issues, also count the stronger always-on
+lifecycle logs and compare starts to completions:
 
 ```text
 ['cursorproxy']
@@ -220,6 +237,10 @@ Abnormal lifecycle lines with matching safe diagnostics:
 
 ## Interpretation Rules
 
+- `TOOL_CALL_NAME` means a named Chat-shaped tool identity was exposed by
+  cursorProxy to Cursor. It does not prove Cursor assembled later argument
+  deltas, executed the tool, or updated its UI. This event is absent unless
+  `DEBUG=true`; its absence with DEBUG disabled is not evidence of failure.
 - `starts == dones == shapes` is the basic healthy tool-call signal.
 - `TOOLS_FIXED ... dropped: 0` means tool schema normalization kept all tools.
 - `OAI_SHELL_ARGS_SANITIZED` with `removed: notify_on_output reason: empty_pattern` is expected cleanup, not a failure.

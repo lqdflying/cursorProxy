@@ -109,6 +109,20 @@ describe("azureanthropic streaming — handler integration", () => {
     return { res, text, chunks };
   }
 
+  async function captureConsoleLogs(action) {
+    const originalConsoleLog = console.log;
+    const logLines = [];
+    console.log = (...args) => {
+      logLines.push(args.map((argument) => String(argument)).join(" "));
+    };
+    try {
+      const result = await action();
+      return { result, logs: logLines.join("\n") };
+    } finally {
+      console.log = originalConsoleLog;
+    }
+  }
+
   const REQUEST_BODY = {
     model: "claude-sonnet-4-6",
     stream: true,
@@ -172,5 +186,81 @@ describe("azureanthropic streaming — handler integration", () => {
 
     const thinkKeys = [...kv.store.keys()].filter((k) => k.startsWith("claude_thinking:"));
     assert.equal(thinkKeys.length, 0, "disabled thinking must not write claude_thinking keys");
+  });
+
+  it("logs each mapped Anthropic tool name once and ignores text-only streams", async () => {
+    process.env.DEBUG = "true";
+    const toolEvents = [
+      {
+        event: "content_block_start",
+        data: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "tool_read", name: "Read", input: {} },
+        },
+      },
+      {
+        event: "content_block_delta",
+        data: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "{\"path\":\"private-path\"}" },
+        },
+      },
+      { event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+      {
+        event: "content_block_start",
+        data: {
+          type: "content_block_start",
+          index: 2,
+          content_block: { type: "tool_use", id: "tool_todo", name: "TodoWrite", input: {} },
+        },
+      },
+      {
+        event: "content_block_delta",
+        data: {
+          type: "content_block_delta",
+          index: 2,
+          delta: { type: "input_json_delta", partial_json: "{\"todos\":[\"private-todo\"]}" },
+        },
+      },
+      { event: "content_block_stop", data: { type: "content_block_stop", index: 2 } },
+      {
+        event: "message_delta",
+        data: {
+          type: "message_delta",
+          delta: { stop_reason: "tool_use" },
+          usage: { input_tokens: 10, output_tokens: 4 },
+        },
+      },
+      { event: "message_stop", data: { type: "message_stop" } },
+    ];
+    mockFetchSSE(toolEvents);
+
+    const toolResult = await captureConsoleLogs(() => streamHandler({
+      ...REQUEST_BODY,
+      thinking: { type: "disabled" },
+    }));
+    assert.match(toolResult.result.text, /"name":"Read"/);
+    assert.match(toolResult.result.text, /"name":"TodoWrite"/);
+    assert.equal((toolResult.logs.match(/TOOL_CALL_NAME/g) || []).length, 2);
+    assert.match(
+      toolResult.logs,
+      /TOOL_CALL_NAME provider: azureanthropic model: claude-sonnet-4-6 stream: true choiceIndex: 0 toolIndex: 0 name: Read/,
+    );
+    assert.match(
+      toolResult.logs,
+      /TOOL_CALL_NAME provider: azureanthropic model: claude-sonnet-4-6 stream: true choiceIndex: 0 toolIndex: 2 name: TodoWrite/,
+    );
+    assert.doesNotMatch(toolResult.logs, /private-path|private-todo/);
+
+    mockFetchSSE(ANTHROPIC_SSE_EVENTS);
+    const textResult = await captureConsoleLogs(() => streamHandler({
+      ...REQUEST_BODY,
+      thinking: { type: "disabled" },
+    }));
+    assert.match(textResult.result.text, /"content":"Hello"/);
+    assert.match(textResult.result.text, /"content":" world"/);
+    assert.doesNotMatch(textResult.logs, /TOOL_CALL_NAME/);
   });
 });
