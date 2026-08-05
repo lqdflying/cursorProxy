@@ -50,6 +50,10 @@ describe("fireworks provider routing", () => {
     assert.equal(providerFromModel("deepseek-chat"), "deepseek");
   });
 
+  it("routes deepseek-v4-flash to deepseek (new default)", () => {
+    assert.equal(providerFromModel("deepseek-v4-flash"), "deepseek");
+  });
+
   it("routes kimi-k2.7-code to kimi (unchanged)", () => {
     assert.equal(providerFromModel("kimi-k2.7-code"), "kimi");
   });

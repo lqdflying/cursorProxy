@@ -31,7 +31,7 @@ sequenceDiagram
     participant KV as KV Store<br/>(Redis / Upstash)
     participant UP as Upstream Provider<br/>(DeepSeek / Kimi / MiniMax / GLM)
 
-    C->>P: POST /v1/chat/completions<br/>model: cursorproxy/deepseek-reasoner<br/>messages: [...] (may contain images)
+    C->>P: POST /v1/chat/completions<br/>model: cursorproxy/deepseek-v4-flash<br/>messages: [...] (may contain images)
 
     Note over P: Strip cursorproxy/ prefix<br/>Infer provider from model name
 

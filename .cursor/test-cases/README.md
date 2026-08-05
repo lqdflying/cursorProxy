@@ -9,6 +9,7 @@ Use these cases when validating provider/model behavior on a deployed proxy, esp
 | Test case | Purpose |
 |---|---|
 | [Template](TEMPLATE.md) | Required shape for future Cursor manual test cases. |
+| [DeepSeek-V4-Flash](deepseek-v4-flash.md) | DeepSeek routing, `deepseek-v4-flash` default-model injection (retired `deepseek-chat` replaced), thinking/reasoning_effort forcing, multi-turn reasoning cache, and vision bridge. |
 | [Azure OpenAI Responses apply_patch](azure-openai-responses-apply-patch.md) | Verifies Cursor -> proxy -> Azure OpenAI Responses custom `apply_patch` tool calls, tool outputs, and `previous_response_id` chaining. |
 | [OpenAI-compatible Chat cache modes](openaicompat-chat-cache-modes.md) | Verifies `passthrough`, `facade`, and `remote` Chat-mode behavior for OpenAI-compatible gateways. |
 | [Kimi K3](kimi-k3.md) | Native Kimi K3 sanitization, preserved reasoning, forced tools, and multimodal input. |

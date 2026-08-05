@@ -31,6 +31,7 @@ const ENV_KEYS = [
   "CURSORPROXY_API_KEY",
   "DEBUG",
   "STREAM_TIMEOUT_SECONDS",
+  "KV_RETRY_DELAYS_MS",
 ];
 
 // Minimal in-memory KV map with a Redis-like driver shape
@@ -359,7 +360,7 @@ describe("openaicompat Responses wire mode — integration", () => {
     global.fetch = async () => new Response(JSON.stringify({
       id: "chat_deepseek_blank_shell",
       object: "chat.completion",
-      model: "deepseek-chat",
+      model: "deepseek-v4-flash",
       choices: [{
         index: 0,
         message: {
@@ -379,7 +380,7 @@ describe("openaicompat Responses wire mode — integration", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "deepseek-chat",
+          model: "deepseek-v4-flash",
           messages: [{ role: "user", content: "run shell" }],
         }),
       },
@@ -389,6 +390,169 @@ describe("openaicompat Responses wire mode — integration", () => {
       (await deepSeekResponse.json()).choices[0].message.tool_calls[0].function.arguments,
       "{}",
     );
+  });
+
+  // ─── DeepSeek V4 tools-aware reasoning injection (regression guards) ────
+  // Per the official DeepSeek V4 thinking_mode docs: for requests carrying the
+  // `tools` parameter, reasoning_content must be fully passed back in ALL
+  // subsequent requests (400 on missing), spanning new user messages and
+  // covering tool-call assistant turns anywhere in the history. The proxy
+  // disables the interleaved optimization for native deepseek when tools are
+  // present (full-history injection). Between two user messages with no tool
+  // call (no-tools shape), reasoning is ignored, so the skip is a safe
+  // optimization only for that shape. These tests assert on the captured
+  // upstream body, never just the status — a 200 alone proves nothing.
+
+  it("deepseek-v4-flash: tools-carrying user-ending request injects reasoning_content on tool-call and non-tool assistant turns (regression guard)", async () => {
+    process.env.DEEPSEEK_API_KEY = "deepseek-test-key";
+    process.env.KV_RETRY_DELAYS_MS = "0"; // no KV driver -> miss ladder; keep the suite fast
+    const toolCall = { id: "call_a", type: "function", function: { name: "get_date", arguments: "{}" } };
+    const captured = { body: null };
+    global.fetch = async (url, init) => {
+      captured.body = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "chat_tools_user_ending",
+        object: "chat.completion",
+        model: "deepseek-v4-flash",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "ok", reasoning_content: "thinking..." },
+          finish_reason: "stop",
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    await handler(new Request(
+      "http://localhost/api/proxy?provider=deepseek&path=chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "deepseek-v4-flash",
+          tools: [{ type: "function", function: { name: "get_date", description: "x", parameters: { type: "object", properties: {} } } }],
+          messages: [
+            { role: "user", content: "what day is it" },
+            { role: "assistant", content: null, tool_calls: [toolCall] },
+            { role: "tool", tool_call_id: "call_a", content: "2026-08-06" },
+            { role: "assistant", content: "It is 2026-08-06." },
+            { role: "user", content: "thanks, now what month" },
+          ],
+        }),
+      },
+    ));
+    // The tool-call assistant turn (messages[1]) MUST carry reasoning_content
+    // (placeholder on KV miss). This is the assertion that FAILS on the
+    // pre-fix code (1c9eaf3), where userEndingInterleaved skipped injection.
+    assert.equal(captured.body.messages[1].role, "assistant");
+    assert.equal(captured.body.messages[1].reasoning_content, "(prior reasoning unavailable)",
+      "tool-call assistant turn must carry reasoning_content for tools-carrying user-ending requests");
+    // The no-tool-call assistant turn (messages[3]) also gets it: tools-carrying
+    // requests require full-history passback, not just tool-call turns.
+    assert.equal(captured.body.messages[3].role, "assistant");
+    assert.equal(captured.body.messages[3].reasoning_content, "(prior reasoning unavailable)",
+      "non-tool assistant turn must also carry reasoning_content for tools-carrying requests (full history)");
+  });
+
+  it("deepseek-v4-flash: tools-carrying tool-ending request injects reasoning_content on earlier closed round before last user (guards minAssistantIndex)", async () => {
+    process.env.DEEPSEEK_API_KEY = "deepseek-test-key";
+    process.env.KV_RETRY_DELAYS_MS = "0";
+    const toolCallA = { id: "call_a", type: "function", function: { name: "get_date", arguments: "{}" } };
+    const toolCallB = { id: "call_b", type: "function", function: { name: "get_weather", arguments: '{"location":"HK"}' } };
+    const captured = { body: null };
+    global.fetch = async (url, init) => {
+      captured.body = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "chat_tools_tool_ending",
+        object: "chat.completion",
+        model: "deepseek-v4-flash",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: null, tool_calls: [toolCallB], reasoning_content: "thinking..." },
+          finish_reason: "tool_calls",
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    await handler(new Request(
+      "http://localhost/api/proxy?provider=deepseek&path=chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "deepseek-v4-flash",
+          tools: [{ type: "function", function: { name: "get_weather", description: "x", parameters: { type: "object", properties: {} } } }],
+          messages: [
+            // Turn 1 closed tool round (before the last user message).
+            { role: "user", content: "weather in HK tomorrow" },
+            { role: "assistant", content: null, tool_calls: [toolCallA] },
+            { role: "tool", tool_call_id: "call_a", content: "2026-08-07" },
+            { role: "assistant", content: "Got the date." },
+            // New user message starts turn 2.
+            { role: "user", content: "now get the weather" },
+            // Tool-ending sub-request of turn 2.
+            { role: "assistant", content: null, tool_calls: [toolCallB] },
+            { role: "tool", tool_call_id: "call_b", content: "sunny" },
+          ],
+        }),
+      },
+    ));
+    // The earlier closed-round tool-call assistant (messages[1], before the
+    // last user message) MUST carry reasoning_content. This guards the
+    // minAssistantIndex truncation: the pre-fix interleaved path restricted
+    // injection to turns after the last user message, dropping this turn.
+    assert.equal(captured.body.messages[1].role, "assistant");
+    assert.equal(captured.body.messages[1].reasoning_content, "(prior reasoning unavailable)",
+      "earlier closed-round tool-call assistant turn must carry reasoning_content (no minAssistantIndex truncation for tools-carrying deepseek)");
+    // The final tool-call assistant turn (messages[5]) also gets it.
+    assert.equal(captured.body.messages[5].role, "assistant");
+    assert.equal(captured.body.messages[5].reasoning_content, "(prior reasoning unavailable)",
+      "final tool-call assistant turn must carry reasoning_content");
+  });
+
+  it("deepseek-v4-flash: no-tools user-ending request skips injection (optimization preserved, no reasoning_content, no INJECT_SUMMARY)", async () => {
+    process.env.DEEPSEEK_API_KEY = "deepseek-test-key";
+    process.env.KV_RETRY_DELAYS_MS = "0";
+    const captured = { body: null };
+    global.fetch = async (url, init) => {
+      captured.body = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        id: "chat_no_tools_user_ending",
+        object: "chat.completion",
+        model: "deepseek-v4-flash",
+        choices: [{
+          index: 0,
+          message: { role: "assistant", content: "ok", reasoning_content: "thinking..." },
+          finish_reason: "stop",
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const { logs } = await captureConsoleLogs(async () => {
+      await handler(new Request(
+        "http://localhost/api/proxy?provider=deepseek&path=chat/completions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "deepseek-v4-flash",
+            // No `tools` field — no-tools shape; upstream ignores reasoning
+            // between two user messages with no tool call.
+            messages: [
+              { role: "user", content: "explain REST vs GraphQL" },
+              { role: "assistant", content: "REST is... GraphQL is..." },
+              { role: "user", content: "now a concrete example" },
+            ],
+          }),
+        },
+      ));
+    });
+    // The assistant turn (messages[1]) must NOT carry reasoning_content: the
+    // no-tools user-ending shape intentionally skips injection (upstream would
+    // ignore it anyway). This is the only shape where asserting absence is
+    // correct.
+    assert.equal(captured.body.messages[1].role, "assistant");
+    assert.equal(captured.body.messages[1].reasoning_content, undefined,
+      "no-tools user-ending request must not inject reasoning_content (optimization)");
+    // And INJECT_SUMMARY must not appear (injection was skipped entirely).
+    assert.ok(!logs.includes("INJECT_SUMMARY"),
+      "INJECT_SUMMARY must not appear for no-tools user-ending requests");
   });
 
   // ─── Default (chat mode): no Responses remap ────────────────────────────

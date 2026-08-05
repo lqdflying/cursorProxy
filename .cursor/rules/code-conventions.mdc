@@ -58,7 +58,7 @@ Both `diag()` and `log()` emit to all platforms from `api/proxy.js` and shared `
 `log()` (when `DEBUG=true`) follows the same format:
 ```
 [cursorProxy:proxy] START POST https://one.example.com/v1/chat/completions?... pathname: /v1/chat/completions provider(query): (infer)
-[cursorProxy:proxy] RESOLVED model: deepseek-chat provider: deepseek stream: true
+[cursorProxy:proxy] RESOLVED model: deepseek-v4-flash provider: deepseek stream: true
 [cursorProxy:proxy] TOOL_CALL_NAME provider: kimi model: kimi-k3 stream: true choiceIndex: 0 toolIndex: 0 name: TodoWrite
 [cursorProxy:proxy] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0
 [cursorProxy:reasoning] INJECT_SUMMARY turns: 5 hits: 3 misses: 2 recovered: 0

@@ -656,8 +656,8 @@ export default async function handler(req) {
   // Azure OpenAI and Fireworks are excluded: Azure resolves deployment
   // names server-side; Fireworks hosts 200+ models with no single default.
   if (parsedBody && !parsedBody.model && providerKey !== "azureopenai" && providerKey !== "fireworks") {
-    const defaults = { deepseek: "deepseek-chat", kimi: "kimi-k3", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
-    parsedBody.model = defaults[providerKey] || "deepseek-chat";
+    const defaults = { deepseek: "deepseek-v4-flash", kimi: "kimi-k3", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
+    parsedBody.model = defaults[providerKey] || "deepseek-v4-flash";
     bodyText = JSON.stringify(parsedBody);
     log("MODEL_INJECTED", "model:", parsedBody.model);
   }
@@ -822,10 +822,25 @@ export default async function handler(req) {
       parsedBody?.thinking?.type !== "disabled" &&
       !/-(?:no-thinking|non-thinking)$/i.test(upstreamModelName));
 
-  // Interleaved mode: Fireworks strips reasoning through the last user message
-  // but preserves it through tool calls.  Explicit "interleaved" or models that
-  // default to it (Kimi K2p0–K2p6, GLM 4.x, MiniMax M2, DeepSeek V4) skip
-  // injection on user-ending requests.  Tool-ending requests still receive it.
+  // Interleaved mode: models that default to it (Kimi K2p0–K2p6, GLM 4.x,
+  // MiniMax M2, DeepSeek V4) skip injection on user-ending requests and only
+  // inject for assistant turns after the last user message on tool-ending
+  // requests. The DeepSeek V4 contract is documented upstream and is
+  // tools-aware, NOT position-based:
+  //   - Fireworks strips reasoning through the last user message but preserves
+  //     it through tool calls.
+  //   - Native DeepSeek V4 (per the official thinking_mode docs): for requests
+  //     carrying the `tools` parameter, `reasoning_content` must be fully passed
+  //     back in ALL subsequent requests (400 on missing) — this spans across
+  //     new user messages and covers tool-call assistant turns anywhere in the
+  //     history, including rounds before the last user message. Between two
+  //     user messages with no tool call, reasoning is ignored (passing it is
+  //     harmless), so the skip is only a safe latency optimization for the
+  //     no-tools shape.
+  //   So for native deepseek we disable the interleaved optimization entirely
+  //   when the request carries tools, falling back to full-history injection;
+  //   the no-tools shape keeps the skip. Explicit `reasoning_history:
+  //   "interleaved"` opts in for any provider.
   //
   // thinking.keep: "all" with thinking.type: "enabled" is equivalent to
   // reasoning_history: "preserved" per Fireworks docs — it overrides any model
@@ -833,6 +848,7 @@ export default async function handler(req) {
   const isInterleaved = parsedBody?.reasoning_history === "interleaved" ||
     (parsedBody?.reasoning_history == null &&
       !(parsedBody?.thinking?.keep === "all" && parsedBody?.thinking?.type === "enabled") &&
+      !(providerKey === "deepseek" && Array.isArray(parsedBody?.tools) && parsedBody.tools.length > 0) &&
       /kimi-k2[.p][0-6](?:[^a-z0-9]|$)|glm-[0-4][.p]|minimax-m2|deepseek-v4/i.test(upstreamModelName));
   const userEndingInterleaved = isInterleaved &&
     originalMessages?.length > 0 &&
