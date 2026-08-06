@@ -11,6 +11,7 @@ Any coding agent working on this repo should read those files before making chan
 | `code-conventions.mdc` | Logging tags, module system, security, streaming, Docker Compose, reasoning caching, versioning |
 | `adding-provider.mdc` | Checklist for adding a new upstream provider (must update 5+ locations) |
 | `api-changes.mdc` | Pre-change documentation verification for provider behavior and API parameters |
+| `glm-native-detection.mdc` | Detect native Z.AI/ZHIPU vs compatible GLM gateways; gate GLM-native fields (thinking, tool_stream) on hostname; probe-first matrix |
 | `api-edge-safety.mdc` | Edge Runtime constraints: no `node:*` imports, no `ioredis` in shared modules |
 | `axiom-prod-log-investigation.mdc` | Primary production topology and hop-by-hop Axiom/1Panel incident workflow |
 | `azure-foundry.mdc` | Azure OpenAI + Azure Anthropic integration details |

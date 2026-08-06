@@ -71,6 +71,7 @@ import { probeStrictTools, strictToolStats } from "../lib/strict-tools.js";
 import {
   PROVIDERS,
   isAzureFoundryKimiEndpoint,
+  isNativeGlmEndpoint,
   isUnsafeUpstreamPath,
   upstreamApiKey,
 } from "../lib/providers.js";
@@ -750,7 +751,7 @@ export default async function handler(req) {
   }
 
   if (providerKey === "glm" && parsedBody) {
-    if (sanitizeGlmBody(parsedBody, upstreamModelName)) {
+    if (sanitizeGlmBody(parsedBody, upstreamModelName, upstreamUrl)) {
       bodyText = JSON.stringify(parsedBody);
     }
   }
@@ -880,9 +881,14 @@ export default async function handler(req) {
     });
     parsedBody = injected.parsedBody;
     injectedCount = injected.injectedCount;
+    // GLM preserved-thinking clearing only applies to native Z.AI/ZHIPU
+    // upstreams. On compatible gateways the sanitizer already stripped
+    // `thinking` (the gateway rejects it with HTTP 400 and reasons by
+    // default), so re-injecting clear_thinking here would undo that strip.
     if (
       providerKey === "glm" &&
       injected.missedCount > 0 &&
+      isNativeGlmEndpoint(upstreamUrl) &&
       parsedBody?.thinking?.type !== "disabled" &&
       parsedBody?.thinking?.clear_thinking !== true
     ) {

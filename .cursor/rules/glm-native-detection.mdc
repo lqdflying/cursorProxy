@@ -1,0 +1,166 @@
+---
+description: "Detect native Z.AI/ZHIPU GLM endpoints vs compatible gateways; gate GLM-native fields (thinking, tool_stream) on the native hostname. Use when changing GLM request sanitization, adding GLM env toggles, or debugging GLM 400s from custom UPSTREAM_GLM endpoints"
+globs: lib/glm.js,lib/providers.js,api/proxy.js,.env.example
+alwaysApply: false
+---
+
+# GLM Native Endpoint Detection
+
+GLM (`providerKey === "glm"`) routes to two very different upstream families
+behind one provider entry. cursorProxy's default body sanitization assumes the
+native Z.AI/ZHIPU Coding Plan contract. Custom `UPSTREAM_GLM` gateways
+(litellm, Hosted_vLLM, OpenRouter-style aggregators) reject some of those
+fields with HTTP 400. This rule captures how to tell them apart and which
+fields are native-only.
+
+## Native vs gateway hosts
+
+| Hostname | Family | `thinking` | `tool_stream` |
+|---|---|---|---|
+| `open.bigmodel.cn` | ZHIPU China Coding Plan | accepted, injected | accepted, injected |
+| `api.z.ai` | Z.AI Global Coding Plan | accepted, injected | accepted, injected |
+| any other host | compatible gateway (litellm/vLLM/...) | **may be rejected** | **may be rejected** |
+
+Detection helper: `isNativeGlmEndpoint(baseUrl)` in [lib/providers.js](../../lib/providers.js),
+sibling to `isAzureFoundryKimiEndpoint`. Parses `new URL(baseUrl).hostname`
+(case-insensitive) and matches the native set. Reuse it everywhere GLM-native
+behavior must be gated — do not inline `hostname === "open.bigmodel.cn"`
+checks.
+
+## Fields and where they are gated
+
+| Field | Native | Gateway | Gate site |
+|---|---|---|---|
+| `thinking: { type:"enabled", clear_thinking:false }` | injected by [lib/glm.js](../../lib/glm.js) `injectThinking()` | stripped | sanitizer + reasoning-bridge re-injection (see pitfall 2) |
+| `tool_stream: true` (stream + tools) | injected by `enableToolStreaming()` | stripped | sanitizer only |
+| `reasoning_effort` (GLM-5.2+) | forwarded | forwarded (probed accepted) | not gated — GLM-5.2+ feature, model-version-gated by `isGlm52PlusModel()` instead |
+| `max_completion_tokens` → `max_tokens` remap | always | always | not gated — standard normalization |
+| `tool_choice` coercion to `auto`; `tool_choice:"none"` removes tools | always | always | not gated — standard normalization |
+
+## Env bypass: `GLM_NATIVE_FIELDS`
+
+One env var controls both gated fields, because they share the same
+native-vs-gateway distinction and the same upstream contract.
+
+| `UPSTREAM_GLM` host | `GLM_NATIVE_FIELDS` | `thinking` | `tool_stream` |
+|---|---|---|---|
+| native | unset / `auto` | inject (current) | inject (current) |
+| any other host | unset / `auto` | strip | strip |
+| any | `true` / `1` / `on` | inject | inject |
+| any | `false` / `0` / `off` | strip | strip |
+
+Invalid values fall back to `auto` and log one `GLM_NATIVE_FIELDS_INVALID`
+diag (always-on). Resolution lives in `lib/glm.js` (`resolveNativeFields`);
+the resolved boolean is passed into both `injectThinking()` and
+`enableToolStreaming()` from `sanitizeGlmBody()`.
+
+## Why hostname detection, not a model rule
+
+GLM-native fields are an **endpoint** contract, not a model contract. The same
+upstream model ID (`glm-5.2`) is served both by native Z.AI and by third-party
+gateways, with different accepted-field sets. Gating on model name would be
+wrong: `glm-5.2` on `open.bigmodel.cn` needs `thinking`; `glm-5.2` on
+`ai.nube.sh` rejects it. Always gate on the resolved upstream base URL.
+
+## Probe-first methodology (before changing this matrix)
+
+Before adding or removing a field from the gated set, prove the gateway's
+behavior with a direct probe against a real `UPSTREAM_GLM`. Do not infer the
+contract from an error message alone — litellm rotates backends per request,
+so one error's offending field may already be accepted by the time you fix it.
+
+### Minimal probe matrix
+
+Run each body against `POST <UPSTREAM_GLM>/chat/completions` with the GLM auth
+header. Keep prompts tiny (`"reply ok"`) and tools no-op so the probe is cheap.
+
+| Body extras | What it proves |
+|---|---|
+| minimal (model + messages) | gateway baseline health |
+| `foobar:true` (bogus field) | does the backend blanket-reject extra fields? |
+| `thinking` alone | is the GLM thinking field accepted? |
+| `tool_stream:true` alone | is tool_stream accepted without tools? |
+| `reasoning_effort:"max"` alone | is reasoning_effort accepted? |
+| `thinking` + tools + stream | full cursorProxy agent shape |
+
+### Interpretation
+
+- **Bogus field 200 + real field 400** → the backend specifically rejects the
+  real field (gate it). This was the `thinking` signature.
+- **Bogus field 400** → the backend blanket-rejects extras; do not generalize
+  any single field's 400 from this data.
+- **A field fails alone but succeeds with tools** → backend routing is
+  non-deterministic (litellm picks different upstream per request). Repeat the
+  failing case at least 3× before claiming a rejection.
+- **A field succeeds 1× then fails** → not stable; probe 3× minimum before
+  changing the gated set.
+
+### Live evidence that established the current matrix
+
+Captured 2026-08-06 against `ai.nube.sh` (litellm/Hosted_vLLM gateway):
+
+| Probe body | Result | Count |
+|---|---|---|
+| `foobar:true` (bogus) | 200 | 1/1 |
+| `tool_stream:true` alone | 200 | 1/1 |
+| `tool_stream` + tools/stream | 200 | 3/3 |
+| `reasoning_effort` alone | 200 | 1/1 |
+| `thinking` alone | **400** | **3/3** |
+| `thinking` + tools/stream | 200 | 2/2 |
+| minimal | 200 | 3/3 |
+
+Findings: `thinking` is the consistent culprit on plain (no-tools) requests;
+`tool_stream` was accepted at probe time (a previously-reported `tool_stream`
+400 came from a now-replaced "Console Go" backend). Both are gated because
+gateway backends rotate. The gateway emits `reasoning_content` in every
+response without `thinking`, so stripping `thinking` costs no reasoning
+quality on gateways.
+
+## Pitfalls
+
+1. **Never infer the contract from one error.** The user's original report
+   blamed `tool_stream`, but live probing showed `thinking` is the real
+   consistent failure and `tool_stream` was already accepted again. Always
+   re-probe before editing the gated set, and probe 3× for rejection claims.
+
+2. **The reasoning bridge re-adds `thinking`.** Even if the sanitizer strips
+   `thinking` for a gateway, [api/proxy.js](../../api/proxy.js) re-injects
+   `thinking: { clear_thinking: true }` on a KV miss (the `GLM_THINKING_CLEARED`
+   branch). That second site MUST also be gated on the native hostname, or the
+   gateway gets `thinking` anyway on every cache-miss turn. Check both sites
+   when changing the gating behavior.
+
+3. **Native detection is hostname-based, not path-based.** Pass the full
+   resolved `upstreamUrl` (which includes `/api/coding/paas/v4/chat/completions`
+   for native, `/v1/chat/completions` for gateways) to
+   `isNativeGlmEndpoint()`. `new URL(...).hostname` ignores the path, so the
+   helper is robust to path differences.
+
+4. **Do not gate `reasoning_effort`.** It is probed-accepted on gateways and
+   is the GLM-5.2+ feature this project specifically forwards. Its own gate is
+   model-version-based (`isGlm52PlusModel()` strips it for pre-5.2 GLM), not
+   endpoint-based.
+
+5. **`clear_thinking` on gateways is not the Z.AI preserved-thinking
+   contract.** Native Z.AI requires preserved thinking to stay complete and
+   unmodified, so the bridge sets `clear_thinking:true` only there. On
+   gateways, `thinking` is stripped entirely and the gateway reasons by
+   default — the `clear_thinking` path is skipped, not run with a different
+   value.
+
+6. **Cache-scope isolation is unaffected.** GLM reasoning-cache scope is
+   `glm:<user>` (shared across GLM models and endpoints for one user). The
+   native/gateway split does not change the KV scope; it only changes which
+   request fields are forwarded. Do not introduce an `isNativeGlmEndpoint`
+   term into the cache key — that would orphan cached reasoning when an
+   operator switches endpoints mid-conversation.
+
+## When to update this rule
+
+- A new GLM-native field is added to [lib/glm.js](../../lib/glm.js) → decide if it
+  is native-only (add to the gated set + this matrix) or always-forwarded.
+- A new `GLM_*` env var is introduced → document it here and in
+  `.env.example` + `doc/deepseek-kimi-minimax.md`.
+- A different provider reuses this detection pattern → extract
+  `isNativeGlmEndpoint` into a shared helper only when there is a second real
+  caller; do not pre-generalize.

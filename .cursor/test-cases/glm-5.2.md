@@ -72,6 +72,38 @@ For tool streaming coverage, use an agent prompt that requires a local file read
 [cursorProxy:proxy] GLM_BODY_SANITIZED ... toolStream: true ...
 ```
 
+For native-vs-gateway coverage of GLM-native fields (`thinking`, `tool_stream`),
+test against the two supported configurations separately:
+
+- Native Z.AI/ZHIPU host (`UPSTREAM_GLM=https://open.bigmodel.cn/api/coding/paas/v4`
+  or `https://api.z.ai/api/coding/paas/v4`): a plain-chat request and a
+  streamed tool request should both show `nativeFields: inject` on the
+  `GLM_BODY_SANITIZED` line, with `thinkingType: enabled clearThinking: false`
+  and `toolStream: true` (streamed tool case).
+- Compatible gateway (e.g. `UPSTREAM_GLM=https://ai.nube.sh/api/v1`, a
+  litellm/Hosted_vLLM gateway): a plain-chat request must show
+  `nativeFields: strip` on the `GLM_BODY_SANITIZED` line, with
+  `thinkingType: (omitted)` and `toolStream: (unset)`, and the upstream must
+  return HTTP 200 (no `Extra inputs are not permitted, field: 'thinking'` /
+  `'tool_stream'` 400). A streamed tool request should likewise have
+  `toolStream: (unset)` and `thinkingType: (omitted)`.
+- Env override coverage: on the gateway host, set `GLM_NATIVE_FIELDS=true` and
+  replay the plain-chat request; the `GLM_BODY_SANITIZED` line should flip to
+  `nativeFields: inject nativeSource: env-true`. On the native host, set
+  `GLM_NATIVE_FIELDS=false` and replay; the line should show
+  `nativeFields: strip nativeSource: env-false`.
+
+Invalid value coverage: set `GLM_NATIVE_FIELDS=yes` (not a recognized value)
+and replay on a native host. Expected logs should include:
+
+```text
+[cursorProxy:proxy] GLM_NATIVE_FIELDS_INVALID raw: yes fallback: auto valid: [auto|true|false]
+[cursorProxy:proxy] GLM_BODY_SANITIZED ... nativeFields: inject nativeSource: auto ...
+```
+
+On a gateway with the same invalid value, the sanitized line should show
+`nativeFields: strip nativeSource: auto`.
+
 For `reasoning_effort` client-override coverage, replay a request with `reasoning_effort: "high"`. Expected logs should include:
 
 ```text
@@ -122,6 +154,9 @@ UPSTREAM_ERROR_STATUS
 UPSTREAM_STATUS 400
 reasoning_content ... prior reasoning unavailable
 tool_choice: auto ... when client sent tool_choice: none
+litellm.BadRequestError ... Extra inputs are not permitted, field: 'thinking'
+litellm.BadRequestError ... Extra inputs are not permitted, field: 'tool_stream'
+GLM_BODY_SANITIZED ... nativeFields: inject ... (on a gateway host — should be strip)
 ```
 
 ## Cleanup

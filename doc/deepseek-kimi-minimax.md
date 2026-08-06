@@ -161,7 +161,8 @@ before the reasoning bridge injects cached `reasoning_content`.
 - Default model is `glm-5.2`; `GLM-5.2` is accepted and forwarded to upstream as lowercase.
 - Default upstream is ZHIPU China Coding Plan: `https://open.bigmodel.cn/api/coding/paas/v4`.
 - Set `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4` for the global Z.AI Coding Plan endpoint.
-- The proxy remaps `max_completion_tokens` to `max_tokens`, coerces unsupported forced-tool choices to `auto`, preserves `tool_choice: "none"` by removing tools, sets `tool_stream: true` for streamed tool requests, and injects `thinking: { type: "enabled", clear_thinking: false }` when omitted.
+- Compatible gateways (litellm, Hosted_vLLM, OpenRouter-style aggregators) can also be used via `UPSTREAM_GLM`, but they reject the GLM-native fields `thinking` and `tool_stream` with HTTP 400 on plain (no-tools) requests. The proxy auto-detects the native Z.AI/ZHIPU hosts (`open.bigmodel.cn`, `api.z.ai`) via `isNativeGlmEndpoint()` and injects `thinking` / `tool_stream` only there; on any other host both fields are stripped. The detection is endpoint-scoped, not model-scoped: the same `glm-5.2` ID routes differently depending on the upstream host. `GLM_NATIVE_FIELDS` (`auto`/`true`/`false`) overrides the detection — `auto` (default) follows the hostname, `true` always injects, `false` always strips. The reasoning bridge's `clear_thinking` re-injection on KV miss is gated on the native hostname too, so it never re-adds `thinking` to a gateway request. Gateways emit `reasoning_content` in every response by default, so stripping `thinking` does not reduce reasoning quality. `reasoning_effort` is not gated (probed-accepted on gateways, and it is the GLM-5.2+ feature the project specifically forwards).
+- The proxy remaps `max_completion_tokens` to `max_tokens`, coerces unsupported forced-tool choices to `auto`, preserves `tool_choice: "none"` by removing tools, and (on native hosts only) sets `tool_stream: true` for streamed tool requests and injects `thinking: { type: "enabled", clear_thinking: false }` when omitted.
 - GLM `reasoning_content` is cached and replayed when available. On cache miss, the proxy does not inject placeholder reasoning and sets `clear_thinking: true` for that request because Z.AI requires preserved thinking to remain complete and unmodified.
 
 ## Key Environment Variables
@@ -173,6 +174,7 @@ before the reasoning bridge injects cached `reasoning_content`.
 | `MINIMAX_API_KEY` | MiniMax auth (also used for `minimax_vl` vision backend) |
 | `GLM_API_KEY` | GLM / ZHIPU AI auth |
 | `UPSTREAM_GLM` | Optional GLM Coding Plan endpoint override |
+| `GLM_NATIVE_FIELDS` | `auto` (default), `true`, `false` — inject/strip `thinking` + `tool_stream` based on native-host detection |
 | `DEEPSEEK_REASONING_EFFORT` | `high` (default) or `max` |
 | `VISION_API_PROVIDER` | `minimax_vl` (default) or `openai` |
 | `VISION_API_KEY` | API key when `VISION_API_PROVIDER=openai` |
