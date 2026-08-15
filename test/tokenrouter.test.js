@@ -536,6 +536,54 @@ describe("TokenRouter handler integration", () => {
     assert.equal(later[0].body.messages[1].reasoning_content, undefined);
   });
 
+  it("passes through a DeepSeek tools 400 when empty KV cannot restore reasoning", async () => {
+    setKvDriver(makeInMemoryKv());
+    const tools = [{
+      type: "function",
+      function: { name: "lookup", parameters: { type: "object", properties: {} } },
+    }];
+    const calls = [];
+    global.fetch = async (_url, init) => {
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push(body);
+      const assistantTurns = (body?.messages || []).filter((message) => message?.role === "assistant");
+      const missingReasoning = assistantTurns.some((message) => !message.reasoning_content);
+      if (missingReasoning) {
+        return new Response(JSON.stringify({
+          error: {
+            message: "thinking is enabled but reasoning_content is missing in assistant",
+            type: "invalid_request_error",
+            code: "invalid_request_error",
+          },
+        }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify(makeCompletion({
+        model: TOKENROUTER_DEEPSEEK_V4_PRO,
+        content: "ok",
+      })), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const response = await invoke({
+      model: TOKENROUTER_DEEPSEEK_V4_PRO,
+      messages: [
+        { role: "user", content: "Look this up." },
+        { role: "assistant", content: "done" },
+        { role: "user", content: "And again." },
+      ],
+      tools,
+    }, UNIFIED_PROXY_URL);
+    const body = await response.json();
+    assert.equal(calls[0].messages[1].reasoning_content, undefined);
+    assert.equal(response.status, 400);
+    assert.match(body.error.message, /reasoning_content is missing/);
+  });
+
   it("strips streamed TokenRouter reasoning while caching it", async () => {
     const kvDriver = makeInMemoryKv();
     setKvDriver(kvDriver);

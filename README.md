@@ -34,7 +34,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 On EdgeOne, `GET /health` should return `"kv":{"backend":"edgeone","available":true,...}` after deployment.
 
 > [!IMPORTANT]
-> **KV is required for multi-turn quality, but its absence is a silent degradation, not a hard failure.** Without a configured backend the proxy still answers requests, but every turn re-pays the reasoning cost from scratch (DeepSeek/Kimi/MiniMax/MiMo), Azure OpenAI and OpenAI-compatible Responses mode cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`) so this is visible from an external check.
+> **KV is required for multi-turn quality.** Without a configured backend the proxy still routes first-turn and other stateless requests, but DeepSeek/Kimi/MiniMax/MiMo re-pay reasoning from scratch, Azure OpenAI and OpenAI-compatible Responses mode cannot chain via `previous_response_id`, Claude rethinks adaptive turns, and image descriptions are recomputed. **TokenRouter is stricter:** K3 follow-ups and DeepSeek V4 tool loops can fail upstream when prior reasoning cannot be restored (hit-only restore, no placeholder). See the [Environment Variables](https://github.com/lqdflying/cursorProxy/wiki/Environment-Variables) wiki warning. Docker logs `kv backend: NONE` at boot, and `/health` exposes a `kv` block (`available: false`, `backend: null`).
 
 ### 3. Deploy
 

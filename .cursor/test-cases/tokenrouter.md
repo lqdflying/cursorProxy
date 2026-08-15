@@ -40,13 +40,18 @@ Expected Cursor behavior:
 - Returns a coherent four-sentence answer.
 - No upstream 400 mentioning sampling parameters, `thinking`, or `developer`.
 
-Expected logs (group by `requestId`):
+Expected logs (pair each `REQ` with the following `RES` on the same Docker
+process stream; `provider:` must stay `tokenrouter`):
 
 ```text
-REQ POST /v1/chat/completions provider: tokenrouter
-KIMI_BODY_SANITIZED model: moonshotai/kimi-k3 thinkingType: (omitted) reasoningEffort: max ...
-RES 200 provider: tokenrouter ms: ...
+[cursorProxy:proxy] REQ POST /api/proxy provider: tokenrouter
+[cursorProxy:proxy] KIMI_BODY_SANITIZED model: moonshotai/kimi-k3 thinkingType: (omitted) reasoningEffort: max ...
+[cursorProxy:proxy] RES 200 provider: tokenrouter ms: ...
 ```
+
+On Docker/1Panel the public URL is still `/v1/chat/completions`; `server.js`
+rewrites it before `api/proxy.js` logs `REQ`. When `DEBUG=true`, the optional
+access line is `[cursorProxy:server] POST /v1/chat/completions -> 200 (...)`.
 
 The outbound model must be `moonshotai/kimi-k3`. `UPSTREAM` must point at
 `api.tokenrouter.com`, not `api.moonshot.ai`.
@@ -113,9 +118,9 @@ Expected Cursor behavior:
 Expected logs:
 
 ```text
-REQ POST /v1/chat/completions provider: tokenrouter
-CONVERTED_IMAGES ok: 1 err: 0 provider: tokenrouter ...
-RES 200 provider: tokenrouter ms: ...
+[cursorProxy:proxy] REQ POST /api/proxy provider: tokenrouter
+[cursorProxy:proxy] CONVERTED_IMAGES ok: 1 err: 0 provider: tokenrouter ...
+[cursorProxy:proxy] RES 200 provider: tokenrouter ms: ...
 ```
 
 On a later user turn that still carries tools:
@@ -144,9 +149,9 @@ Expected Cursor behavior:
 Expected logs:
 
 ```text
-REQ POST /v1/chat/completions provider: tokenrouter
-STREAM_DONE ...
-RES 200 provider: tokenrouter ms: ...
+[cursorProxy:proxy] REQ POST /api/proxy provider: tokenrouter
+[cursorProxy:proxy] STREAM_DONE ...
+[cursorProxy:proxy] RES 200 provider: tokenrouter ms: ...
 ```
 
 ### Test 6: No regression — native Kimi and DeepSeek
@@ -161,8 +166,8 @@ Write a Python function that calculates factorial. Keep it under 8 lines.
 Expected logs:
 
 ```text
-REQ POST /v1/chat/completions provider: kimi
-UPSTREAM https://api.moonshot.ai/v1/chat/completions provider: kimi
+[cursorProxy:proxy] REQ POST /api/proxy provider: kimi
+[cursorProxy:proxy] UPSTREAM https://api.moonshot.ai/v1/chat/completions provider: kimi
 ```
 
 Then switch to `cursorproxy/deepseek-v4-flash` and paste the same prompt.
@@ -170,9 +175,9 @@ Then switch to `cursorproxy/deepseek-v4-flash` and paste the same prompt.
 Expected logs:
 
 ```text
-REQ POST /v1/chat/completions provider: deepseek
-UPSTREAM https://api.deepseek.com/v1/chat/completions provider: deepseek
-THINKING provider: deepseek ...
+[cursorProxy:proxy] REQ POST /api/proxy provider: deepseek
+[cursorProxy:proxy] UPSTREAM https://api.deepseek.com/v1/chat/completions provider: deepseek
+[cursorProxy:proxy] THINKING provider: deepseek ...
 ```
 
 ## Negative Signs
