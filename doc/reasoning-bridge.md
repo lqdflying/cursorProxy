@@ -113,7 +113,7 @@ flowchart TD
 
     DS_PH["DeepSeek / Kimi\nreasoning_content:\n'(prior reasoning unavailable)'"]
     MM_PH["MiniMax\nreasoning_details:\n[{type:'text', text:'(prior reasoning unavailable)'}]"]
-    GLM_MISS["GLM\nleave assistant message unchanged\n(no fabricated reasoning)"]
+    GLM_MISS["GLM / Fireworks / TokenRouter\nleave assistant message unchanged\n(no fabricated reasoning)"]
 
     WHY["Provider requires non-empty\nreasoning field on ALL prior\nassistant turns — empty string\nfails validation"]
 
@@ -132,6 +132,11 @@ providers: historical reasoning must be returned complete and unmodified. When
 the proxy cannot recover a GLM assistant turn from KV, it logs the miss, does not
 inject placeholder text, and clears preserved thinking for that request by
 setting `thinking.clear_thinking: true`.
+
+TokenRouter and Fireworks use the same hit-only restore path: cached
+`reasoning_content` is replayed when present, and a miss leaves the assistant
+turn unchanged. TokenRouter scopes keys as `tokenrouter:<full-model-id>:<user>`
+so K3 and DeepSeek V4 traces cannot leak across catalog IDs.
 
 ## Snapshot Write Strategy
 
@@ -168,7 +173,7 @@ Retry delays (KV_RETRY_DELAYS_MS, default): 40 ms → 120 ms → 240 ms → 400 
 Max attempts: 5 (1 immediate + 4 retries)
 Total max wait: ~800 ms
 On DeepSeek/Kimi/MiniMax misses: inject placeholder text
-On GLM misses: leave reasoning absent
+On GLM / Fireworks / TokenRouter misses: leave reasoning absent
 ```
 
 ## Key Environment Variables

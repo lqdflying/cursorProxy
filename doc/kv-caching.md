@@ -62,7 +62,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     subgraph Providers["Provider families"]
-        DS["DeepSeek / Kimi / MiniMax"]
+        DS["DeepSeek / Kimi / MiniMax / GLM / Fireworks / TokenRouter"]
         AO["Azure OpenAI"]
         OC["OpenAI-compatible\nResponses mode"]
         AA["Azure Anthropic"]

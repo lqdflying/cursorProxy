@@ -1,6 +1,6 @@
 # cursorProxy — Multi-Provider Reasoning & Vision Proxy
 
-A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **GLM / ZHIPU AI**, **Fireworks AI**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
+A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **GLM / ZHIPU AI**, **Fireworks AI**, **TokenRouter**, and **Azure Foundry** APIs. Deploy on Vercel Edge, self-host via Docker, or run on **EdgeOne Pages**.
 
 - **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo/GLM `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Responses chaining:** caches Azure OpenAI and supported OpenAI-compatible Responses API response IDs in KV so subsequent turns can use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly where the upstream supports HTTP chaining.
@@ -22,6 +22,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 - [Xiaomi MiMo](https://platform.xiaomimimo.com) → `MIMO_API_KEY`
 - [ZHIPU AI / Z.AI](https://open.bigmodel.cn) → `GLM_API_KEY`
 - [Fireworks AI](https://fireworks.ai) → `FIREWORKS_API_KEY` (open-source model hosting)
+- [TokenRouter](https://www.tokenrouter.com) → `TOKENROUTER_API_KEY` (PaleBlueDot Chat Completions gateway)
 - [Azure Foundry](https://ai.azure.com) → `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_RESOURCE`
 - Generate a proxy secret: `openssl rand -hex 32` → `CURSORPROXY_API_KEY`
 
@@ -82,6 +83,7 @@ Keep this table to values you must set for the deployment and providers you actu
 | `MIMO_API_KEY` | Using Xiaomi MiMo models | Upstream MiMo API key. |
 | `GLM_API_KEY` | Using GLM / ZHIPU / Z.AI models | Upstream GLM API key. |
 | `FIREWORKS_API_KEY` | Using Fireworks AI models | Upstream Fireworks API key. |
+| `TOKENROUTER_API_KEY` | Using TokenRouter models | Upstream PaleBlueDot TokenRouter API key. |
 | `AZURE_FOUNDRY_API_KEY` | Using Azure OpenAI or Azure Anthropic | Azure Foundry API key. |
 | `AZURE_FOUNDRY_RESOURCE` | Using Azure OpenAI or Azure Anthropic | Azure Foundry resource name. |
 | `KV_URL` + `KV_TOKEN` | Vercel deployment | Upstash Redis REST credentials for reasoning, response-id, and image caches. |
@@ -92,7 +94,7 @@ Common optional settings:
 
 - `CURSORPROXY_MODELS` advertises model IDs from `GET /v1/models`.
 - `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4` switches GLM from the default China Coding Plan endpoint to global Z.AI.
-- `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, `UPSTREAM_FIREWORKS`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
+- `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, `UPSTREAM_FIREWORKS`, `UPSTREAM_TOKENROUTER`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
 - `OPENAICOMPAT_WIRE_API=responses` switches the openai-compatible provider from Chat Completions (default) to the OpenAI Responses API with `previous_response_id` state chaining. For GPT-5.6 Sol, optional `OPENAICOMPAT_REASONING_EFFORT=max` selects the highest supported single-model reasoning effort; GPT-5.5 requests fall back to `xhigh` because GPT-5.5 does not support `max`. `ultra` is not an effort value. Requires a KV backend. See [Compatible Providers](https://github.com/lqdflying/cursorProxy/wiki/Compatible-Providers).
 - `compatible-gpt-5.6` is a Responses-mode alias for compatible upstreams that expose `gpt-5.6-sol`, OpenAI's flagship GPT-5.6 model (also targeted by the `gpt-5.6` alias). Use `OPENAICOMPAT_WIRE_API=responses`; Chat mode forwards the same upstream model to `/v1/chat/completions` and will fail if the provider only supports GPT-5.6 on `/v1/responses`.
 
@@ -121,7 +123,7 @@ Full references:
 - [doc/known-issues.md](doc/known-issues.md) — Cursor-side bugs and workarounds (vision, apply_patch, etc.)
 - [doc/architecture-overview.md](doc/architecture-overview.md) — Request flow at a glance
 - [doc/kv-caching.md](doc/kv-caching.md) — What is cached, how invalidation works
-- [doc/reasoning-bridge.md](doc/reasoning-bridge.md) — DeepSeek / Kimi / MiniMax / MiMo / GLM reasoning injection
+- [doc/reasoning-bridge.md](doc/reasoning-bridge.md) — DeepSeek / Kimi / MiniMax / MiMo / GLM / TokenRouter reasoning injection
 - [doc/vision-bridge.md](doc/vision-bridge.md) — Image-to-text conversion for text-only providers
 
 ---

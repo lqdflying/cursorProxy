@@ -60,6 +60,14 @@ import {
 import { sanitizeGlmBody } from "../lib/glm.js";
 import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
 import { isKimiK3, sanitizeKimiBody } from "../lib/kimi.js";
+import {
+  isTokenRouterDeepSeekV4,
+  isTokenRouterKimiK3,
+  isTokenRouterNativeModel,
+  normalizeTokenRouterDeveloperRole,
+  resolveTokenRouterModel,
+  tokenrouterSupportedModelList,
+} from "../lib/tokenrouter.js";
 import { convertImagesToText, requiresVisionBridge } from "../lib/vision-bridge.js";
 import {
   chatToolCallsForLog,
@@ -318,6 +326,24 @@ export default async function handler(req) {
       diag("FIREWORKS_MODEL_RESOLVED",
         "bare:", modelNames.bare,
         "upstream:", fireworksModel);
+    }
+  }
+
+  // TokenRouter model ID mapping: cursorproxy/tokenrouter/<vendor>/<model> →
+  // the native TokenRouter catalog ID. The client-visible response model stays
+  // as the requested public id. Exact native-qualified IDs
+  // (moonshotai/kimi-k3, deepseek/deepseek-v4-*) are forwarded unchanged.
+  let tokenrouterPublicId = "";
+  if (providerKey === "tokenrouter") {
+    const tokenrouterModel = resolveTokenRouterModel(upstreamModelName);
+    if (parsedBody && tokenrouterModel && tokenrouterModel !== upstreamModelName) {
+      tokenrouterPublicId = responseModelName;
+      parsedBody.model = tokenrouterModel;
+      upstreamModelName = tokenrouterModel;
+      bodyText = JSON.stringify(parsedBody);
+      diag("TOKENROUTER_MODEL_RESOLVED",
+        "bare:", modelNames.bare,
+        "upstream:", tokenrouterModel);
     }
   }
 
@@ -636,7 +662,7 @@ export default async function handler(req) {
     diag("UNKNOWN_PROVIDER", "model:", parsedBody?.model, "provider:", providerKey);
     return jsonErrorResponse(
       400,
-      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, azureopenai, azureanthropic, openaicompat, or anthropiccompat (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, cursorproxy/compatible-gpt-5.6, or cursorproxy/fireworks/kimi-k2p7-code).`,
+      `Unknown provider "${providerKey}". Use deepseek, kimi, minimax, mimo, glm, fireworks, tokenrouter, azureopenai, azureanthropic, openaicompat, or anthropiccompat (or set model to a matching name, e.g. cursorproxy/claude-sonnet-4-6, cursorproxy/compatible-gpt-5.6, cursorproxy/fireworks/kimi-k2p7-code, or cursorproxy/moonshotai/kimi-k3).`,
       "unknown_provider",
       "invalid_request_error"
     );
@@ -654,9 +680,10 @@ export default async function handler(req) {
   }
 
   // Inject a default model when missing from the request body.
-  // Azure OpenAI and Fireworks are excluded: Azure resolves deployment
-  // names server-side; Fireworks hosts 200+ models with no single default.
-  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai" && providerKey !== "fireworks") {
+  // Azure OpenAI, Fireworks, and TokenRouter are excluded: Azure resolves
+  // deployment names server-side; Fireworks and TokenRouter host heterogeneous
+  // catalogs with no single default.
+  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai" && providerKey !== "fireworks" && providerKey !== "tokenrouter") {
     const defaults = { deepseek: "deepseek-v4-flash", kimi: "kimi-k3", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
     parsedBody.model = defaults[providerKey] || "deepseek-v4-flash";
     bodyText = JSON.stringify(parsedBody);
@@ -683,6 +710,11 @@ export default async function handler(req) {
   if (fireworksPublicId) {
     responseModelName = fireworksPublicId;
   }
+  // Same for TokenRouter: restore the original public id after stripping
+  // an optional tokenrouter/ disambiguation prefix.
+  if (tokenrouterPublicId) {
+    responseModelName = tokenrouterPublicId;
+  }
   // Same for compatible-provider aliases: restore the alias public id.
   if (compatAliasPublicId) {
     responseModelName = compatAliasPublicId;
@@ -691,6 +723,19 @@ export default async function handler(req) {
   // Previously this was a lazy-init that could read a stale value.
   if (providerKey === "azureopenai" || providerKey === "azureanthropic") {
     azureModelName = upstreamModelName;
+  }
+
+  if (providerKey === "tokenrouter") {
+    if (!upstreamModelName || !isTokenRouterNativeModel(upstreamModelName)) {
+      diag("TOKENROUTER_MODEL_UNSUPPORTED",
+        "model:", parsedBody?.model || "(missing)");
+      return jsonErrorResponse(
+        400,
+        `TokenRouter requires an exact supported model ID: ${tokenrouterSupportedModelList()}.`,
+        "tokenrouter_model_unsupported",
+        "invalid_request_error"
+      );
+    }
   }
 
   // Clean up Vercel rewrite query pollution
@@ -750,6 +795,17 @@ export default async function handler(req) {
     }
   }
 
+  if (providerKey === "tokenrouter" && parsedBody) {
+    if (isTokenRouterKimiK3(upstreamModelName)) {
+      if (sanitizeKimiBody(parsedBody, upstreamModelName, providerKey)) {
+        bodyText = JSON.stringify(parsedBody);
+      }
+    }
+    if (normalizeTokenRouterDeveloperRole(parsedBody)) {
+      bodyText = JSON.stringify(parsedBody);
+    }
+  }
+
   if (providerKey === "glm" && parsedBody) {
     if (sanitizeGlmBody(parsedBody, upstreamModelName, upstreamUrl)) {
       bodyText = JSON.stringify(parsedBody);
@@ -774,7 +830,7 @@ export default async function handler(req) {
   // Kimi K3 also gets a model-qualified scope so its required preserved
   // reasoning cannot be mixed with legacy K2 traces. K2 keeps its existing
   // scope so already-cached conversations remain usable across the rollout.
-  const scope = providerKey === "fireworks"
+  const scope = providerKey === "fireworks" || providerKey === "tokenrouter"
     ? providerKey + ":" + upstreamModelName + ":" + scopeUser
     : providerKey === "kimi" && isKimiK3(upstreamModelName)
       ? providerKey + ":kimi-k3:" + scopeUser
@@ -802,7 +858,13 @@ export default async function handler(req) {
   // Qwen, GPT-OSS families) support reasoning_content.  Skip reasoning injection
   // for ordinary models (Llama, Gemma, Nemotron, etc.) to avoid injecting
   // synthetic placeholders that those models would reject or misinterpret.
-  const enableReasoning = providerKey !== "fireworks" ||
+  const tokenrouterReasoningDisabled = providerKey === "tokenrouter" && (
+    parsedBody?.reasoning_history === "disabled" ||
+    parsedBody?.reasoning_effort === "none" ||
+    parsedBody?.reasoning_effort === false ||
+    parsedBody?.thinking?.type === "disabled"
+  );
+  const enableReasoning = (providerKey !== "fireworks" ||
     ((/^(?:accounts\/[^/]+\/models\/)?(deepseek|kimi|glm|minimax|qwen|gpt-oss)/i.test(upstreamModelName) ||
       // When the client explicitly opts into preserved or interleaved
       // reasoning, bypass the family-prefix check — custom-named reasoning
@@ -821,7 +883,8 @@ export default async function handler(req) {
       parsedBody?.reasoning_effort !== "none" &&
       parsedBody?.reasoning_effort !== false &&
       parsedBody?.thinking?.type !== "disabled" &&
-      !/-(?:no-thinking|non-thinking)$/i.test(upstreamModelName));
+      !/-(?:no-thinking|non-thinking)$/i.test(upstreamModelName)))
+    && !tokenrouterReasoningDisabled;
 
   // Interleaved mode: models that default to it (Kimi K2p0–K2p6, GLM 4.x,
   // MiniMax M2, DeepSeek V4) skip injection on user-ending requests and only
@@ -838,18 +901,23 @@ export default async function handler(req) {
   //     user messages with no tool call, reasoning is ignored (passing it is
   //     harmless), so the skip is only a safe latency optimization for the
   //     no-tools shape.
-  //   So for native deepseek we disable the interleaved optimization entirely
-  //   when the request carries tools, falling back to full-history injection;
-  //   the no-tools shape keeps the skip. Explicit `reasoning_history:
-  //   "interleaved"` opts in for any provider.
+  //   So for native DeepSeek and TokenRouter-hosted DeepSeek V4 we disable the
+  //   interleaved optimization entirely when the request carries tools, falling
+  //   back to full-history injection; the no-tools shape keeps the skip.
+  //   Explicit `reasoning_history: "interleaved"` opts in for any provider.
   //
   // thinking.keep: "all" with thinking.type: "enabled" is equivalent to
   // reasoning_history: "preserved" per Fireworks docs — it overrides any model
   // default interleaved and enables full reasoning restoration.
+  const tokenrouterDeepSeekTools = providerKey === "tokenrouter"
+    && isTokenRouterDeepSeekV4(upstreamModelName)
+    && Array.isArray(parsedBody?.tools)
+    && parsedBody.tools.length > 0;
   const isInterleaved = parsedBody?.reasoning_history === "interleaved" ||
     (parsedBody?.reasoning_history == null &&
       !(parsedBody?.thinking?.keep === "all" && parsedBody?.thinking?.type === "enabled") &&
       !(providerKey === "deepseek" && Array.isArray(parsedBody?.tools) && parsedBody.tools.length > 0) &&
+      !tokenrouterDeepSeekTools &&
       /kimi-k2[.p][0-6](?:[^a-z0-9]|$)|glm-[0-4][.p]|minimax-m2|deepseek-v4/i.test(upstreamModelName));
   const userEndingInterleaved = isInterleaved &&
     originalMessages?.length > 0 &&
@@ -1419,7 +1487,7 @@ export default async function handler(req) {
       }
     }
 
-    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo) || providerKey === "glm" || providerKey === "fireworks");
+    json = withPublicResponseModel(json, responseModelName, Boolean(azureAliasInfo) || Boolean(compatAliasInfo) || providerKey === "glm" || providerKey === "fireworks" || providerKey === "tokenrouter");
 
     const reasoning = readReasoning(providerKey, json.choices?.[0]?.message);
     if (hasReasoningValue(reasoning) && replyReasoningKey) {

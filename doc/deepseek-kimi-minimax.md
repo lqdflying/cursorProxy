@@ -153,6 +153,32 @@ scope so existing cached conversations remain valid.
 
 Kimi remains natively multimodal (images and video); the vision bridge is not used.
 
+## TokenRouter (PaleBlueDot)
+
+TokenRouter is a Chat Completions gateway at `https://api.tokenrouter.com/v1`.
+cursorProxy supports three exact catalog IDs and does not publish the rest of
+TokenRouter's catalog:
+
+| Client model ID | Upstream ID | Request policy | Vision |
+|---|---|---|---|
+| `cursorproxy/moonshotai/kimi-k3` | `moonshotai/kimi-k3` | Reuses Kimi K3 sanitizer (`reasoning_effort: "max"`, no `thinking`, no fixed sampling) | Native images |
+| `cursorproxy/deepseek/deepseek-v4-pro-0813` | `deepseek/deepseek-v4-pro-0813` | No native DeepSeek `thinking` / `DEEPSEEK_REASONING_EFFORT` injection | Vision bridge |
+| `cursorproxy/deepseek/deepseek-v4-flash-0731` | `deepseek/deepseek-v4-flash-0731` | Same as Pro | Vision bridge |
+
+Exact TokenRouter IDs and an optional `tokenrouter/` prefix are matched **before**
+native `kimi*` / `deepseek*` rules, so `cursorproxy/kimi-k3` and
+`cursorproxy/deepseek-v4-flash` still go to Moonshot and DeepSeek.
+
+There is no default TokenRouter model: missing or out-of-allowlist IDs on the
+`/tokenrouter/v1` route return `400 tokenrouter_model_unsupported`. Cursor
+`developer` roles are rewritten to `system` because TokenRouter rejects
+`developer`. Reasoning is restored hit-only under
+`tokenrouter:<full-model-id>:<user>`. When a TokenRouter DeepSeek request
+carries `tools`, historical `reasoning_content` is replayed across user turns.
+
+Advertise the three IDs with `CURSORPROXY_MODELS` and set `TOKENROUTER_API_KEY`.
+Optional `UPSTREAM_TOKENROUTER` accepts the base with or without trailing `/v1`.
+
 ## GLM-5.2 Request Sanitization
 
 Implementation lives in `lib/glm.js` (`sanitizeGlmBody`). It runs for GLM models
@@ -171,6 +197,8 @@ before the reasoning bridge injects cached `reasoning_content`.
 |---|---|
 | `DEEPSEEK_API_KEY` | DeepSeek auth |
 | `KIMI_API_KEY` | Kimi / Moonshot auth |
+| `TOKENROUTER_API_KEY` | PaleBlueDot TokenRouter auth |
+| `UPSTREAM_TOKENROUTER` | Optional TokenRouter base URL (default `https://api.tokenrouter.com/v1`) |
 | `MINIMAX_API_KEY` | MiniMax auth (also used for `minimax_vl` vision backend) |
 | `GLM_API_KEY` | GLM / ZHIPU AI auth |
 | `UPSTREAM_GLM` | Optional GLM Coding Plan endpoint override |

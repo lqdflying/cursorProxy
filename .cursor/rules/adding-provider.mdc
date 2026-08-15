@@ -33,7 +33,7 @@ Provider routing is replicated in multiple places. Adding a provider requires up
 
 6. **`.env.example`** — add `NEWPROVIDER_API_KEY` and commented `UPSTREAM_NEWPROVIDER`
 
-7. **`providerFromModel()` in `lib/models.js`** — add prefix matching if model name starts with this provider
+7. **`providerFromModel()` in `lib/models.js`** — add prefix matching if model name starts with this provider. For aggregators with vendor-qualified IDs (for example TokenRouter `moonshotai/kimi-k3`), match the exact catalog IDs **before** broad `kimi*` / `deepseek*` rules so native Moonshot and DeepSeek routing stays intact.
 
 ## Reasoning handling
 
@@ -44,11 +44,12 @@ Reasoning helpers live in **`lib/reasoning.js`**, not `api/proxy.js`.
 - MiniMax: `reasoning_details` (object, array, or structured — sent with `reasoning_split: true`)
 - If new provider has a different reasoning field, update these functions in `lib/reasoning.js`: `reasoningField()`, `readReasoning()`, `serializeReasoning()`, `deserializeReasoning()` (private), `hasReasoningField()` (private), `updateStreamReasoning()`
 - Add the provider key to the `reasoningProviders` set inside `injectStoredReasoning()` if its assistant turns must carry reasoning back upstream
+- Heterogeneous hosts (Fireworks, TokenRouter, GLM, optional `openaicompat`) must use **hit-only** restoration: restore cached reasoning, skip on miss, and never fabricate `"(prior reasoning unavailable)"`
 - Anthropic and Azure OpenAI are intentionally excluded from `reasoningProviders` (they reject `reasoning_content`)
 
 ## Vision support
 
-- Extend `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo), gate on model id inside the helper.
+- Extend `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo, TokenRouter), gate on model id inside the helper. TokenRouter K3 is native; TokenRouter DeepSeek V4 IDs use the bridge.
 - Also update `lib/edgeone.js` URL regex and unknown-provider error string in `api/proxy.js`.
 - The vision bridge orchestration lives in `lib/vision-bridge.js` (`convertImagesToText`); the upstream HTTP call lives in `lib/vision.js` (`describeImage`). Neither needs editing for a new provider.
 

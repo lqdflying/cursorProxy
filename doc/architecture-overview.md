@@ -15,8 +15,8 @@ flowchart TD
         ALIAS["Alias resolution\ngpt-general → real deployment"]
         TOOLS["Tool normalization\n(apply_patch, function, custom)"]
         FMT["Format conversion\n(Chat Completions ↔ provider API)"]
-        VB["Vision bridge\n(DeepSeek/MiniMax M2.x;\nMiMo text-only models;\nGLM-5.2)"]
-        RSN["Reasoning injection\n(DeepSeek/Kimi/MiniMax/MiMo/GLM)"]
+        VB["Vision bridge\n(DeepSeek/MiniMax M2.x;\nMiMo text-only models;\nGLM-5.2; TokenRouter DeepSeek V4)"]
+        RSN["Reasoning injection\n(DeepSeek/Kimi/MiniMax/MiMo/GLM/Fireworks/TokenRouter)"]
     end
 
     subgraph "KV Store (shared)"
@@ -29,6 +29,8 @@ flowchart TD
         MM["MiniMax\napi.minimax.io"]
         MI["MiMo\napi.xiaomimimo.com"]
         GLM["GLM\nopen.bigmodel.cn"]
+        FW["Fireworks\napi.fireworks.ai"]
+        TR["TokenRouter\napi.tokenrouter.com"]
         AO["Azure OpenAI\nResponses API"]
         AA["Azure Anthropic\nMessages API"]
     end
@@ -45,6 +47,8 @@ flowchart TD
     RSN -->|minimax-*| MM
     RSN -->|mimo-*| MI
     RSN -->|glm-*| GLM
+    RSN -->|fireworks/*| FW
+    RSN -->|tokenrouter catalog IDs| TR
     ALIAS -->|gpt-* / o-series| AO
     ALIAS -->|claude-*| AA
 
@@ -53,6 +57,8 @@ flowchart TD
     MM -->|reasoning_details| FMT
     MI -->|reasoning_content| FMT
     GLM -->|reasoning_content| FMT
+    FW -->|reasoning_content| FMT
+    TR -->|reasoning_content| FMT
     AO -->|Responses API SSE| FMT
     AA -->|Messages API SSE| FMT
 
@@ -99,9 +105,9 @@ flowchart TD
     E{"Provider\nresolved?"}
     F{"API key\nconfigured?"}
 
-    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax / MiMo / GLM)"]
+    INJECT["Reasoning injection\n(DeepSeek / Kimi / MiniMax / MiMo / GLM / Fireworks / TokenRouter)"]
     THINK["Claude thinking injection\n(azureanthropic only)"]
-    VISION["Vision bridge\n(DeepSeek / MiniMax M2.x;\nMiMo text-only models;\nGLM-5.2)"]
+    VISION["Vision bridge\n(DeepSeek / MiniMax M2.x;\nMiMo text-only models;\nGLM-5.2; TokenRouter DeepSeek V4)"]
     UPSTREAM["Forward to upstream\n(with connect timeout)"]
     STREAM{"Streaming?"}
     NONSTR["Buffer response\nconvert format\ncache reasoning/ID/thinking\nreturn JSON"]
@@ -132,6 +138,8 @@ flowchart TD
 flowchart LR
     M["Model name\n(bare, after stripping cursorproxy/)"]
 
+    M -->|"tokenrouter/* or exact TokenRouter catalog IDs"| TR2["tokenrouter"]
+    M -->|"fireworks/* or accounts/.../models/*"| FW2["fireworks"]
     M -->|"claude-*"| AA2["azureanthropic"]
     M -->|"gpt-general (alias)"| AO2["azureopenai"]
     M -->|"gpt-* or o\\d*"| AO2
@@ -156,6 +164,7 @@ flowchart LR
 | `lib/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
 | `lib/azure-anthropic.js` | Azure Anthropic Messages API ↔ OpenAI Chat Completions |
 | `lib/glm.js` | GLM request sanitization for ZHIPU/Z.AI Chat Completions |
+| `lib/tokenrouter.js` | TokenRouter exact catalog IDs, developer-role rewrite, family/vision helpers |
 | `lib/reasoning.js` | Reasoning block caching and injection |
 | `lib/vision-bridge.js` | Batch image-to-text conversion |
 | `lib/vision.js` | Vision API calls (MiniMax VL-01 / GPT-4o-mini) |
@@ -183,6 +192,9 @@ flowchart LR
 | **GLM (ZHIPU AI / Z.AI)** | |
 | `GLM_API_KEY` | GLM auth |
 | `UPSTREAM_GLM` | Optional Coding Plan base URL override. Default China endpoint: `https://open.bigmodel.cn/api/coding/paas/v4`; global endpoint: `https://api.z.ai/api/coding/paas/v4` |
+| **TokenRouter (PaleBlueDot)** | |
+| `TOKENROUTER_API_KEY` | TokenRouter auth |
+| `UPSTREAM_TOKENROUTER` | Optional base URL override. Default: `https://api.tokenrouter.com/v1` (with or without trailing `/v1`) |
 | **Azure (shared)** | |
 | `AZURE_FOUNDRY_API_KEY` | Shared key for Azure OpenAI and Azure Anthropic |
 | `AZURE_FOUNDRY_RESOURCE` | Azure resource name (used to build default endpoint URLs) |

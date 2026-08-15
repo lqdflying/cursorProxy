@@ -11,11 +11,14 @@ validation.
 The proxy vision bridge applies to providers that cannot accept `image_url`
 parts on every model: **DeepSeek**, **MiniMax M2.x** (text-only chat models),
 **MiMo** text-only models (`mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, etc.),
-and **GLM-5.2** on the ZHIPU/Z.AI Coding Plan.
-**MiniMax M3**, **MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`), and allowlisted visual GLM models skip the bridge.
-All other providers — including Kimi and `gpt-general` — receive images natively.
+**GLM-5.2** on the ZHIPU/Z.AI Coding Plan, and TokenRouter DeepSeek V4
+(`deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`).
+**MiniMax M3**, **MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`),
+allowlisted visual GLM models, native Kimi, and TokenRouter K3
+(`moonshotai/kimi-k3`) skip the bridge.
+All other providers — including `gpt-general` — receive images natively.
 
-Gate: `requiresVisionBridge(providerKey, bareModel)` in `api/proxy.js`.
+Gate: `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js`.
 
 ```mermaid
 flowchart TD

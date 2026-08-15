@@ -168,11 +168,13 @@ describe("sanitizeKimiBody tool schema normalization", () => {
 });
 
 describe("sanitizeKimiBody model contracts", () => {
-  it("recognizes only the exact Kimi K3 model ID", () => {
+  it("recognizes native and TokenRouter-qualified Kimi K3 model IDs", () => {
     assert.equal(isKimiK3("kimi-k3"), true);
     assert.equal(isKimiK3(" KIMI-K3 "), true);
+    assert.equal(isKimiK3("moonshotai/kimi-k3"), true);
     assert.equal(isKimiK3("kimi-k3-preview"), false);
     assert.equal(isKimiThinkingModel("kimi-k3"), true);
+    assert.equal(isKimiThinkingModel("moonshotai/kimi-k3"), true);
   });
 
   it("applies the K3 request contract without K2 token or tool-choice rewrites", () => {
