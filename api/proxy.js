@@ -64,8 +64,10 @@ import {
   isTokenRouterDeepSeekV4,
   isTokenRouterKimiK3,
   isTokenRouterNativeModel,
+  isTokenRouterQwen38Max,
   normalizeTokenRouterDeveloperRole,
   resolveTokenRouterModel,
+  sanitizeTokenRouterQwenBody,
   tokenrouterSupportedModelList,
 } from "../lib/tokenrouter.js";
 import { convertImagesToText, requiresVisionBridge } from "../lib/vision-bridge.js";
@@ -331,9 +333,11 @@ export default async function handler(req) {
 
   // TokenRouter model ID mapping: cursorproxy/tokenrouter/<vendor>/<model> →
   // the native TokenRouter catalog ID. The client-visible response model stays
-  // as the requested public id. Exact native-qualified IDs
-  // (moonshotai/kimi-k3, deepseek/deepseek-v4-*) are forwarded unchanged.
+  // as the requested public id. Known catalog IDs are canonicalized to the
+  // lowercase allowlist constant (moonshotai/kimi-k3, deepseek/deepseek-v4-*,
+  // qwen/qwen3.8-max).
   let tokenrouterPublicId = "";
+  let tokenrouterQwenDisableReasoning = false;
   if (providerKey === "tokenrouter") {
     const tokenrouterModel = resolveTokenRouterModel(upstreamModelName);
     if (parsedBody && tokenrouterModel && tokenrouterModel !== upstreamModelName) {
@@ -801,6 +805,20 @@ export default async function handler(req) {
         bodyText = JSON.stringify(parsedBody);
       }
     }
+    if (isTokenRouterQwen38Max(upstreamModelName)) {
+      // Snapshot client disable flags before stripping Cursor `thinking` and
+      // dropping `reasoning_effort: "none"` so Qwen can still skip restore.
+      const rawEffort = parsedBody.reasoning_effort;
+      const effortNorm = typeof rawEffort === "string" ? rawEffort.trim().toLowerCase() : rawEffort;
+      tokenrouterQwenDisableReasoning =
+        parsedBody.reasoning_history === "disabled" ||
+        effortNorm === "none" ||
+        rawEffort === false ||
+        parsedBody.thinking?.type === "disabled";
+      if (sanitizeTokenRouterQwenBody(parsedBody)) {
+        bodyText = JSON.stringify(parsedBody);
+      }
+    }
     if (normalizeTokenRouterDeveloperRole(parsedBody)) {
       bodyText = JSON.stringify(parsedBody);
     }
@@ -862,7 +880,8 @@ export default async function handler(req) {
     parsedBody?.reasoning_history === "disabled" ||
     parsedBody?.reasoning_effort === "none" ||
     parsedBody?.reasoning_effort === false ||
-    parsedBody?.thinking?.type === "disabled"
+    parsedBody?.thinking?.type === "disabled" ||
+    tokenrouterQwenDisableReasoning
   );
   const enableReasoning = (providerKey !== "fireworks" ||
     ((/^(?:accounts\/[^/]+\/models\/)?(deepseek|kimi|glm|minimax|qwen|gpt-oss)/i.test(upstreamModelName) ||

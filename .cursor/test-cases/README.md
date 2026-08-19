@@ -19,7 +19,7 @@ Use these cases when validating provider/model behavior on a deployed proxy, esp
 | [MiMo reasoning cache](mimo-reasoning-cache.md) | Multi-turn `reasoning_content` KV inject on MiMo. |
 | [MiMo vision routing](mimo-vision-routing.md) | Vision bridge on Pro vs native images on `mimo-v2.5`. |
 | [Fireworks basic](fireworks-basic.md) | Fireworks routing, model-ID mapping, streaming, and native provider isolation. |
-| [TokenRouter](tokenrouter.md) | TokenRouter K3 and DeepSeek V4 routing, sanitization, reasoning restore, vision, and native provider isolation. |
+| [TokenRouter](tokenrouter.md) | TokenRouter K3, DeepSeek V4, and Qwen3.8-Max routing, sanitization, reasoning restore, vision, and native provider isolation. |
 
 ## Maintenance Rule
 

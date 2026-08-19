@@ -164,7 +164,7 @@ flowchart LR
 | `lib/azure-openai.js` | Azure Responses API ↔ OpenAI Chat Completions |
 | `lib/azure-anthropic.js` | Azure Anthropic Messages API ↔ OpenAI Chat Completions |
 | `lib/glm.js` | GLM request sanitization for ZHIPU/Z.AI Chat Completions |
-| `lib/tokenrouter.js` | TokenRouter exact catalog IDs, developer-role rewrite, family/vision helpers |
+| `lib/tokenrouter.js` | TokenRouter exact catalog IDs, developer-role rewrite, Qwen sanitizer, family/vision helpers |
 | `lib/reasoning.js` | Reasoning block caching and injection |
 | `lib/vision-bridge.js` | Batch image-to-text conversion |
 | `lib/vision.js` | Vision API calls (MiniMax VL-01 / GPT-4o-mini) |

@@ -14,8 +14,9 @@ parts on every model: **DeepSeek**, **MiniMax M2.x** (text-only chat models),
 **GLM-5.2** on the ZHIPU/Z.AI Coding Plan, and TokenRouter DeepSeek V4
 (`deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`).
 **MiniMax M3**, **MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`),
-allowlisted visual GLM models, native Kimi, and TokenRouter K3
-(`moonshotai/kimi-k3`) skip the bridge.
+allowlisted visual GLM models, native Kimi, TokenRouter K3
+(`moonshotai/kimi-k3`), and TokenRouter Qwen3.8-Max (`qwen/qwen3.8-max`)
+skip the bridge.
 All other providers — including `gpt-general` — receive images natively.
 
 Gate: `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js`.

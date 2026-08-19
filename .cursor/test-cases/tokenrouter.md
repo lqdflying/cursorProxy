@@ -1,10 +1,10 @@
-# TokenRouter — Kimi K3 and DeepSeek V4
+# TokenRouter — Kimi K3, DeepSeek V4, and Qwen3.8-Max
 
 ## Purpose
 
-Validate PaleBlueDot TokenRouter routing for the three initial catalog IDs,
-K3 request sanitization, DeepSeek vision bridging, multi-turn reasoning
-restore, streaming, and native Kimi/DeepSeek isolation.
+Validate PaleBlueDot TokenRouter routing for the four exact catalog IDs,
+K3 request sanitization, Qwen request sanitization, DeepSeek vision bridging,
+multi-turn reasoning restore, streaming, and native Kimi/DeepSeek isolation.
 
 ## Provider And Model
 
@@ -12,6 +12,7 @@ restore, streaming, and native Kimi/DeepSeek isolation.
   - `cursorproxy/moonshotai/kimi-k3`
   - `cursorproxy/deepseek/deepseek-v4-pro-0813`
   - `cursorproxy/deepseek/deepseek-v4-flash-0731`
+  - `cursorproxy/qwen/qwen3.8-max`
 - Provider route: `tokenrouter`
 - Deployment: Docker / 1Panel (primary) or Vercel/EdgeOne
 - Cursor mode: Agent
@@ -21,7 +22,7 @@ restore, streaming, and native Kimi/DeepSeek isolation.
 - `TOKENROUTER_API_KEY` set to a PaleBlueDot TokenRouter key
 - `CURSORPROXY_API_KEY` set
 - KV configured (`REDIS_URL`, `KV_URL` + `KV_TOKEN`, or EdgeOne KV binding)
-- `CURSORPROXY_MODELS` includes the three TokenRouter IDs (or enter them manually)
+- `CURSORPROXY_MODELS` includes the four TokenRouter IDs (or enter them manually)
 - Vision backend configured (`MINIMAX_API_KEY` or OpenAI vision) for the DeepSeek image test
 - `DEBUG=true` while collecting `TOOL_CALL_NAME` troubleshooting evidence
 
@@ -154,7 +155,79 @@ Expected logs:
 [cursorProxy:proxy] RES 200 provider: tokenrouter ms: ...
 ```
 
-### Test 6: No regression — native Kimi and DeepSeek
+### Test 6: TokenRouter Qwen3.8-Max basic completion
+
+Start a new chat with `cursorproxy/qwen/qwen3.8-max` and paste:
+
+```text
+Explain why binary search is logarithmic in four concise sentences.
+```
+
+Expected Cursor behavior:
+
+- Returns a coherent four-sentence answer.
+- No upstream 400 mentioning `thinking`, `developer`, or `reasoning_effort: max`.
+
+Expected logs:
+
+```text
+[cursorProxy:proxy] REQ POST /api/proxy provider: tokenrouter
+[cursorProxy:proxy] TOKENROUTER_QWEN_SANITIZED model: qwen/qwen3.8-max thinkingType: ... reasoningEffort: ...
+[cursorProxy:proxy] RES 200 provider: tokenrouter ms: ...
+```
+
+`TOKENROUTER_QWEN_SANITIZED` is present when the request carried `thinking` or `reasoning_effort` (Cursor Agent requests do). `thinkingType` is the pre-strip Cursor value (`enabled`, `disabled`, or `(omitted)` if `thinking` was absent). A curl body with neither field will not emit this line.
+
+The outbound model must be `qwen/qwen3.8-max`. `UPSTREAM` must point at
+`api.tokenrouter.com`. `enable_thinking` and `preserve_thinking` must not
+appear in outbound diagnostics as injected fields. `KIMI_BODY_SANITIZED`
+must not appear.
+
+### Test 7: TokenRouter Qwen3.8-Max multi-turn reasoning
+
+In the same chat, paste:
+
+```text
+Now give a concrete eight-element example and show each search interval.
+```
+
+Expected Cursor behavior:
+
+- Continues from the first answer without a missing-reasoning error.
+
+Expected logs on turn 2:
+
+```text
+INJECT_SUMMARY turns: 1 hits: 1 misses: 0 recovered: 0
+```
+
+`hits: >= 1` proves Qwen reasoning was restored from the model-qualified
+TokenRouter cache scope `tokenrouter:qwen/qwen3.8-max:<user>`.
+
+### Test 8: TokenRouter Qwen3.8-Max tool loop and native image
+
+Start a new Agent chat with `cursorproxy/qwen/qwen3.8-max`. Attach a small
+PNG or JPEG and paste:
+
+```text
+Use the file search tool to locate package.json, then report only its package name and version. Also name the main visible object in the attached image.
+```
+
+Expected Cursor behavior:
+
+- Invokes a file tool and describes the image.
+- Completes tool-result follow-up without a missing `reasoning_content` error.
+
+Expected logs:
+
+```text
+TOKENROUTER_QWEN_SANITIZED model: qwen/qwen3.8-max ...
+TOOL_CALL_NAME provider: tokenrouter model: qwen/qwen3.8-max stream: true ...
+```
+
+`CONVERTED_IMAGES` must not appear for this Qwen image.
+
+### Test 9: No regression — native Kimi and DeepSeek
 
 In a new chat, switch to `cursorproxy/kimi-k3` (no `moonshotai/` prefix) and
 paste:
@@ -186,11 +259,13 @@ Expected logs:
 - `UPSTREAM` pointing at Moonshot or DeepSeek for a TokenRouter model
 - `moonshotai/kimi-k3` falling through to DeepSeek
 - `KIMI_BODY_SANITIZED` missing on TokenRouter K3
-- `CONVERTED_IMAGES` on TokenRouter K3 media, or missing on TokenRouter DeepSeek media
-- Turn 2 TokenRouter K3 `INJECT_SUMMARY ... hits: 0` with healthy KV
+- `CONVERTED_IMAGES` on TokenRouter K3 or Qwen media, or missing on TokenRouter DeepSeek media
+- Turn 2 TokenRouter K3 or Qwen `INJECT_SUMMARY ... hits: 0` with healthy KV
 - TokenRouter DeepSeek tool loop 400 about missing `reasoning_content`
 - Client-visible `reasoning_content`
 - Native `cursorproxy/kimi-k3` or `cursorproxy/deepseek-v4-flash` routing to TokenRouter
+- `KIMI_BODY_SANITIZED` on TokenRouter Qwen
+- Outbound TokenRouter Qwen `enable_thinking` or `preserve_thinking`
 
 ## Cleanup
 
