@@ -62,11 +62,13 @@ import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
 import { isKimiK3, sanitizeKimiBody } from "../lib/kimi.js";
 import {
   isTokenRouterDeepSeekV4,
+  isTokenRouterGlm52,
   isTokenRouterKimiK3,
   isTokenRouterNativeModel,
   isTokenRouterQwen38Max,
   normalizeTokenRouterDeveloperRole,
   resolveTokenRouterModel,
+  sanitizeTokenRouterGlmBody,
   sanitizeTokenRouterQwenBody,
   tokenrouterSupportedModelList,
 } from "../lib/tokenrouter.js";
@@ -335,9 +337,14 @@ export default async function handler(req) {
   // the native TokenRouter catalog ID. The client-visible response model stays
   // as the requested public id. Known catalog IDs are canonicalized to the
   // lowercase allowlist constant (moonshotai/kimi-k3, deepseek/deepseek-v4-*,
-  // qwen/qwen3.8-max).
+  // qwen/qwen3.8-max, z-ai/glm-5.2).
   let tokenrouterPublicId = "";
-  let tokenrouterQwenDisableReasoning = false;
+  // Single family-agnostic disable snapshot, set inside the tokenrouter block
+  // before the family sanitizers strip the signals the gate reads. Qwen and
+  // GLM 5.2 both strip Cursor `thinking` (and Qwen drops `reasoning_effort:
+  // "none"`), so the snapshot must be captured first; K3 leaves the signals
+  // in place and is read live by the gate below.
+  let tokenrouterFamilyDisableReasoning = false;
   if (providerKey === "tokenrouter") {
     const tokenrouterModel = resolveTokenRouterModel(upstreamModelName);
     if (parsedBody && tokenrouterModel && tokenrouterModel !== upstreamModelName) {
@@ -800,22 +807,36 @@ export default async function handler(req) {
   }
 
   if (providerKey === "tokenrouter" && parsedBody) {
+    // Capture client disable flags ONCE, before any family sanitizer strips
+    // the signals (`thinking.type: "disabled"`, `reasoning_effort: "none"`).
+    // K3 does not strip these, so the live re-check at the restore gate still
+    // sees them; Qwen and GLM 5.2 strip Cursor `thinking` (and Qwen drops
+    // `reasoning_effort: "none"`), so without this snapshot a stripped
+    // `thinking.type: "disabled"` would be lost and restore would run.
+    if (isTokenRouterQwen38Max(upstreamModelName) || isTokenRouterGlm52(upstreamModelName)) {
+      const rawEffort = parsedBody.reasoning_effort;
+      const effortNorm = typeof rawEffort === "string" ? rawEffort.trim().toLowerCase() : rawEffort;
+      tokenrouterFamilyDisableReasoning =
+        parsedBody.reasoning_history === "disabled" ||
+        effortNorm === "none" ||
+        rawEffort === false ||
+        parsedBody.thinking?.type === "disabled";
+    }
     if (isTokenRouterKimiK3(upstreamModelName)) {
       if (sanitizeKimiBody(parsedBody, upstreamModelName, providerKey)) {
         bodyText = JSON.stringify(parsedBody);
       }
     }
     if (isTokenRouterQwen38Max(upstreamModelName)) {
-      // Snapshot client disable flags before stripping Cursor `thinking` and
-      // dropping `reasoning_effort: "none"` so Qwen can still skip restore.
-      const rawEffort = parsedBody.reasoning_effort;
-      const effortNorm = typeof rawEffort === "string" ? rawEffort.trim().toLowerCase() : rawEffort;
-      tokenrouterQwenDisableReasoning =
-        parsedBody.reasoning_history === "disabled" ||
-        effortNorm === "none" ||
-        rawEffort === false ||
-        parsedBody.thinking?.type === "disabled";
       if (sanitizeTokenRouterQwenBody(parsedBody)) {
+        bodyText = JSON.stringify(parsedBody);
+      }
+    }
+    if (isTokenRouterGlm52(upstreamModelName)) {
+      // `reasoning_effort: "none"` is a valid GLM enum and is forwarded, but
+      // the restore gate treats it as a disable signal regardless (captured
+      // in `tokenrouterFamilyDisableReasoning` above).
+      if (sanitizeTokenRouterGlmBody(parsedBody)) {
         bodyText = JSON.stringify(parsedBody);
       }
     }
@@ -881,7 +902,7 @@ export default async function handler(req) {
     parsedBody?.reasoning_effort === "none" ||
     parsedBody?.reasoning_effort === false ||
     parsedBody?.thinking?.type === "disabled" ||
-    tokenrouterQwenDisableReasoning
+    tokenrouterFamilyDisableReasoning
   );
   const enableReasoning = (providerKey !== "fireworks" ||
     ((/^(?:accounts\/[^/]+\/models\/)?(deepseek|kimi|glm|minimax|qwen|gpt-oss)/i.test(upstreamModelName) ||

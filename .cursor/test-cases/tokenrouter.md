@@ -1,10 +1,11 @@
-# TokenRouter — Kimi K3, DeepSeek V4, and Qwen3.8-Max
+# TokenRouter — Kimi K3, DeepSeek V4, Qwen3.8-Max, and GLM 5.2
 
 ## Purpose
 
-Validate PaleBlueDot TokenRouter routing for the four exact catalog IDs,
-K3 request sanitization, Qwen request sanitization, DeepSeek vision bridging,
-multi-turn reasoning restore, streaming, and native Kimi/DeepSeek isolation.
+Validate PaleBlueDot TokenRouter routing for the five exact catalog IDs,
+K3 request sanitization, Qwen request sanitization, GLM 5.2 request
+sanitization, DeepSeek/Qwen/GLM vision bridging, multi-turn reasoning restore,
+streaming, and native Kimi/DeepSeek/GLM isolation.
 
 ## Provider And Model
 
@@ -13,6 +14,7 @@ multi-turn reasoning restore, streaming, and native Kimi/DeepSeek isolation.
   - `cursorproxy/deepseek/deepseek-v4-pro-0813`
   - `cursorproxy/deepseek/deepseek-v4-flash-0731`
   - `cursorproxy/qwen/qwen3.8-max`
+  - `cursorproxy/z-ai/glm-5.2`
 - Provider route: `tokenrouter`
 - Deployment: Docker / 1Panel (primary) or Vercel/EdgeOne
 - Cursor mode: Agent
@@ -22,8 +24,8 @@ multi-turn reasoning restore, streaming, and native Kimi/DeepSeek isolation.
 - `TOKENROUTER_API_KEY` set to a PaleBlueDot TokenRouter key
 - `CURSORPROXY_API_KEY` set
 - KV configured (`REDIS_URL`, `KV_URL` + `KV_TOKEN`, or EdgeOne KV binding)
-- `CURSORPROXY_MODELS` includes the four TokenRouter IDs (or enter them manually)
-- Vision backend configured (`MINIMAX_API_KEY` or OpenAI vision) for the DeepSeek image test
+- `CURSORPROXY_MODELS` includes the five TokenRouter IDs (or enter them manually)
+- Vision backend configured (`MINIMAX_API_KEY` or OpenAI vision) for the DeepSeek/GLM image test
 - `DEBUG=true` while collecting `TOOL_CALL_NAME` troubleshooting evidence
 
 ## Test Steps
@@ -227,7 +229,62 @@ TOOL_CALL_NAME provider: tokenrouter model: qwen/qwen3.8-max stream: true ...
 
 `CONVERTED_IMAGES` must not appear for this Qwen image.
 
-### Test 9: No regression — native Kimi and DeepSeek
+### Test 9: TokenRouter GLM 5.2 basic completion and image bridge
+
+Start a new chat with `cursorproxy/z-ai/glm-5.2` and paste:
+
+```text
+Explain why binary search is logarithmic in four concise sentences.
+```
+
+Expected Cursor behavior:
+
+- Returns a coherent four-sentence answer.
+- No upstream 400 mentioning `thinking`, `developer`, `tool_stream`, or `max_tokens`.
+
+Expected logs:
+
+```text
+[cursorProxy:proxy] REQ POST /api/proxy provider: tokenrouter
+[cursorProxy:proxy] TOKENROUTER_GLM_SANITIZED model: z-ai/glm-5.2 thinkingType: ... reasoningEffort: ... effortAction: kept|dropped|unset
+[cursorProxy:proxy] RES 200 provider: tokenrouter ms: ...
+```
+
+The outbound model must be `z-ai/glm-5.2`. `UPSTREAM` must point at
+`api.tokenrouter.com`. `GLM_BODY_SANITIZED`, `tool_stream`, `max_tokens`,
+`enable_thinking`, and `preserve_thinking` must not appear. Client
+`reasoning_effort` (when valid) is forwarded unchanged; invalid values are
+dropped.
+
+Then attach a small screenshot and ask "Describe this image". Expect
+`CONVERTED_IMAGES` (GLM 5.2 is text-only upstream; images are bridged to
+text), unlike K3/Qwen native images.
+
+### Test 10: TokenRouter GLM 5.2 multi-turn reasoning
+
+In the same chat, paste:
+
+```text
+Now give a concrete eight-element example and show each search interval.
+```
+
+Expected logs on turn 2:
+
+```text
+INJECT_SUMMARY turns: 1 hits: 1 misses: 0 recovered: 0
+```
+
+Scope is `tokenrouter:z-ai/glm-5.2:<user>`, isolated from native `glm:<user>`.
+
+### Test 11: TokenRouter GLM 5.2 disable flags
+
+In a new chat with `cursorproxy/z-ai/glm-5.2`, after a warm turn, send a
+follow-up with reasoning effort set to `none` (or `thinking.type: disabled`
+in the raw Cursor request). Expected: turn 2 has no `INJECT_SUMMARY hits: 1`
+and `reasoning_effort: none` is forwarded (GLM accepts `none`); for
+`thinking.type: disabled`, `thinking` is stripped and restore is skipped.
+
+### Test 12: No regression — native Kimi, DeepSeek, and GLM
 
 In a new chat, switch to `cursorproxy/kimi-k3` (no `moonshotai/` prefix) and
 paste:
@@ -253,19 +310,34 @@ Expected logs:
 [cursorProxy:proxy] THINKING provider: deepseek ...
 ```
 
+Then switch to `cursorproxy/glm-5.2` (native GLM, no `z-ai/` prefix) and
+paste the same prompt.
+
+Expected logs:
+
+```text
+[cursorProxy:proxy] REQ POST /api/proxy provider: glm
+[cursorProxy:proxy] GLM_BODY_SANITIZED model: glm-5.2 ...
+```
+
+`TOKENROUTER_GLM_SANITIZED` must not appear for native `glm-5.2`.
+
 ## Negative Signs
 
-- `provider: kimi` or `provider: deepseek` when using a TokenRouter-qualified ID
-- `UPSTREAM` pointing at Moonshot or DeepSeek for a TokenRouter model
+- `provider: kimi`, `provider: deepseek`, or `provider: glm` when using a TokenRouter-qualified ID
+- `UPSTREAM` pointing at Moonshot, DeepSeek, or bigmodel.cn for a TokenRouter model
 - `moonshotai/kimi-k3` falling through to DeepSeek
+- `z-ai/glm-5.2` falling through to native GLM
 - `KIMI_BODY_SANITIZED` missing on TokenRouter K3
-- `CONVERTED_IMAGES` on TokenRouter K3 or Qwen media, or missing on TokenRouter DeepSeek media
-- Turn 2 TokenRouter K3 or Qwen `INJECT_SUMMARY ... hits: 0` with healthy KV
+- `CONVERTED_IMAGES` on TokenRouter K3 or Qwen media, or missing on TokenRouter DeepSeek/GLM media
+- Turn 2 TokenRouter K3, Qwen, or GLM `INJECT_SUMMARY ... hits: 0` with healthy KV
 - TokenRouter DeepSeek tool loop 400 about missing `reasoning_content`
 - Client-visible `reasoning_content`
-- Native `cursorproxy/kimi-k3` or `cursorproxy/deepseek-v4-flash` routing to TokenRouter
-- `KIMI_BODY_SANITIZED` on TokenRouter Qwen
+- Native `cursorproxy/kimi-k3`, `cursorproxy/deepseek-v4-flash`, or `cursorproxy/glm-5.2` routing to TokenRouter
+- `KIMI_BODY_SANITIZED` on TokenRouter Qwen or GLM
+- `GLM_BODY_SANITIZED` on TokenRouter GLM 5.2 (native GLM sanitizer must not run there)
 - Outbound TokenRouter Qwen `enable_thinking` or `preserve_thinking`
+- Outbound TokenRouter GLM 5.2 `tool_stream`, `max_tokens`, or GLM-native `thinking` injection
 
 ## Cleanup
 

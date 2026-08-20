@@ -33,7 +33,7 @@ Provider routing is replicated in multiple places. Adding a provider requires up
 
 6. **`.env.example`** — add `NEWPROVIDER_API_KEY` and commented `UPSTREAM_NEWPROVIDER`
 
-7. **`providerFromModel()` in `lib/models.js`** — add prefix matching if model name starts with this provider. For aggregators with vendor-qualified IDs (for example TokenRouter `moonshotai/kimi-k3`), match the exact catalog IDs **before** broad `kimi*` / `deepseek*` rules so native Moonshot and DeepSeek routing stays intact.
+7. **`providerFromModel()` in `lib/models.js`** — add prefix matching if model name starts with this provider. For aggregators with vendor-qualified IDs (for example TokenRouter `moonshotai/kimi-k3`), match the exact catalog IDs **before** broad `kimi*` / `deepseek*` / `glm*` rules so native Moonshot, DeepSeek, and GLM routing stays intact.
 
 ## Reasoning handling
 
@@ -49,7 +49,7 @@ Reasoning helpers live in **`lib/reasoning.js`**, not `api/proxy.js`.
 
 ## Vision support
 
-- Extend `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo, TokenRouter), gate on model id inside the helper. TokenRouter K3 and Qwen3.8-Max are native; TokenRouter DeepSeek V4 IDs use the bridge.
+- Extend `requiresVisionBridge(providerKey, bareModel)` in `lib/vision-bridge.js` if the provider lacks inline images (DeepSeek and MiniMax always return true; Kimi returns false). For mixed-capability providers (MiMo, TokenRouter), gate on model id inside the helper. TokenRouter K3 and Qwen3.8-Max are native; TokenRouter DeepSeek V4 IDs and TokenRouter GLM 5.2 (`z-ai/glm-5.2`) use the bridge.
 - Also update `lib/edgeone.js` URL regex and unknown-provider error string in `api/proxy.js`.
 - The vision bridge orchestration lives in `lib/vision-bridge.js` (`convertImagesToText`); the upstream HTTP call lives in `lib/vision.js` (`describeImage`). Neither needs editing for a new provider.
 

@@ -9,14 +9,17 @@ import { configuredModelIds, providerFromModel } from "../lib/models.js";
 import {
   TOKENROUTER_DEEPSEEK_V4_FLASH,
   TOKENROUTER_DEEPSEEK_V4_PRO,
+  TOKENROUTER_GLM_52,
   TOKENROUTER_KIMI_K3,
   TOKENROUTER_QWEN_38_MAX,
   isTokenRouterDeepSeekV4,
+  isTokenRouterGlm52,
   isTokenRouterKimiK3,
   isTokenRouterNativeModel,
   isTokenRouterQwen38Max,
   normalizeTokenRouterDeveloperRole,
   resolveTokenRouterModel,
+  sanitizeTokenRouterGlmBody,
   sanitizeTokenRouterQwenBody,
   tokenrouterRequiresVisionBridge,
 } from "../lib/tokenrouter.js";
@@ -113,17 +116,20 @@ async function invoke(body, url = TOKENROUTER_PROVIDER_URL) {
 }
 
 describe("TokenRouter helpers", () => {
-  it("recognizes the four exact catalog IDs", () => {
+  it("recognizes the five exact catalog IDs", () => {
     assert.equal(isTokenRouterNativeModel(TOKENROUTER_KIMI_K3), true);
     assert.equal(isTokenRouterNativeModel(TOKENROUTER_DEEPSEEK_V4_PRO), true);
     assert.equal(isTokenRouterNativeModel(TOKENROUTER_DEEPSEEK_V4_FLASH), true);
     assert.equal(isTokenRouterNativeModel(TOKENROUTER_QWEN_38_MAX), true);
+    assert.equal(isTokenRouterNativeModel(TOKENROUTER_GLM_52), true);
     assert.equal(isTokenRouterNativeModel("Qwen/Qwen3.8-Max"), true);
     assert.equal(isTokenRouterNativeModel("deepseek/deepseek-v4-flash"), false);
     assert.equal(isTokenRouterNativeModel("kimi-k3"), false);
     assert.equal(isTokenRouterNativeModel("moonshotai/kimi-k3-free"), false);
     assert.equal(isTokenRouterNativeModel("qwen3.8-max"), false);
     assert.equal(isTokenRouterNativeModel("qwen/qwen3.7-max"), false);
+    assert.equal(isTokenRouterNativeModel("z-ai/glm-5.3"), false);
+    assert.equal(isTokenRouterNativeModel("glm-5.2"), false);
   });
 
   it("strips the tokenrouter/ disambiguation prefix", () => {
@@ -131,20 +137,30 @@ describe("TokenRouter helpers", () => {
     assert.equal(resolveTokenRouterModel(TOKENROUTER_KIMI_K3), TOKENROUTER_KIMI_K3);
     assert.equal(resolveTokenRouterModel("Qwen/Qwen3.8-Max"), TOKENROUTER_QWEN_38_MAX);
     assert.equal(resolveTokenRouterModel("tokenrouter/Qwen/Qwen3.8-Max"), TOKENROUTER_QWEN_38_MAX);
+    assert.equal(resolveTokenRouterModel(TOKENROUTER_GLM_52), TOKENROUTER_GLM_52);
+    assert.equal(resolveTokenRouterModel("Z-AI/GLM-5.2"), TOKENROUTER_GLM_52);
     assert.equal(resolveTokenRouterModel("qwen/qwen3.7-max"), "qwen/qwen3.7-max");
     assert.equal(resolveTokenRouterModel(""), "");
   });
 
-  it("classifies K3 vs DeepSeek V4 vs Qwen vision and family", () => {
+  it("classifies K3 vs DeepSeek V4 vs Qwen vs GLM 5.2 vision and family", () => {
     assert.equal(isTokenRouterKimiK3(TOKENROUTER_KIMI_K3), true);
     assert.equal(isTokenRouterDeepSeekV4(TOKENROUTER_DEEPSEEK_V4_PRO), true);
+    assert.equal(isTokenRouterDeepSeekV4(TOKENROUTER_DEEPSEEK_V4_FLASH), true);
+    assert.equal(isTokenRouterDeepSeekV4(TOKENROUTER_GLM_52), false);
+    assert.equal(isTokenRouterDeepSeekV4(TOKENROUTER_QWEN_38_MAX), false);
     assert.equal(isTokenRouterQwen38Max(TOKENROUTER_QWEN_38_MAX), true);
     assert.equal(isTokenRouterQwen38Max("qwen3.8-max"), false);
+    assert.equal(isTokenRouterGlm52(TOKENROUTER_GLM_52), true);
+    assert.equal(isTokenRouterGlm52("z-ai/glm-5.3"), false);
+    assert.equal(isTokenRouterGlm52("glm-5.2"), false);
+    assert.equal(tokenrouterRequiresVisionBridge(TOKENROUTER_GLM_52), true);
     assert.equal(tokenrouterRequiresVisionBridge(TOKENROUTER_KIMI_K3), false);
     assert.equal(tokenrouterRequiresVisionBridge(TOKENROUTER_DEEPSEEK_V4_FLASH), true);
     assert.equal(tokenrouterRequiresVisionBridge(TOKENROUTER_QWEN_38_MAX), false);
     assert.equal(requiresVisionBridge("tokenrouter", TOKENROUTER_KIMI_K3), false);
     assert.equal(requiresVisionBridge("tokenrouter", TOKENROUTER_DEEPSEEK_V4_PRO), true);
+    assert.equal(requiresVisionBridge("tokenrouter", TOKENROUTER_GLM_52), true);
     assert.equal(requiresVisionBridge("tokenrouter", TOKENROUTER_QWEN_38_MAX), false);
     assert.equal(requiresVisionBridge("deepseek", "deepseek-v4-flash"), true);
   });
@@ -207,6 +223,56 @@ describe("TokenRouter helpers", () => {
     assert.equal(sanitizeTokenRouterQwenBody(arrayEffort), true);
     assert.equal(arrayEffort.reasoning_effort, undefined);
   });
+
+  it("strips Cursor thinking and forwards valid GLM reasoning_effort without GLM-native fields", () => {
+    const body = {
+      model: TOKENROUTER_GLM_52,
+      temperature: 0.2,
+      thinking: { type: "enabled" },
+      reasoning_effort: "high",
+      max_completion_tokens: 8192,
+    };
+    assert.equal(sanitizeTokenRouterGlmBody(body), true);
+    assert.equal(body.temperature, 0.2);
+    assert.equal(body.thinking, undefined);
+    assert.equal(body.reasoning_effort, "high");
+    assert.equal(body.max_completion_tokens, 8192);
+    assert.equal(body.tool_stream, undefined);
+    assert.equal(body.max_tokens, undefined);
+
+    for (const effort of ["max", "xhigh", "high", "medium", "low", "minimal", "none"]) {
+      const kept = { reasoning_effort: effort };
+      sanitizeTokenRouterGlmBody(kept);
+      assert.equal(kept.reasoning_effort, effort, `effort ${effort} must be forwarded`);
+    }
+
+    const invalid = { reasoning_effort: "foo" };
+    assert.equal(sanitizeTokenRouterGlmBody(invalid), true);
+    assert.equal(invalid.reasoning_effort, undefined);
+
+    const numeric = { reasoning_effort: 123 };
+    assert.doesNotThrow(() => sanitizeTokenRouterGlmBody(numeric));
+    assert.equal(numeric.reasoning_effort, undefined);
+
+    const objectEffort = JSON.parse('{"reasoning_effort":{"toString":"x"}}');
+    assert.doesNotThrow(() => sanitizeTokenRouterGlmBody(objectEffort));
+    assert.equal(objectEffort.reasoning_effort, undefined);
+
+    // Inbound GLM-native `tool_stream` (e.g. copied from a native GLM body or
+    // a Z.AI-shaped SDK replay) must be stripped on this non-native host.
+    const withToolStream = {
+      model: TOKENROUTER_GLM_52,
+      tool_stream: true,
+      stream: true,
+      tools: [{ type: "function", function: { name: "x", parameters: { type: "object" } } }],
+      reasoning_effort: "medium",
+    };
+    assert.equal(sanitizeTokenRouterGlmBody(withToolStream), true);
+    assert.equal(withToolStream.tool_stream, undefined);
+    assert.equal(withToolStream.thinking, undefined);
+    assert.equal(withToolStream.reasoning_effort, "medium");
+    assert.equal(Array.isArray(withToolStream.tools), true);
+  });
 });
 
 describe("TokenRouter provider routing", () => {
@@ -219,14 +285,19 @@ describe("TokenRouter provider routing", () => {
     assert.equal(providerFromModel(TOKENROUTER_QWEN_38_MAX), "tokenrouter");
     assert.equal(providerFromModel("cursorproxy/" + TOKENROUTER_QWEN_38_MAX), "tokenrouter");
     assert.equal(providerFromModel("tokenrouter/" + TOKENROUTER_QWEN_38_MAX), "tokenrouter");
+    assert.equal(providerFromModel(TOKENROUTER_GLM_52), "tokenrouter");
+    assert.equal(providerFromModel("cursorproxy/" + TOKENROUTER_GLM_52), "tokenrouter");
+    assert.equal(providerFromModel("tokenrouter/" + TOKENROUTER_GLM_52), "tokenrouter");
   });
 
-  it("does not steal native Kimi or DeepSeek IDs", () => {
+  it("does not steal native Kimi, DeepSeek, or GLM IDs", () => {
     assert.equal(providerFromModel("kimi-k3"), "kimi");
     assert.equal(providerFromModel("cursorproxy/kimi-k3"), "kimi");
     assert.equal(providerFromModel("deepseek-v4-flash"), "deepseek");
     assert.equal(providerFromModel("deepseek-v4-pro"), "deepseek");
     assert.equal(providerFromModel("cursorproxy/deepseek-v4-flash"), "deepseek");
+    assert.equal(providerFromModel("glm-5.2"), "glm");
+    assert.equal(providerFromModel("cursorproxy/glm-5.2"), "glm");
   });
 
   it("does not treat unknown slash IDs as TokenRouter", () => {
@@ -235,6 +306,8 @@ describe("TokenRouter provider routing", () => {
     assert.equal(providerFromModel("openai/gpt-5.5"), null);
     assert.equal(providerFromModel("qwen3.8-max"), null);
     assert.equal(providerFromModel("qwen/qwen3.7-max"), null);
+    assert.equal(providerFromModel("z-ai/glm-5.3"), null);
+    assert.equal(providerFromModel("z-ai/glm-4.6"), null);
   });
 
   it("preserves nested slashes in discovery IDs", () => {
@@ -244,6 +317,7 @@ describe("TokenRouter provider routing", () => {
       TOKENROUTER_DEEPSEEK_V4_PRO,
       TOKENROUTER_DEEPSEEK_V4_FLASH,
       TOKENROUTER_QWEN_38_MAX,
+      TOKENROUTER_GLM_52,
     ].join(",");
     try {
       assert.deepEqual(configuredModelIds(), [
@@ -251,6 +325,7 @@ describe("TokenRouter provider routing", () => {
         "cursorproxy/" + TOKENROUTER_DEEPSEEK_V4_PRO,
         "cursorproxy/" + TOKENROUTER_DEEPSEEK_V4_FLASH,
         "cursorproxy/" + TOKENROUTER_QWEN_38_MAX,
+        "cursorproxy/" + TOKENROUTER_GLM_52,
       ]);
     } finally {
       if (previous === undefined) delete process.env.CURSORPROXY_MODELS;
@@ -300,13 +375,14 @@ describe("TokenRouter handler integration", () => {
     setKvDriver(null);
   });
 
-  it("forwards the four exact IDs with bearer auth and the native catalog name", async () => {
+  it("forwards the five exact IDs with bearer auth and the native catalog name", async () => {
     const calls = mockJsonFetch();
     for (const model of [
       TOKENROUTER_KIMI_K3,
       TOKENROUTER_DEEPSEEK_V4_PRO,
       TOKENROUTER_DEEPSEEK_V4_FLASH,
       TOKENROUTER_QWEN_38_MAX,
+      TOKENROUTER_GLM_52,
     ]) {
       const response = await invoke({
         model,
@@ -317,12 +393,13 @@ describe("TokenRouter handler integration", () => {
       assert.equal(body.model, "cursorproxy/" + model);
     }
 
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
     for (const [index, model] of [
       TOKENROUTER_KIMI_K3,
       TOKENROUTER_DEEPSEEK_V4_PRO,
       TOKENROUTER_DEEPSEEK_V4_FLASH,
       TOKENROUTER_QWEN_38_MAX,
+      TOKENROUTER_GLM_52,
     ].entries()) {
       assert.equal(calls[index].url, "https://api.tokenrouter.com/v1/chat/completions");
       assert.equal(calls[index].headers.get("authorization"), "Bearer sk-tokenrouter-test");
@@ -501,6 +578,16 @@ describe("TokenRouter handler integration", () => {
     const qwenCall = calls.find((call) => call.body?.model === TOKENROUTER_QWEN_38_MAX);
     assert.ok(qwenCall);
     assert.deepEqual(qwenCall.body.messages[0].content, imageContent);
+
+    const glm = await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: [{ role: "user", content: imageContent }],
+    }, UNIFIED_PROXY_URL);
+    await glm.text();
+    const glmCall = calls.find((call) => call.body?.model === TOKENROUTER_GLM_52);
+    assert.ok(glmCall);
+    assert.equal(typeof glmCall.body.messages[0].content, "string");
+    assert.match(glmCall.body.messages[0].content, /Image content: a screenshot of a terminal/);
   });
 
   it("restores K3 reasoning from a model-qualified TokenRouter scope", async () => {
@@ -682,6 +769,141 @@ describe("TokenRouter handler integration", () => {
     assert.equal(calls[0].body.reasoning_effort, undefined);
   });
 
+  it("restores GLM 5.2 reasoning from a model-qualified TokenRouter scope isolated from native GLM", async () => {
+    const kvDriver = makeInMemoryKv();
+    setKvDriver(kvDriver);
+    const calls = mockJsonFetch((_capturedCall, callIndex) => {
+      if (callIndex === 0) {
+        return makeCompletion({
+          model: TOKENROUTER_GLM_52,
+          content: "4",
+          reasoningContent: "Add two and two.",
+        });
+      }
+      return makeCompletion({
+        model: TOKENROUTER_GLM_52,
+        content: "because 2+2=4",
+      });
+    });
+    const firstTurn = [{ role: "user", content: "What is 2 + 2?" }];
+    const first = await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: firstTurn,
+    }, UNIFIED_PROXY_URL);
+    const firstBody = await first.json();
+    assert.equal(firstBody.choices[0].message.reasoning_content, undefined);
+
+    const second = await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: [
+        ...firstTurn,
+        { role: "assistant", content: "4" },
+        { role: "user", content: "Why?" },
+      ],
+    }, UNIFIED_PROXY_URL);
+    await second.text();
+    assert.equal(calls[1].body.model, TOKENROUTER_GLM_52);
+    assert.equal(calls[1].body.messages[1].reasoning_content, "Add two and two.");
+
+    const expectedCacheKey = await conversationHash(
+      firstTurn,
+      firstTurn.length,
+      "tokenrouter:" + TOKENROUTER_GLM_52 + ":anon",
+    );
+    assert.equal(kvDriver.store.get(expectedCacheKey), "Add two and two.");
+
+    const nativeGlmKey = await conversationHash(
+      firstTurn,
+      firstTurn.length,
+      "glm:anon",
+    );
+    assert.equal(kvDriver.store.get(nativeGlmKey), undefined);
+  });
+
+  it("sanitizes TokenRouter GLM 5.2 bodies without GLM-native injection or max_tokens remap", async () => {
+    const calls = mockJsonFetch();
+    const response = await invoke({
+      model: "cursorproxy/tokenrouter/" + TOKENROUTER_GLM_52,
+      messages: [
+        { role: "developer", content: "be concise" },
+        { role: "user", content: "hi" },
+      ],
+      temperature: 0.4,
+      thinking: { type: "enabled", keep: "all" },
+      reasoning_effort: "high",
+      max_completion_tokens: 4096,
+    }, UNIFIED_PROXY_URL);
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls[0].body.model, TOKENROUTER_GLM_52);
+    assert.equal(body.model, "cursorproxy/tokenrouter/" + TOKENROUTER_GLM_52);
+    assert.equal(calls[0].body.messages[0].role, "system");
+    assert.equal(calls[0].body.temperature, 0.4);
+    assert.equal(calls[0].body.thinking, undefined);
+    assert.equal(calls[0].body.reasoning_effort, "high");
+    assert.equal(calls[0].body.max_completion_tokens, 4096);
+    assert.equal(calls[0].body.max_tokens, undefined);
+    assert.equal(calls[0].body.tool_stream, undefined);
+    assert.equal(calls[0].body.enable_thinking, undefined);
+  });
+
+  it("skips GLM 5.2 reasoning restore when thinking.type is disabled", async () => {
+    const kvDriver = makeInMemoryKv();
+    setKvDriver(kvDriver);
+    const firstTurn = [{ role: "user", content: "What is 2 + 2?" }];
+    mockJsonFetch(() => makeCompletion({
+      model: TOKENROUTER_GLM_52,
+      content: "4",
+      reasoningContent: "Add two and two.",
+    }));
+    await (await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: firstTurn,
+    }, UNIFIED_PROXY_URL)).json();
+
+    const calls = mockJsonFetch();
+    await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: [
+        ...firstTurn,
+        { role: "assistant", content: "4" },
+        { role: "user", content: "Why?" },
+      ],
+      thinking: { type: "disabled" },
+    }, UNIFIED_PROXY_URL);
+    assert.equal(calls[0].body.messages[1].reasoning_content, undefined);
+    assert.equal(calls[0].body.thinking, undefined);
+  });
+
+  it("forwards reasoning_effort none on GLM 5.2 and skips restore", async () => {
+    const kvDriver = makeInMemoryKv();
+    setKvDriver(kvDriver);
+    const firstTurn = [{ role: "user", content: "What is 2 + 2?" }];
+    mockJsonFetch(() => makeCompletion({
+      model: TOKENROUTER_GLM_52,
+      content: "4",
+      reasoningContent: "Add two and two.",
+    }));
+    await (await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: firstTurn,
+    }, UNIFIED_PROXY_URL)).json();
+
+    const calls = mockJsonFetch();
+    await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: [
+        ...firstTurn,
+        { role: "assistant", content: "4" },
+        { role: "user", content: "Why?" },
+      ],
+      reasoning_effort: "none",
+    }, UNIFIED_PROXY_URL);
+    assert.equal(calls[0].body.messages[1].reasoning_content, undefined);
+    assert.equal(calls[0].body.reasoning_effort, "none");
+  });
+
   it("replays TokenRouter DeepSeek reasoning across user turns when tools are present", async () => {
     const kvDriver = makeInMemoryKv();
     setKvDriver(kvDriver);
@@ -779,6 +1001,13 @@ describe("TokenRouter handler integration", () => {
       messages: continued,
     }, UNIFIED_PROXY_URL);
     assert.equal(qwenLater[0].body.messages[1].reasoning_content, undefined);
+
+    const glmLater = mockJsonFetch();
+    await invoke({
+      model: TOKENROUTER_GLM_52,
+      messages: continued,
+    }, UNIFIED_PROXY_URL);
+    assert.equal(glmLater[0].body.messages[1].reasoning_content, undefined);
   });
 
   it("passes through a DeepSeek tools 400 when empty KV cannot restore reasoning", async () => {

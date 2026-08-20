@@ -156,7 +156,7 @@ Kimi remains natively multimodal (images and video); the vision bridge is not us
 ## TokenRouter (PaleBlueDot)
 
 TokenRouter is a Chat Completions gateway at `https://api.tokenrouter.com/v1`.
-cursorProxy supports four exact catalog IDs and does not publish the rest of
+cursorProxy supports five exact catalog IDs and does not publish the rest of
 TokenRouter's catalog:
 
 | Client model ID | Upstream ID | Request policy | Vision |
@@ -165,10 +165,12 @@ TokenRouter's catalog:
 | `cursorproxy/deepseek/deepseek-v4-pro-0813` | `deepseek/deepseek-v4-pro-0813` | No native DeepSeek `thinking` / `DEEPSEEK_REASONING_EFFORT` injection | Vision bridge |
 | `cursorproxy/deepseek/deepseek-v4-flash-0731` | `deepseek/deepseek-v4-flash-0731` | Same as Pro | Vision bridge |
 | `cursorproxy/qwen/qwen3.8-max` | `qwen/qwen3.8-max` | Strip Cursor `thinking`; clamp `reasoning_effort` to `xhigh`/`medium`/`low`; no DashScope `enable_thinking` / `preserve_thinking` | Native images |
+| `cursorproxy/z-ai/glm-5.2` | `z-ai/glm-5.2` | Strip Cursor `thinking`; forward valid `reasoning_effort` (max\|xhigh\|high\|medium\|low\|minimal\|none); no GLM-native `thinking` / `tool_stream` injection; no `max_tokens` remap | Vision bridge |
 
 Exact TokenRouter IDs and an optional `tokenrouter/` prefix are matched **before**
-native `kimi*` / `deepseek*` rules, so `cursorproxy/kimi-k3` and
-`cursorproxy/deepseek-v4-flash` still go to Moonshot and DeepSeek.
+native `kimi*` / `deepseek*` / `glm*` rules, so `cursorproxy/kimi-k3`,
+`cursorproxy/deepseek-v4-flash`, and `cursorproxy/glm-5.2` still go to
+Moonshot, DeepSeek, and GLM respectively.
 
 There is no default TokenRouter model: missing or out-of-allowlist IDs on the
 `/tokenrouter/v1` route return `400 tokenrouter_model_unsupported`. Cursor
@@ -177,7 +179,7 @@ There is no default TokenRouter model: missing or out-of-allowlist IDs on the
 `tokenrouter:<full-model-id>:<user>`. When a TokenRouter DeepSeek request
 carries `tools`, historical `reasoning_content` is replayed across user turns.
 
-Advertise the four IDs with `CURSORPROXY_MODELS` and set `TOKENROUTER_API_KEY`.
+Advertise the five IDs with `CURSORPROXY_MODELS` and set `TOKENROUTER_API_KEY`.
 Optional `UPSTREAM_TOKENROUTER` accepts the base with or without trailing `/v1`.
 
 ## GLM-5.2 Request Sanitization
