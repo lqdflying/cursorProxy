@@ -12,11 +12,11 @@ The proxy vision bridge applies to providers that cannot accept `image_url`
 parts on every model: **DeepSeek**, **MiniMax M2.x** (text-only chat models),
 **MiMo** text-only models (`mimo-v2.5-pro`, `mimo-v2-pro`, `mimo-v2-flash`, etc.),
 **GLM-5.2** on the ZHIPU/Z.AI Coding Plan, TokenRouter DeepSeek V4
-(`deepseek/deepseek-v4-pro-0813`, `deepseek/deepseek-v4-flash-0731`), and
-TokenRouter GLM 5.2 (`z-ai/glm-5.2`).
+(`deepseek/deepseek-v4-pro*`, `deepseek/deepseek-v4-flash*`), and
+TokenRouter GLM 5.2/5.3 (`z-ai/glm-5.2*`, `z-ai/glm-5.3*`).
 **MiniMax M3**, **MiMo multimodal** models (`mimo-v2.5`, `mimo-v2-omni`),
 allowlisted visual GLM models, native Kimi, TokenRouter K3
-(`moonshotai/kimi-k3`), and TokenRouter Qwen3.8-Max (`qwen/qwen3.8-max`)
+(`moonshotai/kimi-k3*`), and TokenRouter Qwen3.8-Max (`qwen/qwen3.8-max*`)
 skip the bridge.
 All other providers — including `gpt-general` — receive images natively.
 

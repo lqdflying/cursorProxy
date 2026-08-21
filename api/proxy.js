@@ -333,15 +333,13 @@ export default async function handler(req) {
     }
   }
 
-  // TokenRouter model ID mapping: cursorproxy/tokenrouter/<vendor>/<model> →
-  // the native TokenRouter catalog ID. The client-visible response model stays
-  // as the requested public id. Known catalog IDs are canonicalized to the
-  // lowercase allowlist constant (moonshotai/kimi-k3, deepseek/deepseek-v4-*,
-  // qwen/qwen3.8-max, z-ai/glm-5.2).
+  // TokenRouter model ID mapping: strip an optional tokenrouter/ prefix only.
+  // The remainder is forwarded unchanged (including -free and dated stamps).
+  // Family policy uses a lowercase prefix match; the catalog ID is not rewritten.
   let tokenrouterPublicId = "";
   // Single family-agnostic disable snapshot, set inside the tokenrouter block
   // before the family sanitizers strip the signals the gate reads. Qwen and
-  // GLM 5.2 both strip Cursor `thinking` (and Qwen drops `reasoning_effort:
+  // GLM 5.2/5.3 both strip Cursor `thinking` (and Qwen drops `reasoning_effort:
   // "none"`), so the snapshot must be captured first; K3 leaves the signals
   // in place and is read live by the gate below.
   let tokenrouterFamilyDisableReasoning = false;
@@ -742,7 +740,7 @@ export default async function handler(req) {
         "model:", parsedBody?.model || "(missing)");
       return jsonErrorResponse(
         400,
-        `TokenRouter requires an exact supported model ID: ${tokenrouterSupportedModelList()}.`,
+        `TokenRouter requires a supported family model ID: ${tokenrouterSupportedModelList()}.`,
         "tokenrouter_model_unsupported",
         "invalid_request_error"
       );
@@ -810,7 +808,7 @@ export default async function handler(req) {
     // Capture client disable flags ONCE, before any family sanitizer strips
     // the signals (`thinking.type: "disabled"`, `reasoning_effort: "none"`).
     // K3 does not strip these, so the live re-check at the restore gate still
-    // sees them; Qwen and GLM 5.2 strip Cursor `thinking` (and Qwen drops
+    // sees them; Qwen and GLM 5.2/5.3 strip Cursor `thinking` (and Qwen drops
     // `reasoning_effort: "none"`), so without this snapshot a stripped
     // `thinking.type: "disabled"` would be lost and restore would run.
     if (isTokenRouterQwen38Max(upstreamModelName) || isTokenRouterGlm52(upstreamModelName)) {
@@ -823,7 +821,9 @@ export default async function handler(req) {
         parsedBody.thinking?.type === "disabled";
     }
     if (isTokenRouterKimiK3(upstreamModelName)) {
-      if (sanitizeKimiBody(parsedBody, upstreamModelName, providerKey)) {
+      // Force the K3 leaf so moonshotai/kimi-k3-free still sanitizes.
+      // parsedBody.model stays the client ID.
+      if (sanitizeKimiBody(parsedBody, "kimi-k3", "kimi")) {
         bodyText = JSON.stringify(parsedBody);
       }
     }

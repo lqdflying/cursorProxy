@@ -156,31 +156,36 @@ Kimi remains natively multimodal (images and video); the vision bridge is not us
 ## TokenRouter (PaleBlueDot)
 
 TokenRouter is a Chat Completions gateway at `https://api.tokenrouter.com/v1`.
-cursorProxy supports five exact catalog IDs and does not publish the rest of
-TokenRouter's catalog:
+cursorProxy matches first-version **family prefixes** and forwards the client
+catalog ID unchanged (including `-free` and dated stamps). It does not publish
+the rest of TokenRouter's catalog:
 
-| Client model ID | Upstream ID | Request policy | Vision |
+| Client model ID (examples) | Upstream ID | Request policy | Vision |
 |---|---|---|---|
-| `cursorproxy/moonshotai/kimi-k3` | `moonshotai/kimi-k3` | Reuses Kimi K3 sanitizer (`reasoning_effort: "max"`, no `thinking`, no fixed sampling) | Native images |
-| `cursorproxy/deepseek/deepseek-v4-pro-0813` | `deepseek/deepseek-v4-pro-0813` | No native DeepSeek `thinking` / `DEEPSEEK_REASONING_EFFORT` injection | Vision bridge |
-| `cursorproxy/deepseek/deepseek-v4-flash-0731` | `deepseek/deepseek-v4-flash-0731` | Same as Pro | Vision bridge |
-| `cursorproxy/qwen/qwen3.8-max` | `qwen/qwen3.8-max` | Strip Cursor `thinking`; clamp `reasoning_effort` to `xhigh`/`medium`/`low`; no DashScope `enable_thinking` / `preserve_thinking` | Native images |
-| `cursorproxy/z-ai/glm-5.2` | `z-ai/glm-5.2` | Strip Cursor `thinking`; forward valid `reasoning_effort` (max\|xhigh\|high\|medium\|low\|minimal\|none); no GLM-native `thinking` / `tool_stream` injection; no `max_tokens` remap | Vision bridge |
+| `cursorproxy/moonshotai/kimi-k3` (`kimi-k3*`) | as sent | Reuses Kimi K3 sanitizer (`reasoning_effort: "max"`, no `thinking`, no fixed sampling) | Native images |
+| `cursorproxy/deepseek/deepseek-v4-pro-0813` (`deepseek-v4-pro*`) | as sent | No native DeepSeek `thinking` / `DEEPSEEK_REASONING_EFFORT` injection | Vision bridge |
+| `cursorproxy/deepseek/deepseek-v4-flash-0731` (`deepseek-v4-flash*`) | as sent | Same as Pro | Vision bridge |
+| `cursorproxy/qwen/qwen3.8-max` (`qwen3.8-max*`) | as sent | Strip Cursor `thinking`; clamp `reasoning_effort` to `xhigh`/`medium`/`low`; no DashScope `enable_thinking` / `preserve_thinking` | Native images |
+| `cursorproxy/z-ai/glm-5.2` (`glm-5.2*`) | as sent | Strip Cursor `thinking`; forward valid `reasoning_effort` (max\|xhigh\|high\|medium\|low\|minimal\|none); no GLM-native `thinking` / `tool_stream` injection; no `max_tokens` remap | Vision bridge |
+| `cursorproxy/z-ai/glm-5.3` (`glm-5.3*`) | as sent | Same TokenRouter GLM policy as 5.2. Tried even if the live catalog has not listed it; an upstream 400 is returned as-is. | Vision bridge |
 
-Exact TokenRouter IDs and an optional `tokenrouter/` prefix are matched **before**
+Family prefixes and an optional `tokenrouter/` prefix are matched **before**
 native `kimi*` / `deepseek*` / `glm*` rules, so `cursorproxy/kimi-k3`,
 `cursorproxy/deepseek-v4-flash`, and `cursorproxy/glm-5.2` still go to
 Moonshot, DeepSeek, and GLM respectively.
 
-There is no default TokenRouter model: missing or out-of-allowlist IDs on the
-`/tokenrouter/v1` route return `400 tokenrouter_model_unsupported`. Cursor
-`developer` roles are rewritten to `system` because TokenRouter rejects
-`developer`. Reasoning is restored hit-only under
-`tokenrouter:<full-model-id>:<user>`. When a TokenRouter DeepSeek request
-carries `tools`, historical `reasoning_content` is replayed across user turns.
+There is no default TokenRouter model: missing or out-of-allowlist stems on the
+`/tokenrouter/v1` route return `400 tokenrouter_model_unsupported`. If
+TokenRouter itself rejects an allowlisted ID, that upstream status and body are
+passed through. Cursor `developer` roles are rewritten to `system` because
+TokenRouter rejects `developer`. Reasoning is restored hit-only under
+`tokenrouter:<full-model-id>:<user>` (the forwarded client ID). When a
+TokenRouter DeepSeek request carries `tools`, historical `reasoning_content`
+is replayed across user turns.
 
-Advertise the five IDs with `CURSORPROXY_MODELS` and set `TOKENROUTER_API_KEY`.
-Optional `UPSTREAM_TOKENROUTER` accepts the base with or without trailing `/v1`.
+Advertise chosen IDs (including `-free` variants) with `CURSORPROXY_MODELS` and
+set `TOKENROUTER_API_KEY`. Optional `UPSTREAM_TOKENROUTER` accepts the base with
+or without trailing `/v1`.
 
 ## GLM-5.2 Request Sanitization
 

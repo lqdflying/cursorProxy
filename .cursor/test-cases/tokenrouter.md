@@ -1,11 +1,12 @@
-# TokenRouter — Kimi K3, DeepSeek V4, Qwen3.8-Max, and GLM 5.2
+# TokenRouter — Kimi K3, DeepSeek V4, Qwen3.8-Max, GLM 5.2, and GLM 5.3
 
 ## Purpose
 
-Validate PaleBlueDot TokenRouter routing for the five exact catalog IDs,
-K3 request sanitization, Qwen request sanitization, GLM 5.2 request
-sanitization, DeepSeek/Qwen/GLM vision bridging, multi-turn reasoning restore,
-streaming, and native Kimi/DeepSeek/GLM isolation.
+Validate PaleBlueDot TokenRouter routing for first-version family prefixes
+(including `-free` variants), K3 request sanitization, Qwen request
+sanitization, GLM 5.2/5.3 request sanitization, DeepSeek/Qwen/GLM vision
+bridging, multi-turn reasoning restore, streaming, native Kimi/DeepSeek/GLM
+isolation, and upstream 400 passthrough for `z-ai/glm-5.3`.
 
 ## Provider And Model
 
@@ -15,6 +16,8 @@ streaming, and native Kimi/DeepSeek/GLM isolation.
   - `cursorproxy/deepseek/deepseek-v4-flash-0731`
   - `cursorproxy/qwen/qwen3.8-max`
   - `cursorproxy/z-ai/glm-5.2`
+  - `cursorproxy/z-ai/glm-5.3`
+  - optional `-free` variants of the same stems
 - Provider route: `tokenrouter`
 - Deployment: Docker / 1Panel (primary) or Vercel/EdgeOne
 - Cursor mode: Agent
@@ -24,7 +27,7 @@ streaming, and native Kimi/DeepSeek/GLM isolation.
 - `TOKENROUTER_API_KEY` set to a PaleBlueDot TokenRouter key
 - `CURSORPROXY_API_KEY` set
 - KV configured (`REDIS_URL`, `KV_URL` + `KV_TOKEN`, or EdgeOne KV binding)
-- `CURSORPROXY_MODELS` includes the five TokenRouter IDs (or enter them manually)
+- `CURSORPROXY_MODELS` includes the TokenRouter IDs you want to discover (or enter them manually)
 - Vision backend configured (`MINIMAX_API_KEY` or OpenAI vision) for the DeepSeek/GLM image test
 - `DEBUG=true` while collecting `TOOL_CALL_NAME` troubleshooting evidence
 
@@ -322,6 +325,23 @@ Expected logs:
 
 `TOKENROUTER_GLM_SANITIZED` must not appear for native `glm-5.2`.
 
+### Test 13: TokenRouter GLM 5.3 try and upstream 400 passthrough
+
+Start a new chat with `cursorproxy/z-ai/glm-5.3` and paste:
+
+```text
+Explain why binary search is logarithmic in four concise sentences.
+```
+
+Expected:
+
+- If TokenRouter serves the model: a coherent answer, outbound model `z-ai/glm-5.3`, `TOKENROUTER_GLM_SANITIZED` when Cursor sent `thinking` or `reasoning_effort`.
+- If TokenRouter rejects the model: HTTP 400 from TokenRouter is returned as-is. The proxy must **not** rewrite that into `tokenrouter_model_unsupported` (that code is only for unknown stems that never leave cursorProxy).
+
+### Test 14: `-free` catalog ID forwarded unchanged
+
+Start a new chat with `cursorproxy/qwen/qwen3.8-max-free` (or another `-free` stem). Expected: outbound model stays `qwen/qwen3.8-max-free`. Multi-turn restore uses scope `tokenrouter:qwen/qwen3.8-max-free:<user>`, not the unsuffixed stem.
+
 ## Negative Signs
 
 - `provider: kimi`, `provider: deepseek`, or `provider: glm` when using a TokenRouter-qualified ID
@@ -335,9 +355,11 @@ Expected logs:
 - Client-visible `reasoning_content`
 - Native `cursorproxy/kimi-k3`, `cursorproxy/deepseek-v4-flash`, or `cursorproxy/glm-5.2` routing to TokenRouter
 - `KIMI_BODY_SANITIZED` on TokenRouter Qwen or GLM
-- `GLM_BODY_SANITIZED` on TokenRouter GLM 5.2 (native GLM sanitizer must not run there)
+- `GLM_BODY_SANITIZED` on TokenRouter GLM 5.2/5.3 (native GLM sanitizer must not run there)
 - Outbound TokenRouter Qwen `enable_thinking` or `preserve_thinking`
-- Outbound TokenRouter GLM 5.2 `tool_stream`, `max_tokens`, or GLM-native `thinking` injection
+- Outbound TokenRouter GLM `tool_stream`, `max_tokens`, or GLM-native `thinking` injection
+- Stripping `-free` from the outbound catalog ID
+- Rewriting an upstream TokenRouter 400 for `z-ai/glm-5.3` into `tokenrouter_model_unsupported`
 
 ## Cleanup
 
