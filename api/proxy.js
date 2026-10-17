@@ -2,6 +2,9 @@ export const config = { runtime: "edge" };
 
 import { kvSet } from "../lib/kv.js";
 import {
+  claudeThinkingActive,
+  claudeThinkingScope,
+  isCurrentClaudeModel,
   mapAnthropicResponseToOpenAI,
   normalizeAnthropicContentTypes,
   remapAnthropicInput,
@@ -57,7 +60,9 @@ import {
   serializeReasoning,
   stripResponseChunk,
 } from "../lib/reasoning.js";
-import { sanitizeGlmBody } from "../lib/glm.js";
+import { glmNativeFieldsEnabled, glmParameterError, sanitizeGlmBody } from "../lib/glm.js";
+import { isMiniMaxM31, sanitizeMiniMaxBody } from "../lib/minimax.js";
+import { sanitizeGpt6Body } from "../lib/gpt.js";
 import { resolveFireworksGlmReasoningEffort } from "../lib/fireworks.js";
 import { isKimiK3, sanitizeKimiBody } from "../lib/kimi.js";
 import {
@@ -402,6 +407,22 @@ export default async function handler(req) {
     }
   }
 
+  // Resolve native defaults before model-specific sanitizers. Heterogeneous
+  // compatible providers, Azure OpenAI, Fireworks and TokenRouter have none.
+  const defaultModels = { deepseek: "deepseek-flash", kimi: "kimi-k3", minimax: "MiniMax-M3", mimo: "mimo-v2.6-pro", glm: "glm-5.3", azureanthropic: "claude-sonnet-5-5" };
+  if (parsedBody && !parsedBody.model && Object.prototype.hasOwnProperty.call(defaultModels, providerKey)) {
+    parsedBody.model = defaultModels[providerKey];
+    upstreamModelName = parsedBody.model;
+    bodyText = JSON.stringify(parsedBody);
+    log("MODEL_INJECTED", "model:", parsedBody.model);
+  }
+  // Compatible env defaults may themselves carry the public prefix.
+  if (parsedBody?.model) {
+    const normalized = normalizeParsedBodyModel(parsedBody);
+    upstreamModelName = normalized.bare;
+    if (normalized.changed) bodyText = JSON.stringify(parsedBody);
+  }
+
   log("RESOLVED", "model:", responseModelName || parsedBody?.model || "(none)", "provider:", providerKey, "stream:", parsedBody?.stream);
 
   // Azure Foundry expects the bare deployment name (e.g. "claude-sonnet-4-6"),
@@ -661,6 +682,7 @@ export default async function handler(req) {
 
   {
     const anthropicSanitized = sanitizeAzureAnthropicBody(providerKey, parsedBody);
+    if (anthropicSanitized.error) return jsonErrorResponse(400, anthropicSanitized.error, "claude_parameter_invalid", "invalid_request_error");
     parsedBody = anthropicSanitized.parsedBody;
     if (anthropicSanitized.sanitized) {
       bodyText = JSON.stringify(parsedBody);
@@ -686,17 +708,6 @@ export default async function handler(req) {
       "provider_key_missing",
       "api_error"
     );
-  }
-
-  // Inject a default model when missing from the request body.
-  // Azure OpenAI, Fireworks, and TokenRouter are excluded: Azure resolves
-  // deployment names server-side; Fireworks and TokenRouter host heterogeneous
-  // catalogs with no single default.
-  if (parsedBody && !parsedBody.model && providerKey !== "azureopenai" && providerKey !== "fireworks" && providerKey !== "tokenrouter") {
-    const defaults = { deepseek: "deepseek-v4-flash", kimi: "kimi-k3", minimax: "MiniMax-M3", mimo: "mimo-v2.5-pro", glm: "glm-5.2", azureanthropic: "claude-sonnet-4-6" };
-    parsedBody.model = defaults[providerKey] || "deepseek-v4-flash";
-    bodyText = JSON.stringify(parsedBody);
-    log("MODEL_INJECTED", "model:", parsedBody.model);
   }
 
   // Normalize the model name after any injection/stripping, then capture
@@ -759,13 +770,16 @@ export default async function handler(req) {
     : provider.url + "/v1/" + pathParam + queryString;
   log("UPSTREAM", upstreamUrl, "provider:", providerKey);
 
+  if (providerKey === "azureopenai" || providerKey === "openaicompat") {
+    const gpt = sanitizeGpt6Body(providerKey, parsedBody, upstreamModelName,
+      providerKey === "azureopenai" || openaiCompatResponses || pathParam === "responses", upstreamUrl);
+    if (gpt.error) return jsonErrorResponse(400, gpt.error, "gpt6_responses_required", "invalid_request_error");
+    if (gpt.changed) bodyText = JSON.stringify(parsedBody);
+  }
+
   if (providerKey === "minimax" && parsedBody) {
-    parsedBody.reasoning_split = true;
-    // M3 supports toggleable thinking mode; inject adaptive default when omitted
-    const bareModel = (parsedBody.model || "").toLowerCase();
-    if (bareModel.startsWith("minimax-m3") && !parsedBody.thinking) {
-      parsedBody.thinking = { type: "adaptive" };
-    }
+    const error = sanitizeMiniMaxBody(parsedBody);
+    if (error) return jsonErrorResponse(400, error, "minimax_parameter_invalid", "invalid_request_error");
     bodyText = JSON.stringify(parsedBody);
   }
 
@@ -774,10 +788,10 @@ export default async function handler(req) {
     parsedBody.thinking = { type: "enabled" };
     const rawEnv = process.env.DEEPSEEK_REASONING_EFFORT || "";
     const effortEnv = rawEnv.trim().replace(/^["']|["']$/g, "");
-    // DeepSeek currently accepts "high" and "max". Anything else (typos,
+    // DeepSeek accepts "low", "high" and "max". Anything else (typos,
     // future levels) silently falls back to the safe default — but we log it
     // once so operators don't think a misspelled value is taking effect.
-    const validEfforts = new Set(["high", "max"]);
+    const validEfforts = new Set(["low", "high", "max"]);
     let effort;
     if (effortEnv === "") {
       effort = "high";
@@ -785,7 +799,7 @@ export default async function handler(req) {
       effort = effortEnv;
     } else {
       effort = "high";
-      diag("THINKING_INVALID_EFFORT", "provider: deepseek", "raw_env:", rawEnv, "fallback:", effort, "valid:", "high|max");
+      diag("THINKING_INVALID_EFFORT", "provider: deepseek", "raw_env:", rawEnv, "fallback:", effort, "valid:", "low|high|max");
     }
     parsedBody.reasoning_effort = effort;
     bodyText = JSON.stringify(parsedBody);
@@ -846,6 +860,8 @@ export default async function handler(req) {
   }
 
   if (providerKey === "glm" && parsedBody) {
+    const error = glmParameterError(parsedBody, upstreamModelName, upstreamUrl);
+    if (error) return jsonErrorResponse(400, error, "glm_parameter_invalid", "invalid_request_error");
     if (sanitizeGlmBody(parsedBody, upstreamModelName, upstreamUrl)) {
       bodyText = JSON.stringify(parsedBody);
     }
@@ -869,11 +885,14 @@ export default async function handler(req) {
   // Kimi K3 also gets a model-qualified scope so its required preserved
   // reasoning cannot be mixed with legacy K2 traces. K2 keeps its existing
   // scope so already-cached conversations remain usable across the rollout.
-  const scope = providerKey === "fireworks" || providerKey === "tokenrouter"
+  let scope = providerKey === "fireworks" || providerKey === "tokenrouter" || (providerKey === "minimax" && isMiniMaxM31(upstreamModelName))
     ? providerKey + ":" + upstreamModelName + ":" + scopeUser
     : providerKey === "kimi" && isKimiK3(upstreamModelName)
       ? providerKey + ":kimi-k3:" + scopeUser
       : providerKey + ":" + scopeUser;
+  if (providerKey === "azureanthropic" || providerKey === "anthropiccompat") {
+    scope = await claudeThinkingScope(providerKey, parsedBody, upstreamUrl, providerSecret, scopeUser);
+  }
   // openaicompat uses Cursor-shaped Chat Completions requests that may be
   // normalized differently between turns (string vs array content, tool call
   // shape, etc.). Use a canonicalized hash so cache keys stay stable across
@@ -958,7 +977,7 @@ export default async function handler(req) {
       !(parsedBody?.thinking?.keep === "all" && parsedBody?.thinking?.type === "enabled") &&
       !(providerKey === "deepseek" && Array.isArray(parsedBody?.tools) && parsedBody.tools.length > 0) &&
       !tokenrouterDeepSeekTools &&
-      /kimi-k2[.p][0-6](?:[^a-z0-9]|$)|glm-[0-4][.p]|minimax-m2|deepseek-v4/i.test(upstreamModelName));
+      /kimi-k2[.p][0-6](?:[^a-z0-9]|$)|glm-[0-4][.p]|minimax-m2|deepseek-(?:v4|flash)/i.test(upstreamModelName));
   const userEndingInterleaved = isInterleaved &&
     originalMessages?.length > 0 &&
     originalMessages[originalMessages.length - 1]?.role === "user";
@@ -997,6 +1016,7 @@ export default async function handler(req) {
       providerKey === "glm" &&
       injected.missedCount > 0 &&
       isNativeGlmEndpoint(upstreamUrl) &&
+      glmNativeFieldsEnabled(upstreamUrl) &&
       parsedBody?.thinking?.type !== "disabled" &&
       parsedBody?.thinking?.clear_thinking !== true
     ) {
@@ -1014,7 +1034,7 @@ export default async function handler(req) {
   // as a sibling field — Claude uses multi-block content arrays, hence separate logic.
   if ((providerKey === "azureanthropic" ||
     (providerKey === "anthropiccompat" && process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true")) &&
-    parsedBody?.messages && parsedBody?.thinking?.type && parsedBody?.thinking?.type !== "disabled") {
+    parsedBody?.messages && claudeThinkingActive(parsedBody)) {
     const claudeInjected = await injectClaudeThinkingBlocks(parsedBody, originalMessages, scope, conversationHash, normalizedConversationHash);
     if (claudeInjected > 0) {
       bodyText = JSON.stringify(parsedBody);
@@ -1023,14 +1043,10 @@ export default async function handler(req) {
   }
 
   // Convert images to text for providers that don't support vision inputs
-  // DeepSeek and MiniMax M2.x chat endpoints do not accept inline image_url content.
-  // MiniMax M3 is natively multimodal and accepts image_url/video_url directly.
-  // MiMo Pro/Flash/TTS variants are text-only; mimo-v2.5 and mimo-v2-omni accept
-  // image_url natively. GLM-5.2 is text-only in Z.AI Coding Plan examples; visual
-  // GLM models are allowlisted above. The vision API (MiniMax VL-01 by default)
-  // describes images and injects text before forwarding when requiresVisionBridge()
-  // is true.
-  if (requiresVisionBridge(providerKey, upstreamModelName) && parsedBody?.messages) {
+  // Vision capability is model-specific. Flash DeepSeek, MiMo V2.6 Flash/Pro
+  // Ultraspeed and GLM 5.3 Flash/FlashX accept images; their text-only peers
+  // use the bridge. See the endpoint-aware matrix in lib/vision-bridge.js.
+  if (requiresVisionBridge(providerKey, upstreamModelName, upstreamUrl) && parsedBody?.messages) {
     const visionT0 = Date.now();
     const {
       messages: convertedMessages,
@@ -1458,7 +1474,9 @@ export default async function handler(req) {
     if (providerKey === "azureanthropic" || providerKey === "anthropiccompat") {
       const anthropicThinkingEnabled = providerKey === "azureanthropic"
         || (providerKey === "anthropiccompat" && process.env.ANTHROPICCOMPAT_THINKING_CACHE === "true");
-      if (anthropicThinkingEnabled && parsedBody?.thinking?.type === "adaptive" && originalMessages) {
+      const cacheThinking = parsedBody?.thinking?.type === "adaptive"
+        || (isCurrentClaudeModel(parsedBody?.model) && claudeThinkingActive(parsedBody));
+      if (anthropicThinkingEnabled && cacheThinking && originalMessages) {
         const claudeThinkKey = "claude_thinking:" + await normalizedConversationHash(
           originalMessages, originalMessages.length, scope
         );

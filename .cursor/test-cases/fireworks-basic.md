@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Validate that `cursorproxy/fireworks/kimi-k2p7-code` routes through Fireworks AI, the model ID is mapped to Fireworks' `accounts/fireworks/models/...` format, streaming works, and existing providers are unaffected.
+Validate that `cursorproxy/fireworks/kimi-k3` routes through Fireworks AI, the model ID is mapped to Fireworks' `accounts/fireworks/models/...` format, streaming works, and existing providers are unaffected.
 
 ## Provider And Model
 
-- Cursor model: `cursorproxy/fireworks/kimi-k2p7-code`
+- Cursor model: `cursorproxy/fireworks/kimi-k3`
 - Provider route: `fireworks`
 - Deployment: Vercel (or Docker/EdgeOne)
 - Cursor mode: Agent
@@ -15,7 +15,7 @@ Validate that `cursorproxy/fireworks/kimi-k2p7-code` routes through Fireworks AI
 
 - `FIREWORKS_API_KEY` set (Fireworks AI API key)
 - `CURSORPROXY_API_KEY` set
-- `CURSORPROXY_MODELS` includes `fireworks/kimi-k2p7-code` (or is unset)
+- `CURSORPROXY_MODELS` includes `fireworks/kimi-k3` (or is unset)
 
 ## Test Steps
 
@@ -36,7 +36,7 @@ Expected Vercel logs (group by `requestId`):
 
 ```text
 REQ POST /v1/chat/completions provider: fireworks
-FIREWORKS_MODEL_RESOLVED bare: fireworks/kimi-k2p7-code upstream: accounts/fireworks/models/kimi-k2p7-code
+FIREWORKS_MODEL_RESOLVED bare: fireworks/kimi-k3 upstream: accounts/fireworks/models/kimi-k3
 UPSTREAM https://api.fireworks.ai/inference/v1/chat/completions provider: fireworks
 RES 200 provider: fireworks ms: ...
 ```
@@ -57,7 +57,7 @@ Write a haiku about programming.
 Expected Cursor behavior:
 
 - Returns a haiku.
-- Response model field is `cursorproxy/fireworks/kimi-k2p7-code` (not `accounts/fireworks/models/kimi-k2p7-code`)
+- Response model field is `cursorproxy/fireworks/kimi-k3` (not `accounts/fireworks/models/kimi-k3`)
 
 Expected Vercel logs:
 
@@ -96,7 +96,7 @@ Verify that `provider: kimi` and no `FIREWORKS_*` diagnostics appear.
 
 ### Test 4: Multi-turn reasoning bridge
 
-In a **new** chat with model `cursorproxy/fireworks/kimi-k2p7-code`, paste:
+In a **new** chat with model `cursorproxy/fireworks/kimi-k3`, paste:
 
 ```text
 Write a Python function that returns the nth Fibonacci number. Keep it under 10 lines.
@@ -123,7 +123,7 @@ INJECT_SUMMARY turns: 1 hits: 1 misses: 0 recovered: 0
 
 ## Negative Signs (bug still present)
 
-- `provider: kimi` when using `cursorproxy/fireworks/kimi-k2p7-code` (prefix not recognized, fell through to Kimi)
+- `provider: kimi` when using `cursorproxy/fireworks/kimi-k3` (prefix not recognized, fell through to Kimi)
 - `UPSTREAM_ERROR_STATUS` for any Fireworks request
 - `FIREWORKS_MODEL_RESOLVED` does NOT appear (model ID mapping skipped)
 - `RES` model field is `accounts/fireworks/models/...` instead of `cursorproxy/fireworks/...`

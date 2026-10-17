@@ -1,5 +1,5 @@
 ---
-description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers azureopenai (gpt-5.5) and azureanthropic (claude-sonnet-4-6).
+description: Azure Foundry integration — API formats, parameter whitelists, Anthropic↔OpenAI conversions, SSE streaming, request/response adapters. Covers Azure GPT and Claude adapters; current model exceptions are in model-refresh.mdc.
 globs: api/proxy.js,lib/models.js,lib/reasoning.js,lib/azure-openai.js,lib/azure-anthropic.js,lib/providers.js,lib/responses-chain.js,lib/stream-pump.js
 alwaysApply: false
 ---
@@ -251,7 +251,7 @@ if (process.env.OPENAICOMPAT_REASONING_CACHE === "true") {
 
 11. **Cursor subagent "Couldn't start" means the tool reached Cursor**: If the UI shows `New subagent` followed by `Couldn't start`, the stream mapping probably delivered a tool call and Cursor's local subagent executor rejected it. Inspect `OAI_TOOL_CALL_START` / `OAI_TOOL_CALL_DONE` first. A real openaicompat trace showed `name: Subagent` with cloud-only argument keys (`cloud_base_branch`, `environment`, `file_attachments`), which Cursor rejected in a local session. For openaicompat Responses streaming, buffer `Subagent` argument deltas, strip only those cloud-only keys at `response.function_call_arguments.done`, then emit one sanitized Chat tool-call arguments delta before `finish_reason:"tool_calls"`; log `OAI_SUBAGENT_ARGS_SANITIZED`. Missing Task tool access, run-mode/tool policy, hook policy, or subagent nesting limits can still block spawning even after argument sanitization. Do not blindly strip other subagent tools or arguments without proving the failing key from the safe diagnostics.
 
-## Claude Thinking KV Caching (azureanthropic only)
+## Claude Thinking KV Caching (Azure and opt-in Anthropic-compatible)
 
 Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thinking/signature blocks in its content array. Without caching, Claude re-reasons from scratch on every turn, wasting tokens. The proxy caches these blocks in KV and re-injects them into prior assistant messages on subsequent turns.
 
@@ -262,7 +262,7 @@ Claude's adaptive thinking mode (`thinking: { type: "adaptive" }`) produces thin
 | Hash (normalized, typed-canonical) | `normalizedConversationHash()` / `canonicalizeContent()` in `lib/cache.js` |
 | Write — non-streaming | `api/proxy.js` non-streaming branch: `extractClaudeThinkingBlocks(json)` then `kvSet(claudeThinkKey, ...)` BEFORE `mapAnthropicResponseToOpenAI` runs (the mapper discards thinking blocks). |
 | Write — streaming | `lib/stream-pump.js` (`startStreamPump`): `cacheClaudeThinking()` is invoked at `[DONE]`, `message_stop`, and the `finally` block. |
-| Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `lib/reasoning.js`) AFTER the reasoning bridge runs, gated on `parsedBody.thinking?.type` being a non-disabled value. |
+| Read — injection | `api/proxy.js` calls `injectClaudeThinkingBlocks()` (from `lib/reasoning.js`) AFTER the reasoning bridge runs, gated on `claudeThinkingActive(parsedBody)`: explicit non-disabled thinking, or omitted thinking on the new Claude models. |
 | SSE suppression | `lib/stream-pump.js` streaming pump: `thinking_delta`, `signature_delta`, and `content_block_start` for `thinking`/`redacted_thinking` are suppressed (mutated in place via `claudeThinkBlocks` map) so Cursor never sees them. |
 | Key prefix | `asst:` — distinct from `conv:` (reasoning bridge) and `azresp:conv:` (Azure response ID chaining) |
 

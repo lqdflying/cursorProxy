@@ -1,4 +1,6 @@
-# GLM-5.2 Coding Plan
+# GLM-5.2 Coding Plan (legacy compatibility)
+
+The default is now GLM-5.3. Keep this case for explicitly configured 5.2 deployments; run [the current refresh matrix](model-refresh.md) for 5.3/Flash/FlashX.
 
 ## Purpose
 

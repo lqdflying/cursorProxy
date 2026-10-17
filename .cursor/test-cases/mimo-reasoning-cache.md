@@ -6,7 +6,7 @@ Verify the proxy caches MiMo `reasoning_content` in KV and re-injects it into pr
 
 ## Provider And Model
 
-- Cursor model: `mimo-v2.5-pro`
+- Cursor model: `mimo-v2.6-pro`
 - Provider route: unified `https://<host>/v1`
 - Deployment: production or Docker with KV + `MIMO_API_KEY`
 

@@ -136,10 +136,10 @@ quality on gateways.
    `isNativeGlmEndpoint()`. `new URL(...).hostname` ignores the path, so the
    helper is robust to path differences.
 
-4. **Do not gate `reasoning_effort`.** It is probed-accepted on gateways and
+4. **Do not strip gateway `reasoning_effort`.** It is probed-accepted on gateways and
    is the GLM-5.2+ feature this project specifically forwards. Its own gate is
    model-version-based (`isGlm52PlusModel()` strips it for pre-5.2 GLM), not
-   endpoint-based.
+   endpoint-based. Native GLM-5.3/Flash/FlashX additionally validate low/high/max and always-on thinking; gateways keep the broader existing effort contract.
 
 5. **`clear_thinking` on gateways is not the Z.AI preserved-thinking
    contract.** Native Z.AI requires preserved thinking to stay complete and

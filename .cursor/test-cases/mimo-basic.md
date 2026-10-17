@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Validate unified `/v1` routing to Xiaomi MiMo (`mimo-v2.5-pro`), forced `thinking: { type: "enabled" }` injection, upstream URL construction, and `reasoning_content` stripped from the client-visible response.
+Validate unified `/v1` routing to Xiaomi MiMo (`mimo-v2.6-pro`), forced `thinking: { type: "enabled" }` injection, upstream URL construction, and `reasoning_content` stripped from the client-visible response.
 
 ## Provider And Model
 
-- Cursor model: `mimo-v2.5-pro` (or `cursorproxy/mimo-v2.5-pro` if using discovery prefix)
+- Cursor model: `mimo-v2.6-pro` (or `cursorproxy/mimo-v2.6-pro` if using discovery prefix)
 - Provider route: unified `https://<host>/v1`
 - Deployment: production or Docker with `MIMO_API_KEY` set
 - Cursor mode: any chat/agent mode that sends streaming chat completions
@@ -14,7 +14,7 @@ Validate unified `/v1` routing to Xiaomi MiMo (`mimo-v2.5-pro`), forced `thinkin
 ## Preconditions
 
 - Required env vars: `CURSORPROXY_API_KEY`, `MIMO_API_KEY`
-- Optional: `CURSORPROXY_MODELS` includes `mimo-v2.5-pro` for discovery
+- Optional: `CURSORPROXY_MODELS` includes `mimo-v2.6-pro` for discovery
 - KV backend configured (Upstash, Redis, or EdgeOne KV) for multi-turn reasoning tests (not required for this single-turn case)
 
 ## Test Steps
@@ -45,7 +45,7 @@ With `DEBUG=true`, also expect:
 
 ```text
 [cursorProxy:proxy] START POST ... pathname: /v1/chat/completions provider(query): (infer)
-[cursorProxy:proxy] RESOLVED model: mimo-v2.5-pro provider: mimo stream: true
+[cursorProxy:proxy] RESOLVED model: mimo-v2.6-pro provider: mimo stream: true
 [cursorProxy:proxy] UPSTREAM https://api.xiaomimimo.com/v1/chat/completions provider: mimo
 [cursorProxy:proxy] UPSTREAM_STATUS 200 provider: mimo
 ```

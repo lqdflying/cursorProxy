@@ -9,7 +9,8 @@ Use these cases when validating provider/model behavior on a deployed proxy, esp
 | Test case | Purpose |
 |---|---|
 | [Template](TEMPLATE.md) | Required shape for future Cursor manual test cases. |
-| [DeepSeek-V4-Flash](deepseek-v4-flash.md) | DeepSeek routing, `deepseek-v4-flash` default-model injection (retired `deepseek-chat` replaced), thinking/reasoning_effort forcing, multi-turn reasoning cache, and vision bridge. |
+| [Current model refresh](model-refresh.md) | New defaults/aliases, native images, reasoning validation, GPT-6 Responses, MiniMax formats and Claude cache isolation. |
+| [DeepSeek V4.1 Flash](deepseek-v4-flash.md) | Flash default, native images, V4 Pro vision bridge, effort overrides and tool-history replay. |
 | [Azure OpenAI Responses apply_patch](azure-openai-responses-apply-patch.md) | Verifies Cursor -> proxy -> Azure OpenAI Responses custom `apply_patch` tool calls, tool outputs, and `previous_response_id` chaining. |
 | [OpenAI-compatible Chat cache modes](openaicompat-chat-cache-modes.md) | Verifies `passthrough`, `facade`, and `remote` Chat-mode behavior for OpenAI-compatible gateways. |
 | [Kimi K3](kimi-k3.md) | Native Kimi K3 sanitization, preserved reasoning, forced tools, and multimodal input. |
@@ -17,7 +18,7 @@ Use these cases when validating provider/model behavior on a deployed proxy, esp
 | [GLM-5.2 Coding Plan](glm-5.2.md) | GLM routing, Coding Plan URL construction, sanitizer, preserved thinking, tool streaming, and vision bridge behavior. |
 | [MiMo basic](mimo-basic.md) | MiMo routing, forced thinking injection, upstream URL, successful completion. |
 | [MiMo reasoning cache](mimo-reasoning-cache.md) | Multi-turn `reasoning_content` KV inject on MiMo. |
-| [MiMo vision routing](mimo-vision-routing.md) | Vision bridge on Pro vs native images on `mimo-v2.5`. |
+| [MiMo vision routing](mimo-vision-routing.md) | Vision bridge on Pro vs native images on `mimo-v2.6-flash`. |
 | [Fireworks basic](fireworks-basic.md) | Fireworks routing, model-ID mapping, streaming, and native provider isolation. |
 | [TokenRouter](tokenrouter.md) | TokenRouter K3, DeepSeek V4, and Qwen3.8-Max routing, sanitization, reasoning restore, vision, and native provider isolation. |
 

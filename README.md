@@ -5,7 +5,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 - **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo/GLM `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Responses chaining:** caches Azure OpenAI and supported OpenAI-compatible Responses API response IDs in KV so subsequent turns can use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly where the upstream supports HTTP chaining.
 - **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (typed-canonical hash) so multi-turn conversations reuse prior reasoning instead of re-thinking from scratch.
-- **Vision bridge:** automatically converts inline images to text descriptions for models that don't support vision natively (DeepSeek, MiniMax M2.x, MiMo Pro/Flash/TTS, GLM-5.2). MiniMax M3, MiMo `mimo-v2.5`, `mimo-v2-omni`, and allowlisted visual GLM models accept images natively.
+- **Vision bridge:** automatically describes images for text-only models such as DeepSeek V4 Pro, MiniMax M2.x, MiMo V2.6 Pro, and GLM-5.3. Multimodal models receive images directly; see the [provider guide](https://github.com/lqdflying/cursorProxy/wiki/Provider-Behavior).
 - **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates request bodies and SSE streams to/from Azure OpenAI Responses and Azure Anthropic Messages.
 - **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 
@@ -96,7 +96,7 @@ Common optional settings:
 - `UPSTREAM_GLM=https://api.z.ai/api/coding/paas/v4` switches GLM from the default China Coding Plan endpoint to global Z.AI.
 - `UPSTREAM_KIMI`, `UPSTREAM_MIMO`, `UPSTREAM_FIREWORKS`, `UPSTREAM_TOKENROUTER`, Azure aliases, reasoning effort, timeout, TTL, and vision-provider settings are covered in the wiki.
 - `OPENAICOMPAT_WIRE_API=responses` switches the openai-compatible provider from Chat Completions (default) to the OpenAI Responses API with `previous_response_id` state chaining. For GPT-5.6 Sol, optional `OPENAICOMPAT_REASONING_EFFORT=max` selects the highest supported single-model reasoning effort; GPT-5.5 requests fall back to `xhigh` because GPT-5.5 does not support `max`. `ultra` is not an effort value. Requires a KV backend. See [Compatible Providers](https://github.com/lqdflying/cursorProxy/wiki/Compatible-Providers).
-- `compatible-gpt-5.6` is a Responses-mode alias for compatible upstreams that expose `gpt-5.6-sol`, OpenAI's flagship GPT-5.6 model (also targeted by the `gpt-5.6` alias). Use `OPENAICOMPAT_WIRE_API=responses`; Chat mode forwards the same upstream model to `/v1/chat/completions` and will fail if the provider only supports GPT-5.6 on `/v1/responses`.
+- Use `compatible-gpt-6.1-sol`, `compatible-gpt-6-astra`, or `compatible-gpt-6-luna` with `OPENAICOMPAT_WIRE_API=responses` for GPT-6 coding and tools. Existing aliases keep their original targets; see [Compatible Providers](https://github.com/lqdflying/cursorProxy/wiki/Compatible-Providers).
 
 Full references:
 

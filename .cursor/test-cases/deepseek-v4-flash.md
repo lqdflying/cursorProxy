@@ -1,14 +1,14 @@
-# DeepSeek-V4-Flash Default Model
+# DeepSeek V4.1 Flash Default Model
 
 ## Purpose
 
-Validate that DeepSeek requests route to the `deepseek` provider, the retired default (`deepseek-chat`) is no longer injected, `deepseek-v4-flash` is injected when the client omits the model, DeepSeek thinking and `reasoning_effort` are forced, the vision bridge runs for image attachments, and multi-turn reasoning reuse works through the `deepseek:<user>` KV scope.
+Validate that DeepSeek requests route to the `deepseek` provider, the retired default (`deepseek-chat`) is no longer injected, `deepseek-flash` is injected when the client omits the model, DeepSeek thinking and `reasoning_effort` are forced, images reach Flash natively and V4 Pro uses the vision bridge, and multi-turn reasoning reuse works through the `deepseek:<user>` KV scope.
 
-This also guards against regression of the 2026-07-24 retirement: requests that omit `model` must reach `api.deepseek.com` with `model: deepseek-v4-flash`, not the dead `deepseek-chat` alias.
+This also guards against regression of the 2026-07-24 retirement: requests that omit `model` must reach `api.deepseek.com` with `model: deepseek-flash`, not the dead `deepseek-chat` alias.
 
 ## Provider And Model
 
-- Cursor model: omit `model` to exercise default injection, or set `cursorproxy/deepseek-v4-flash` (or bare `deepseek-v4-flash`)
+- Cursor model: omit `model` to exercise default injection, or set `cursorproxy/deepseek-flash` (or bare `deepseek-flash`)
 - Provider route: unified `https://<host>/v1` and legacy `https://<host>/deepseek/v1`
 - Deployment: Vercel (production) for log verification; Docker and EdgeOne also supported
 - Cursor mode: Agent or Chat that sends streaming chat completions
@@ -16,7 +16,7 @@ This also guards against regression of the 2026-07-24 retirement: requests that 
 ## Preconditions
 
 - Required env vars: `CURSORPROXY_API_KEY`, `DEEPSEEK_API_KEY`
-- Optional: `CURSORPROXY_MODELS` includes `deepseek-v4-flash` for `GET /v1/models` discovery
+- Optional: `CURSORPROXY_MODELS` includes `deepseek-flash` for `GET /v1/models` discovery
 - Optional upstream override: `UPSTREAM_DEEPSEEK=https://api.deepseek.com` (default)
 - KV backend configured for multi-turn reasoning-reuse checks
 - Vision backend configured (default MiniMax VL-01 reusing `MINIMAX_API_KEY`, or `VISION_API_PROVIDER=openai`) for image-attachment checks
@@ -25,7 +25,7 @@ This also guards against regression of the 2026-07-24 retirement: requests that 
 
 ### Test 1: Default-model injection (model omitted)
 
-In Cursor, configure a custom model with no `model` field (or a request that omits `model` in the body). Paste this prompt:
+Cursor normally sends a model ID. Exercise omission with the handler replay in `test/model-refresh.test.js`, or a direct request to `/deepseek/v1/chat/completions` with no model. For the closest Cursor check, select Flash and paste:
 
 ```text
 Think step by step privately, then answer in one sentence: write a JavaScript function named add42 that returns its numeric argument plus 42.
@@ -46,17 +46,17 @@ Expected Vercel logs (same `requestId` group, always-on):
 With `DEBUG=true`, also expect:
 
 ```text
-[cursorProxy:proxy] MODEL_INJECTED model: deepseek-v4-flash
-[cursorProxy:proxy] RESOLVED model: deepseek-v4-flash provider: deepseek stream: true
+[cursorProxy:proxy] MODEL_INJECTED model: deepseek-flash
+[cursorProxy:proxy] RESOLVED model: deepseek-flash provider: deepseek stream: true
 [cursorProxy:proxy] UPSTREAM https://api.deepseek.com/v1/chat/completions provider: deepseek
 [cursorProxy:proxy] UPSTREAM_STATUS 200 provider: deepseek stream: true
 ```
 
-The `MODEL_INJECTED` line MUST show `deepseek-v4-flash`. If it shows `deepseek-chat`, the retired default is still in `api/proxy.js` and DeepSeek will return an upstream model-not-found error on subsequent turns.
+The `MODEL_INJECTED` line MUST show `deepseek-flash`. If it shows `deepseek-chat`, the retired default is still in `api/proxy.js` and DeepSeek will return an upstream model-not-found error on subsequent turns.
 
 ### Test 2: Thinking injection and reasoning effort (default high)
 
-Same prompt as Test 1, with `model` set explicitly to `cursorproxy/deepseek-v4-flash`.
+Same prompt as Test 1, with `model` set explicitly to `cursorproxy/deepseek-flash`.
 
 Expected Vercel logs (always-on):
 
@@ -81,7 +81,7 @@ The forwarded body MUST use `max`. The env value wins over any client-supplied e
 Set `DEEPSEEK_REASONING_EFFORT=turbo` (typo) and replay Test 1. Expected logs:
 
 ```text
-[cursorProxy:proxy] THINKING_INVALID_EFFORT provider: deepseek raw_env: turbo fallback: high valid: high|max
+[cursorProxy:proxy] THINKING_INVALID_EFFORT provider: deepseek raw_env: turbo fallback: high valid: low|high|max
 [cursorProxy:proxy] THINKING provider: deepseek reasoning_effort: high raw_env: turbo
 ```
 
@@ -143,25 +143,21 @@ Expected Vercel logs (always-on, the follow-up user turn and every tool-ending s
 
 `INJECT_SUMMARY` MUST appear on the **user-ending agent follow-up** too (because the request carries `tools`), and `hits`/`misses` must cover assistant turns from **earlier closed tool rounds before the last user message**, not only turns after the last user message. The captured upstream body for such a turn must carry `reasoning_content` (cached or the `"(prior reasoning unavailable)"` placeholder) on every prior tool-call assistant turn. If `INJECT_SUMMARY` is absent on a tools-carrying user-ending turn, or only covers turns after the last user message, the tools-aware gate has regressed and DeepSeek will return a 400. If `hits` is 0 across multiple sessions for tools-carrying turns despite successful prior turns, the cache scope key derivation may have regressed (it should remain `deepseek:<apiKeyHash>`).
 
-### Test 6: Image attachment (vision bridge)
+### Test 6: Native Flash images and text-only Pro bridging
 
-Paste a small screenshot into Cursor while using `deepseek-v4-flash`, with a prompt like:
+Paste a small screenshot using `deepseek-flash`:
 
 ```text
 Describe what is shown in this image in one sentence.
 ```
 
-Expected Cursor behavior:
-
-- A description of the image content (not a hallucinated or ignored answer — DeepSeek text models would otherwise accept the request but ignore the inline images).
-
-Expected Vercel logs (always-on):
+Expect a description and `RES 200 provider: deepseek ms: <number>` in the same request group. There must be no `CONVERTED_IMAGES` event for Flash. Repeat with `deepseek-v4-pro`; now expect:
 
 ```text
-[cursorProxy:proxy] CONVERTED_IMAGES ok: <number> err: 0 provider: deepseek visionMs: <number>
+[cursorProxy:proxy] CONVERTED_IMAGES ok: 1 err: 0 provider: deepseek visionMs: <number>
 ```
 
-With `DEBUG=true`, also expect `VISION_BATCH` and `VISION_CONVERTED` lines. `ok` MUST be non-zero when an image is attached; `err: 0` indicates no vision-backend failures.
+The official API's legacy `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` aliases also receive native images. Custom endpoints retain their previous bridge behavior for these IDs. The automated handler suite verifies both routes without calling a live provider.
 
 ### Test 7: Legacy `/deepseek/v1` route coverage
 
@@ -172,7 +168,7 @@ Repeat Test 1 against `https://<host>/deepseek/v1/chat/completions`. Expected lo
 [cursorProxy:proxy] RES 200 provider: deepseek ms: <number>
 ```
 
-The route must reach the same `deepseek` provider and forward to `https://api.deepseek.com/v1/chat/completions`. No new routing surface is required for `deepseek-v4-flash` — it routes by the `deepseek` name prefix.
+The route must reach the same `deepseek` provider and forward to `https://api.deepseek.com/v1/chat/completions`. No new routing surface is required for `deepseek-flash` — it routes by the `deepseek` name prefix.
 
 Expected file/content changes, if any:
 
@@ -201,9 +197,9 @@ None. No files are created by these prompts.
 
 ## Notes
 
-- DeepSeek-V4-Flash (`deepseek-v4-flash`) is the official public beta since 2026-07-31. Same base URL `https://api.deepseek.com`, same `Authorization: Bearer` auth. Supports Chat Completions, Anthropic, and Responses APIs with dual Thinking / Non-Thinking modes and a 1M context window.
-- `deepseek-chat` and `deepseek-reasoner` were retired upstream on 2026-07-24 and are now inaccessible. The proxy default must be `deepseek-v4-flash`; the legacy names still route by prefix but 404 upstream.
+- `deepseek-flash` is the canonical V4.1 Flash ID. The base URL and bearer authentication are unchanged; the proxy uses Chat Completions with thinking enabled.
+- `deepseek-chat` and `deepseek-reasoner` were retired upstream on 2026-07-24 and are now inaccessible. The proxy default must be `deepseek-flash`; the legacy names still route by prefix but 404 upstream.
 - DeepSeek reasoning uses `reasoning_content` (string), accumulated as a single growing string in `lib/stream-pump.js`. Cache scope is `deepseek:<apiKeyHash>` (shared across DeepSeek model variants by design, to preserve existing KV entries).
 - Reasoning injection is gated by `deepseek` in `reasoningProviders` (`lib/reasoning.js`). DeepSeek gets the `"(prior reasoning unavailable)"` placeholder on KV miss (it is NOT in the hit-only set used for `glm`/`fireworks`/`openaicompat`). Per the official DeepSeek V4 `thinking_mode` docs, the passback rule is keyed on the request carrying the `tools` parameter: tools-carrying requests must fully pass back `reasoning_content` in ALL subsequent requests (400 on missing), spanning new user messages and covering tool-call assistant turns anywhere in the history — the proxy therefore disables the interleaved optimization for native deepseek when `tools` is present and injects for the full history. Between two `user` messages with no tool call (no-tools shape), reasoning is ignored, so the skip is a safe latency optimization only for that shape.
-- DeepSeek always goes through the vision bridge (`requiresVisionBridge` returns true for all `deepseek` models).
+- Flash uses native images; V4 Pro uses the bridge. Repeat the effort override test with `low`, which is now supported.
 - Upstream docs: [DeepSeek API](https://api-docs.deepseek.com)
