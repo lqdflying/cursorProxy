@@ -1043,8 +1043,8 @@ export default async function handler(req) {
   }
 
   // Convert images to text for providers that don't support vision inputs
-  // Vision capability is model-specific. Flash DeepSeek, MiMo V2.6 Flash/Pro
-  // Ultraspeed and GLM 5.3 Flash/FlashX accept images; their text-only peers
+  // Vision capability is model-specific. Flash DeepSeek, MiMo V2.6 Pro/Flash/
+  // Pro Ultraspeed and GLM 5.3 Flash/FlashX accept images; their text-only peers
   // use the bridge. See the endpoint-aware matrix in lib/vision-bridge.js.
   if (requiresVisionBridge(providerKey, upstreamModelName, upstreamUrl) && parsedBody?.messages) {
     const visionT0 = Date.now();

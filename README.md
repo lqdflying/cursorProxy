@@ -5,7 +5,7 @@ A lightweight proxy for **DeepSeek**, **Kimi**, **MiniMax**, **Xiaomi MiMo**, **
 - **Reasoning bridge:** caches and injects provider-specific reasoning (DeepSeek/Kimi/MiMo/GLM `reasoning_content`, MiniMax `reasoning_details`) by conversation position, including race-tolerant handling for fast follow-up and parallel tool calls.
 - **Responses chaining:** caches Azure OpenAI and supported OpenAI-compatible Responses API response IDs in KV so subsequent turns can use `previous_response_id` instead of resending the full conversation, cutting reasoning-token costs significantly where the upstream supports HTTP chaining.
 - **Claude thinking cache:** caches Claude adaptive-thinking blocks in KV (typed-canonical hash) so multi-turn conversations reuse prior reasoning instead of re-thinking from scratch.
-- **Vision bridge:** automatically describes images for text-only models such as DeepSeek V4 Pro, MiniMax M2.x, MiMo V2.6 Pro, and GLM-5.3. Multimodal models receive images directly; see the [provider guide](https://github.com/lqdflying/cursorProxy/wiki/Provider-Behavior).
+- **Vision bridge:** automatically describes images for text-only models such as DeepSeek V4 Pro, MiniMax M2.x, MiMo V2.5 Pro, and GLM-5.3. Multimodal models receive images directly; see the [provider guide](https://github.com/lqdflying/cursorProxy/wiki/Provider-Behavior).
 - **Format adapters:** Cursor speaks OpenAI Chat Completions; the proxy translates request bodies and SSE streams to/from Azure OpenAI Responses and Azure Anthropic Messages.
 - **Model discovery:** exposes `GET /v1/models` from your configured `CURSORPROXY_MODELS` list so clients can discover available model IDs.
 

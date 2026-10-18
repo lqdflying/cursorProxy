@@ -104,19 +104,41 @@ describe("October model refresh through the shared handler", () => {
   });
 
   it("keeps native images and bridges only documented text-only models", async () => {
-    for (const model of ["deepseek-flash", "deepseek-v4-flash", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed", "glm-5.3-flash", "MiniMax-M3.1-Flash-Preview"]) {
+    for (const model of ["deepseek-flash", "deepseek-v4-flash", "mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed", "glm-5.3-flash", "MiniMax-M3.1-Flash-Preview"]) {
       const start = calls.length;
       assert.equal((await invoke({ model, messages: imageMessages })).status, 200);
       assert.equal(calls.length - start, 1, model);
       assert.deepEqual(calls.at(-1).body.messages, imageMessages, model);
     }
-    for (const model of ["deepseek-v4-pro", "mimo-v2.6-pro", "glm-5.3", "fireworks/glm-5p3"]) {
+    for (const model of ["deepseek-v4-pro", "mimo-v2.5-pro", "glm-5.3", "fireworks/glm-5p3"]) {
       assert.equal((await invoke({ model, messages: imageMessages })).status, 200);
       assert.doesNotMatch(JSON.stringify(calls.at(-1).body.messages), /image_url/);
       assert.match(JSON.stringify(calls.at(-1).body.messages), /fixture image description/);
     }
     assert.equal(requiresVisionBridge("deepseek", "deepseek-v4-flash", "https://gateway.test"), true);
     assert.equal(requiresVisionBridge("deepseek", "deepseek-v4-flash-vision-exp", "https://api.deepseek.com/v1/chat/completions"), false);
+  });
+
+  it("keeps default, bare and public MiMo Pro images native while bridging legacy Pro", async () => {
+    // Native images must work without credentials for the separate vision backend.
+    delete process.env.MINIMAX_API_KEY;
+    for (const [model, provider] of [[undefined, "mimo"], ["mimo-v2.6-pro", "mimo"], ["mimo-v2.6-pro", ""], ["cursorproxy/mimo-v2.6-pro", ""]]) {
+      const start = calls.length;
+      const response = await invoke({ model, messages: imageMessages }, provider);
+      assert.equal(response.status, 200);
+      assert.equal(calls.length - start, 1);
+      assert.match(calls.at(-1).url, /\/chat\/completions$/);
+      assert.equal(calls.at(-1).body.model, "mimo-v2.6-pro");
+      assert.deepEqual(calls.at(-1).body.messages, imageMessages);
+    }
+    process.env.MINIMAX_API_KEY = "fixture-key";
+    const start = calls.length;
+    assert.equal((await invoke({ model: "mimo-v2.5-pro", messages: imageMessages })).status, 200);
+    assert.equal(calls.length - start, 2);
+    assert.match(calls[start].url, /coding_plan\/vlm/);
+    assert.match(calls[start + 1].url, /\/chat\/completions$/);
+    assert.doesNotMatch(JSON.stringify(calls.at(-1).body.messages), /image_url/);
+    assert.match(JSON.stringify(calls.at(-1).body.messages), /fixture image description/);
   });
 
   it("keeps DeepSeek low effort and full historical reasoning across tool turns", async () => {
@@ -130,28 +152,80 @@ describe("October model refresh through the shared handler", () => {
     assert.equal(calls.at(-1).body.messages[1].reasoning_content, "full prior trace");
   });
 
-  it("validates native GLM 5.3 without imposing the contract on gateways or 5.2", async () => {
-    for (const extra of [{ reasoning_effort: "medium" }, { reasoning_effort: "none" }, { thinking: { type: "disabled" } }]) {
-      assert.equal((await invoke({ model: "glm-5.3", messages, ...extra })).status, 400);
+  for (const host of ["open.bigmodel.cn", "api.z.ai"]) {
+    for (const codingPlan of [true, false]) {
+      const endpoint = codingPlan ? "Coding Plan" : "standard API";
+      for (const model of ["glm-5.3", "glm-5.3-flash", ...(!codingPlan ? ["glm-5.3-flashx"] : [])]) {
+        it(`validates ${model} effort for ${host} ${endpoint}`, async () => {
+          process.env.UPSTREAM_GLM = `https://${host}/api/${codingPlan ? "coding/" : ""}paas/v4`;
+          assert.equal((await invoke({ model, messages })).status, 200);
+          assert.equal(calls.length, 1);
+          assert.equal(calls[0].body.reasoning_effort, "max");
+          for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]) {
+            const accepted = effort !== "ultra" && (codingPlan || ["low", "high", "max"].includes(effort));
+            const start = calls.length;
+            const response = await invoke({ model, messages, reasoning_effort: effort });
+            assert.equal(response.status, accepted ? 200 : 400, effort);
+            assert.equal(calls.length - start, accepted ? 1 : 0, effort);
+            if (accepted) {
+              assert.equal(calls.at(-1).url, `${process.env.UPSTREAM_GLM}/chat/completions`);
+              assert.equal(calls.at(-1).body.reasoning_effort, effort);
+              assert.equal(calls.at(-1).body.thinking.type, "enabled");
+            } else {
+              const error = (await response.json()).error;
+              assert.equal(error.code, "glm_parameter_invalid");
+              assert.ok(error.message.includes(endpoint));
+            }
+          }
+          for (const [env, client, accepted, effort] of [
+            ['  "medium"  ', "low", codingPlan, "medium"],
+            ["  'low'  ", "ultra", true, "low"],
+            ["ultra", "low", false],
+            ["  ", "high", true, "high"],
+          ]) {
+            process.env.GLM_REASONING_EFFORT = env;
+            const start = calls.length;
+            const response = await invoke({ model, messages, reasoning_effort: client });
+            assert.equal(response.status, accepted ? 200 : 400, env);
+            assert.equal(calls.length - start, accepted ? 1 : 0, env);
+            if (accepted) assert.equal(calls.at(-1).body.reasoning_effort, effort);
+          }
+          delete process.env.GLM_REASONING_EFFORT;
+          const start = calls.length;
+          assert.equal((await invoke({ model, messages, thinking: { type: "disabled" } })).status, 400);
+          assert.equal(calls.length, start);
+        });
+      }
     }
-    assert.equal(calls.length, 0);
-    process.env.GLM_REASONING_EFFORT = "low";
-    await invoke({ model: "glm-5.3", messages, reasoning_effort: "medium" });
-    assert.equal(calls.at(-1).body.reasoning_effort, "low");
-    process.env.GLM_REASONING_EFFORT = "medium";
-    assert.equal((await invoke({ model: "glm-5.3", messages })).status, 400);
-    delete process.env.GLM_REASONING_EFFORT;
-    assert.equal((await invoke({ model: "glm-5.2", messages, reasoning_effort: "medium" })).status, 200);
-    process.env.UPSTREAM_GLM = "https://gateway.test/v1";
-    await invoke({ model: "glm-5.3", messages, thinking: { type: "disabled" }, reasoning_effort: "medium" });
+  }
+  it("preserves default Coding Plan effort forwarding and legacy/gateway behavior", async () => {
+    assert.equal((await invoke({ messages, reasoning_effort: "medium" }, "glm")).status, 200);
+    assert.equal(calls.at(-1).body.model, "glm-5.3");
     assert.equal(calls.at(-1).body.reasoning_effort, "medium");
-    assert.equal(calls.at(-1).body.thinking, undefined);
+    assert.equal(calls.at(-1).url, "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions");
+    for (const host of ["open.bigmodel.cn", "api.z.ai"]) {
+      for (const path of ["/api/coding/paas/v4", "/api/paas/v4"]) {
+        process.env.UPSTREAM_GLM = `https://${host}${path}`;
+        assert.equal((await invoke({ model: "glm-5.2", messages, reasoning_effort: "medium" })).status, 200);
+        assert.equal(calls.at(-1).body.reasoning_effort, "medium");
+      }
+    }
+    for (const path of ["/v1", "/api/coding/paas/v4"]) {
+      process.env.UPSTREAM_GLM = `https://gateway.test${path}`;
+      assert.equal((await invoke({ model: "glm-5.3", messages, thinking: { type: "disabled" }, reasoning_effort: "medium" })).status, 200);
+      assert.equal(calls.at(-1).body.reasoning_effort, "medium");
+      assert.equal(calls.at(-1).body.thinking, undefined);
+    }
     process.env.GLM_NATIVE_FIELDS = "true";
     await invoke({ model: "glm-5.3", messages });
     assert.equal(calls.at(-1).body.thinking.type, "enabled");
   });
   it("rejects FlashX on Coding Plan and honors disabled native fields even on a cache miss", async () => {
-    assert.equal((await invoke({ model: "glm-5.3-flashx", messages })).status, 400);
+    for (const host of ["open.bigmodel.cn", "api.z.ai"]) {
+      process.env.UPSTREAM_GLM = `https://${host}/api/coding/paas/v4`;
+      assert.equal((await invoke({ model: "glm-5.3-flashx", messages })).status, 400);
+      assert.equal(calls.length, 0);
+    }
     process.env.UPSTREAM_GLM = "https://api.z.ai/api/paas/v4";
     await invoke({ model: "glm-5.3-flashx", messages: imageMessages });
     assert.deepEqual(calls.at(-1).body.messages, imageMessages);

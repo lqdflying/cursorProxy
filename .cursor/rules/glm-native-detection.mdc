@@ -33,7 +33,7 @@ checks.
 |---|---|---|---|
 | `thinking: { type:"enabled", clear_thinking:false }` | injected by [lib/glm.js](../../lib/glm.js) `injectThinking()` | stripped | sanitizer + reasoning-bridge re-injection (see pitfall 2) |
 | `tool_stream: true` (stream + tools) | injected by `enableToolStreaming()` | stripped | sanitizer only |
-| `reasoning_effort` (GLM-5.2+) | forwarded | forwarded (probed accepted) | not gated — GLM-5.2+ feature, model-version-gated by `isGlm52PlusModel()` instead |
+| `reasoning_effort` (GLM-5.2+) | forwarded after endpoint-specific 5.3 validation | forwarded (probed accepted) | model-version-gated by `isGlm52PlusModel()`; native 5.3 enum validated by `glmParameterError()` |
 | `max_completion_tokens` → `max_tokens` remap | always | always | not gated — standard normalization |
 | `tool_choice` coercion to `auto`; `tool_choice:"none"` removes tools | always | always | not gated — standard normalization |
 
@@ -139,7 +139,12 @@ quality on gateways.
 4. **Do not strip gateway `reasoning_effort`.** It is probed-accepted on gateways and
    is the GLM-5.2+ feature this project specifically forwards. Its own gate is
    model-version-based (`isGlm52PlusModel()` strips it for pre-5.2 GLM), not
-   endpoint-based. Native GLM-5.3/Flash/FlashX additionally validate low/high/max and always-on thinking; gateways keep the broader existing effort contract.
+   endpoint-based. Native GLM-5.3/Flash/FlashX additionally validate low/high/max
+   on the standard API and always-on thinking. Native `/coding/` paths also
+   accept none/minimal/medium/xhigh for GLM-5.3/Flash; forward these values so
+   upstream maps none/minimal/low to low, medium/high to high, and xhigh/max
+   to max. FlashX remains unavailable on Coding Plan. Gateways keep the broader
+   existing effort contract regardless of pathname.
 
 5. **`clear_thinking` on gateways is not the Z.AI preserved-thinking
    contract.** Native Z.AI requires preserved thinking to stay complete and

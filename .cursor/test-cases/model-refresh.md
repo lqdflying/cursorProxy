@@ -58,7 +58,7 @@ Attach a simple screenshot of a red square and paste:
 Name the color and shape in this image. Answer in five words or fewer.
 ```
 
-Flash DeepSeek, MiMo V2.6 Flash/Pro Ultraspeed, GLM 5.3 Flash/FlashX, MiniMax M3/M3.1, GPT and Claude should use native images. Text-only DeepSeek V4 Pro, MiMo V2.6 Pro, GLM-5.3 and Fireworks GLM-5p3 should emit `CONVERTED_IMAGES ok: 1 err: 0 provider: <provider> visionMs: <number>`. Native images should not emit that event. Any false image description, bridge on a native model, or unsupported image error is a failure.
+Flash DeepSeek, MiMo V2.6 Pro/Flash/Pro Ultraspeed, GLM 5.3 Flash/FlashX, MiniMax M3/M3.1, GPT and Claude should use native images. Text-only DeepSeek V4 Pro, legacy MiMo V2.5 Pro, GLM-5.3 and Fireworks GLM-5p3 should emit `CONVERTED_IMAGES ok: 1 err: 0 provider: <provider> visionMs: <number>`. Native images should not emit that event. Any false image description, bridge on a native model, or unsupported image error is a failure.
 
 ## API-only checks and deterministic replay
 
@@ -71,7 +71,8 @@ Cursor UI cannot reliably omit model IDs, select precise effort/thinking fields,
 It verifies these cases without a localhost server or paid requests:
 
 - Defaults and public/bare/alias/provider route shapes; explicit retired IDs remain discoverable.
-- Native GLM 5.3 invalid effort/disabled thinking → `400 glm_parameter_invalid`; valid env overrides client; gateway/5.2 behavior unchanged; FlashX rejects Coding Plan.
+- Native GLM 5.3/Flash standard API accepts low/high/max; Coding Plan also forwards none/minimal/medium/xhigh for upstream mapping, with thinking still enabled. Both Z.AI and ZHIPU endpoints reject invalid effort and disabled thinking with `400 glm_parameter_invalid` before any upstream call. Default max and env > client precedence (including quoted/trimmed env values) hold; gateway/5.2 behavior stays unchanged; FlashX rejects Coding Plan and uses the strict enum on the standard API.
+- MiMo V2.6 Pro preserves exact image parts and makes one chat call for omitted/default, bare, explicit-provider and public model routes, even without vision-backend credentials. Legacy V2.5 Pro still makes a vision call followed by a chat call containing the caption on an image-cache miss.
 - M3.1 disabled thinking/none effort/unsplit reasoning → `400 minimax_parameter_invalid`; M3 still accepts disabled thinking; JSON and SSE cache replay preserves the received reasoning field/type.
 - New Claude manual budgets/unsupported thinking or forced choices → `400 claude_parameter_invalid`; Haiku forced tools retained, Sonnet between_tools at <=high succeeds, adaptive display is preserved.
 - Native GPT-6 unsupported Chat tools → `400 gpt6_responses_required` with the Responses setting; effort normalization follows env precedence; cache-write tokens survive response mapping.
